@@ -1,0 +1,47 @@
+project_name: unknown
+project_type: unknown
+stack: []
+package_managers: []
+
+commands:
+  install: []
+  dev: []
+  build: []
+  test: []
+  lint: []
+  format: []
+  typecheck: []
+
+entrypoints: []
+important_dirs: []
+important_files: []
+
+ownership:
+  frontend: []
+  backend: []
+  infra: []
+  shared: []
+
+boundaries:
+  risky_areas: []
+  do_not_touch: []
+  generated_files: []
+  migration_sensitive: []
+  security_sensitive: []
+
+conventions:
+  naming: []
+  architecture: []
+  testing: []
+  dependency_policy: []
+  branching_notes: []
+
+definition_of_done:
+  - scope is respected
+  - validation has run or is explicitly impossible
+  - no unrelated files changed
+  - assumptions are listed
+  - risks are listed
+
+assumptions: []
+unknowns: []

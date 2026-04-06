@@ -1,0 +1,6 @@
+# Local notes or temporary outputs
+.ai/local/
+
+# OS files
+.DS_Store
+Thumbs.db
