@@ -1,0 +1,13 @@
+# Shell scripts must stay LF
+*.sh text eol=lf
+
+# Project metadata and prompts should also stay LF
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+
+# Windows batch files can stay CRLF if you ever add them
+*.bat text eol=crlf
+*.cmd text eol=crlf
