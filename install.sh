@@ -1,17 +1,112 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ ! -d ".git" ]; then
-  echo "Run this from the target repository root."
-  exit 1
-fi
+TARGET_DIR="${1:-.}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "Installing AI workflow into: $TARGET_DIR"
 
-cp -r "$SCRIPT_DIR/.ai" .
-cp -r "$SCRIPT_DIR/.claude" .
-cp "$SCRIPT_DIR/AGENTS.md" .
-cp "$SCRIPT_DIR/CLAUDE.md" .
+mkdir -p "$TARGET_DIR/.ai"
+mkdir -p "$TARGET_DIR/.ai/workflow"
+mkdir -p "$TARGET_DIR/.ai/packets"
+mkdir -p "$TARGET_DIR/.ai/templates"
+mkdir -p "$TARGET_DIR/.claude/skills/bootstrap"
+mkdir -p "$TARGET_DIR/.claude/skills/planner"
+mkdir -p "$TARGET_DIR/.claude/skills/reviewer"
+mkdir -p "$TARGET_DIR/.claude/skills/maintenance"
+mkdir -p "$TARGET_DIR/.claude/skills/rescue"
 
-echo "Scaffold copied into current repository."
-echo "Next step: ask Sonnet to run the bootstrap prompt from .ai/templates/bootstrap-prompt.md"
+copy_if_missing() {
+  local src="$1"
+  local dst="$2"
+  if [ ! -f "$dst" ]; then
+    cp "$src" "$dst"
+    echo "Created $dst"
+  else
+    echo "Kept existing $dst"
+  fi
+}
+
+copy_always() {
+  local src="$1"
+  local dst="$2"
+  mkdir -p "$(dirname "$dst")"
+  cp "$src" "$dst"
+  echo "Updated $dst"
+}
+
+copy_if_missing "$SCRIPT_DIR/.ai/project.yaml" "$TARGET_DIR/.ai/project.yaml"
+copy_if_missing "$SCRIPT_DIR/.ai/memory.md" "$TARGET_DIR/.ai/memory.md"
+copy_if_missing "$SCRIPT_DIR/.ai/decisions.md" "$TARGET_DIR/.ai/decisions.md"
+
+copy_if_missing "$SCRIPT_DIR/.ai/templates/bootstrap-prompt.md" "$TARGET_DIR/.ai/templates/bootstrap-prompt.md"
+copy_if_missing "$SCRIPT_DIR/.ai/templates/maintenance-prompt.md" "$TARGET_DIR/.ai/templates/maintenance-prompt.md"
+
+copy_if_missing "$SCRIPT_DIR/.claude/skills/bootstrap/SKILL.md" "$TARGET_DIR/.claude/skills/bootstrap/SKILL.md"
+copy_if_missing "$SCRIPT_DIR/.claude/skills/planner/SKILL.md" "$TARGET_DIR/.claude/skills/planner/SKILL.md"
+copy_if_missing "$SCRIPT_DIR/.claude/skills/reviewer/SKILL.md" "$TARGET_DIR/.claude/skills/reviewer/SKILL.md"
+copy_if_missing "$SCRIPT_DIR/.claude/skills/maintenance/SKILL.md" "$TARGET_DIR/.claude/skills/maintenance/SKILL.md"
+copy_if_missing "$SCRIPT_DIR/.claude/skills/rescue/SKILL.md" "$TARGET_DIR/.claude/skills/rescue/SKILL.md"
+
+copy_always "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
+copy_always "$SCRIPT_DIR/.ai/workflow/claude-workflow.md" "$TARGET_DIR/.ai/workflow/claude-workflow.md"
+
+python3 - "$TARGET_DIR" "$SCRIPT_DIR" <<'PY'
+from pathlib import Path
+import sys
+
+target_dir = Path(sys.argv[1])
+script_dir = Path(sys.argv[2])
+
+agents_block = (script_dir / ".ai/workflow/agents-block.md").read_text()
+claude_import_block = """<!-- >>> AI WORKFLOW MANAGED IMPORT >>> -->
+@.ai/workflow/claude-workflow.md
+<!-- <<< AI WORKFLOW MANAGED IMPORT <<< -->"""
+
+def upsert_block(path: Path, start_marker: str, end_marker: str, block_text: str):
+    if path.exists():
+        content = path.read_text()
+        if start_marker in content and end_marker in content:
+            before = content.split(start_marker)[0].rstrip()
+            after = content.split(end_marker, 1)[1].lstrip()
+            new_content = before + "\n\n" + block_text.strip() + "\n"
+            if after:
+                new_content += "\n" + after
+        else:
+            new_content = content.rstrip() + "\n\n" + block_text.strip() + "\n"
+    else:
+        new_content = block_text.strip() + "\n"
+    path.write_text(new_content)
+
+# AGENTS.md
+agents_path = target_dir / "AGENTS.md"
+upsert_block(
+    agents_path,
+    "# >>> AI WORKFLOW MANAGED BLOCK >>>",
+    "# <<< AI WORKFLOW MANAGED BLOCK <<<",
+    agents_block,
+)
+
+# CLAUDE target selection
+root_claude = target_dir / "CLAUDE.md"
+dot_claude_dir = target_dir / ".claude"
+dot_claude = dot_claude_dir / "CLAUDE.md"
+
+if root_claude.exists():
+    claude_target = root_claude
+elif dot_claude.exists():
+    claude_target = dot_claude
+else:
+    dot_claude_dir.mkdir(parents=True, exist_ok=True)
+    claude_target = dot_claude
+
+upsert_block(
+    claude_target,
+    "<!-- >>> AI WORKFLOW MANAGED IMPORT >>>",
+    "<!-- <<< AI WORKFLOW MANAGED IMPORT <<< -->",
+    claude_import_block,
+)
+PY
+
+echo "Done."
+echo "Next step: open Claude/Sonnet in the repo and run .ai/templates/bootstrap-prompt.md"
