@@ -4,11 +4,12 @@ Adapt this repository to the workflow scaffold without implementing product chan
 
 Required outputs:
 1. Fill `.ai/project.yaml`
-2. Tighten project-specific instructions in `AGENTS.md` and `CLAUDE.md` only where needed
-3. Record discovered quirks in `.ai/memory.md`
+2. Update `.ai/memory.md`
+3. Preserve and integrate with the existing `AGENTS.md` and `CLAUDE.md` instead of replacing them
 4. List assumptions and unknowns explicitly
 
 Constraints:
-- Preserve the fixed workflow roles
+- Do not overwrite existing repository-specific instructions
 - Do not invent commands without marking them as assumptions
 - Do not broaden scope into product work
+- Do not change the workflow core
