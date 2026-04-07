@@ -34,3 +34,4 @@ Actual commands run:
 Deviations from plan: <!-- none, or list each deviation with reason -->
 New risks discovered: <!-- none, or list each -->
 Memory updates: <!-- operational facts learned, to append to .ai/memory.md -->
+Pending deletions: <!-- files/dirs that MUST be deleted but were NOT executed — orchestrator runs these after review -->

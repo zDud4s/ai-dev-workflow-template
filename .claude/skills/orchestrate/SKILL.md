@@ -109,7 +109,13 @@ Run the reviewer skill **within this context window** using the Handoff section 
 
 ## Phase 4 — Wrap up
 
-1. Collect memory updates:
+1. **Pending deletions:** Check the Handoff `Pending deletions` field.
+   - If non-empty → show the list to the user and ask:
+     > "The executor flagged these files/dirs for deletion. Confirm to proceed: [list]"
+   - If confirmed → execute each deletion.
+   - If declined → report them as unresolved and skip.
+
+2. Collect memory updates:
    - From executor Handoff: `Memory updates` field.
    - From reviewer output: `Memory updates to apply` field (if review ran).
 2. If any memory updates exist → run the maintenance skill **within this context window** to append them to `.ai/memory.md`.

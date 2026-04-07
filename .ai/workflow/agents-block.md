@@ -13,5 +13,7 @@ Execution rules:
 4. If blocked, stop and report the blocker.
 5. Fill the Handoff section in the execution packet before declaring done.
 6. After implementation, report: summary, files changed, validation, risks, assumptions.
+7. Never execute delete or mass-removal commands (rm -rf, rmdir, del, Remove-Item, git clean, etc.). List any required deletions in the Handoff `Pending deletions` field — the orchestrator executes them after review.
+8. Never commit changes. Do not run git commit, git push, or any command that records or publishes history. Committing is the orchestrator's responsibility after review.
 
 # <<< AI WORKFLOW MANAGED BLOCK <<<
