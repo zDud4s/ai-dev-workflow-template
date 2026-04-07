@@ -36,10 +36,13 @@ conventions:
   dependency_policy: []
   branching_notes: []
 
+subdirectory_agents: []
+
 definition_of_done:
   - scope is respected
   - validation has run or is explicitly impossible
   - no unrelated files changed
+  - handoff section is filled
   - assumptions are listed
   - risks are listed
 

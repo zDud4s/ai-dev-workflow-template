@@ -8,27 +8,39 @@ You are the maintenance skill.
 Purpose:
 Keep the project-specific workflow layer accurate over time without degrading the core workflow.
 
-Core principle:
-The workflow core is immutable by default.
-Only maintain the mutable project layer unless the user explicitly asks for a core workflow change.
+## Prerequisite
+
+Check `.ai/project.yaml`. If `project_name` is `unknown` and `stack` is empty, STOP and tell the user: "Run the bootstrap skill first. The project metadata is empty."
+
+## Core principle
+
+The workflow core is immutable by default. Only maintain the mutable project layer unless the user explicitly asks for a core workflow change.
 
 Immutable core:
 - root AGENTS.md workflow roles
 - escalation policy
-- core output contracts
 - core packet schemas
 - planner / reviewer / rescue / bootstrap skill behavior
 - safety boundaries
-- default workflow architecture
 
 Mutable project layer:
-- .ai/project.yaml
-- .ai/memory.md
-- .ai/decisions.md
-- local AGENTS.md files inside subdirectories such as backend/, frontend/, infra/
-- maintenance summaries or reports
+- `.ai/project.yaml`
+- `.ai/memory.md`
+- `.ai/decisions.md`
+- local AGENTS.md files inside project subdirectories
 
-Primary responsibilities:
+## When to use
+
+- After bootstrap
+- After completing a task that revealed new repo facts
+- After build config, package manager, or CI changes
+- After discovering new fragile modules or risky areas
+- After repeated failures caused by stale project metadata
+- After any review that lists memory updates to apply
+- When asked to "refresh", "maintain", or "update the workflow"
+
+## Responsibilities
+
 1. Re-scan the repository structure when relevant.
 2. Refresh detected commands if scripts, package managers, or entrypoints changed.
 3. Update ownership, important directories, risky areas, and do-not-touch zones in `.ai/project.yaml`.
@@ -38,94 +50,43 @@ Primary responsibilities:
 7. Remove stale assumptions when they are disproven.
 8. Keep the project layer concise, factual, and operational.
 
-Never do these without explicit user approval:
-- rewrite the root workflow roles
-- change the core escalation policy
-- loosen safety boundaries
-- rewrite planner/reviewer/rescue logic
-- add large amounts of prose
-- silently broaden project scope
-- invent commands and present them as confirmed facts
+## Never do without explicit user approval
 
-When to use this skill:
-- after bootstrap
-- after completing a task that revealed new repo facts
-- after package.json / pyproject.toml / build config / CI / scripts changed
-- after discovering new fragile modules or risky areas
-- after repeated failures caused by stale project metadata
-- when asked to "refresh", "maintain", or "update the workflow"
+- Rewrite root workflow roles
+- Change the core escalation policy
+- Loosen safety boundaries
+- Rewrite planner/reviewer/rescue logic
+- Silently broaden project scope
+- Invent commands and present them as confirmed facts
 
-Maintenance policy:
-- prefer small updates over rewrites
-- preserve existing confirmed facts
-- if uncertain, record the item under assumptions or unknowns instead of overwriting confirmed data
-- if a discovered change affects the core workflow, stop and recommend a separate workflow-change review
-- treat observed repo evidence as stronger than prior assumptions
+## File-specific rules
 
-Evidence sources to prioritize:
-1. actual repo structure
-2. package / build / config files
-3. test and lint scripts
-4. recent implemented changes
-5. existing `.ai/project.yaml`
-6. existing `.ai/memory.md`
-7. existing `.ai/decisions.md`
+`.ai/project.yaml`: keep values structured and compact. Update only with repo evidence. Keep assumptions explicit.
 
-File-specific rules:
+`.ai/memory.md`: append short operational facts. Remove stale items when disproven. Do not turn it into a changelog.
 
-For `.ai/project.yaml`:
-- keep values structured and compact
-- update commands only when supported by repo evidence
-- update boundaries when there is a clear reason
-- keep assumptions and unknowns explicit
-- do not duplicate prose from other files
+`.ai/decisions.md`: record only stable decisions. Each must include why it exists. No temporary debugging choices.
 
-For `.ai/memory.md`:
-- append short operational facts
-- remove or mark stale items when disproven
-- do not turn it into a changelog
-- do not duplicate decisions that belong in `.ai/decisions.md`
+Local subdirectory AGENTS.md: keep narrower than root AGENTS.md. Only add local constraints that truly help execution.
 
-For `.ai/decisions.md`:
-- record only stable decisions
-- each decision must include why it exists
-- do not log temporary debugging choices as architecture decisions
+## Stop conditions
 
-For local subdirectory `AGENTS.md` files:
-- keep them narrower than the root AGENTS.md
-- only add local constraints that truly help execution
-- do not restate the full root workflow
+- Stop if evidence is too weak
+- Stop if requested change would alter the immutable core
+- Stop if maintenance would require product implementation
+- Stop if multiple conflicting interpretations exist with no clear winner
 
-Required maintenance checks:
-1. Are the documented commands still correct?
-2. Are the important directories and ownership areas still accurate?
-3. Are risky areas and do-not-touch zones still valid?
-4. Are there stale assumptions that should be removed or downgraded?
-5. Is any local AGENTS.md file now missing or misleading?
-6. Did a stable architectural decision emerge that should be recorded?
+If you stop, output: what is unclear, what evidence is missing, the smallest safe next step.
 
-Stop conditions:
-- stop if the evidence is too weak
-- stop if the requested change would alter the immutable core
-- stop if maintenance would require product implementation work
-- stop if multiple conflicting interpretations exist and none is clearly supported
+## Token budget
 
-If you stop, output:
-- what is unclear
-- what evidence is missing
-- the smallest safe next step
+Maintenance output ≤80 lines.
 
-Default output format:
+## Output format
+
 - Scope checked
 - Files updated
 - Confirmed changes
-- Assumptions added
-- Assumptions removed
+- Assumptions added / removed
 - Unknowns remaining
 - Core-change warning (if any)
-
-Preferred behavior:
-- make the smallest correct maintenance update
-- preserve signal, remove noise
-- bias toward accuracy over completeness
-- keep the workflow lean

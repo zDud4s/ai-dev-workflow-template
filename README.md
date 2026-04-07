@@ -1,130 +1,133 @@
 # AI Dev Workflow Template
 
-A repo scaffold for a disciplined multi-agent coding workflow:
+A plug-and-play scaffold for a disciplined multi-agent coding workflow:
 
-- **Sonnet** = planning, decomposition, repo adaptation, and task routing
-- **Codex** = scoped implementation
+- **Sonnet** = planning, triage, decomposition, repo adaptation
+- **Codex** = scoped implementation (follows execution packets literally)
 - **Opus** = escalation, architecture review, and failure analysis
-
-The design goal is to make setup as close as possible to:
-
-1. copy this scaffold into a repository
-2. ask Sonnet to adapt it to the project
 
 ## What this gives you
 
-- repo-persistent operating rules via `AGENTS.md`
-- project-specific facts in `.ai/project.yaml`
-- compact task packets for plan / execute / review / rescue
-- reusable Claude skills under `.claude/skills/`
-- optional subdirectory `AGENTS.md` files for backend / frontend / infra overrides
+- Task triage by size (trivial / small / medium / large) to avoid over-engineering
+- Structured handoff packets for plan → execute → review → rescue
+- Token budget constraints on every skill output
+- Bootstrap prerequisite guard (no skill runs on empty project metadata)
+- Post-execution handoff that feeds directly into review
+- Memory contract for persisting operational discoveries
+- Reusable Claude skills under `.claude/skills/`
 
 ## Folder layout
 
 ```text
 .
-├─ AGENTS.md
-├─ CLAUDE.md
+├─ AGENTS.md                      # Codex-facing execution rules (managed block)
+├─ CLAUDE.md                      # Claude import (managed block)
 ├─ .ai/
-│  ├─ project.yaml
-│  ├─ memory.md
-│  ├─ decisions.md
+│  ├─ project.yaml                # Project metadata (filled by bootstrap)
+│  ├─ memory.md                   # Operational facts
+│  ├─ decisions.md                # Stable architecture decisions
 │  ├─ packets/
-│  │  ├─ plan.md
-│  │  ├─ execute.md
-│  │  ├─ review.md
-│  │  └─ rescue.md
-│  └─ templates/
-│     ├─ bootstrap-prompt.md
-│     ├─ task-prompt.md
-│     ├─ review-prompt.md
-│     └─ recovery-prompt.md
-├─ .claude/
-│  └─ skills/
-│     ├─ bootstrap/SKILL.md
-│     ├─ planner/SKILL.md
-│     ├─ reviewer/SKILL.md
-│     └─ rescue/SKILL.md
-├─ backend/AGENTS.md
-├─ frontend/AGENTS.md
-└─ infra/AGENTS.md
+│  │  ├─ plan.md                  # Planning packet schema
+│  │  ├─ execute.md               # Execution packet schema (with Steps + Handoff)
+│  │  ├─ review.md                # Review packet schema (with checklist)
+│  │  └─ rescue.md                # Rescue packet schema
+│  └─ workflow/
+│     ├─ agents-block.md          # Injected into AGENTS.md
+│     └─ claude-workflow.md       # Pipeline contract + shared rules
+└─ .claude/
+   └─ skills/
+      ├─ bootstrap/SKILL.md       # Onboard a repo to the workflow
+      ├─ planner/SKILL.md         # Triage + plan + produce packets
+      ├─ reviewer/SKILL.md        # Review execution output
+      ├─ maintenance/SKILL.md     # Refresh project metadata
+      └─ rescue/SKILL.md          # Recover from failed attempts
 ```
 
-## Fast start
+## Setup
 
-### Option A: copy the scaffold into the repo
+### 1. Install the scaffold
 
 From the target repo root:
 
 ```bash
-cp -r /path/to/ai-dev-workflow-template/.ai .
-cp -r /path/to/ai-dev-workflow-template/.claude .
-cp /path/to/ai-dev-workflow-template/AGENTS.md .
-cp /path/to/ai-dev-workflow-template/CLAUDE.md .
+bash /path/to/ai-dev-workflow-template/install.sh .
 ```
 
-### Option B: keep it as a separate template repo and copy what you need
+This copies the workflow files into your repo, creates `AGENTS.md` and `CLAUDE.md` managed blocks, and preserves any existing instructions in those files.
 
-The template is intentionally flat and portable.
+### 2. Bootstrap the project
 
-## Bootstrap the project
-
-Open Claude Sonnet in the target repo and paste the contents of `.ai/templates/bootstrap-prompt.md`, or simply use:
+Open Claude (Sonnet) in the target repo and run:
 
 ```text
-Use the bootstrap skill.
-
-Adapt this repository to the workflow scaffold without implementing product changes.
-
-Required outputs:
-1. Fill `.ai/project.yaml`
-2. Tighten project-specific instructions in `AGENTS.md` and `CLAUDE.md` only where needed
-3. Record discovered quirks in `.ai/memory.md`
-4. List assumptions and unknowns explicitly
-
-Constraints:
-- Preserve the fixed workflow roles
-- Do not invent commands without marking them as assumptions
-- Do not broaden scope into product work
+Use the bootstrap skill. Adapt this repository to the workflow scaffold.
 ```
 
-## Normal task flow
+Bootstrap will detect the stack, commands, directories, boundaries, and fill `.ai/project.yaml`. It will also create subdirectory AGENTS.md files if the project has clear domain separation.
 
-### 1) Planning in Sonnet
+## Task flow
 
-Use `.ai/templates/task-prompt.md` and provide the task.
+### Pipeline
 
-### 2) Execution in Codex
+1. **Triage** — planner classifies size: trivial, small, medium, large
+2. **Plan** — planner produces execution packet(s)
+3. **Execute** — executor follows steps, fills Handoff section
+4. **Review** — reviewer checks Handoff (skip for trivial/safe-small)
+5. **Maintain** — update memory.md and decisions.md with discoveries
 
-Give Codex the execution packet from `.ai/packets/execute.md`.
+### Size gate
 
-### 3) Review in Opus
+| Size | Scope | Pipeline |
+|------|-------|----------|
+| trivial | single file, <10 lines | one-line instruction, no packets |
+| small | 1-3 files, clear scope | minimal execution packet, review only if risky |
+| medium | 4-10 files or cross-subsystem | full plan + execute + review |
+| large | >10 files or unclear architecture | full plan + execute + Opus review |
 
-Use `.ai/templates/review-prompt.md` for risky, cross-cutting, or failed work.
+### Running a task
 
-### 4) Recovery after failure
+Invoke the planner skill directly with your task:
 
-Use `.ai/templates/recovery-prompt.md` after repeated failure or implementation drift.
+```text
+Use the planner skill.
+
+Task: [describe the task]
+```
+
+The planner will triage, plan, and produce execution packet(s). Give the packet to Codex. After execution, the filled Handoff section feeds into review.
+
+### Recovery after failure
+
+```text
+Use the rescue skill.
+
+Task: [the original task]
+What was attempted: [summary]
+What failed: [evidence]
+```
 
 ## Operating principles
 
-- keep packets narrow
-- stop on blockers instead of guessing
-- list assumptions explicitly
-- do not silently broaden scope
-- do not let the bootstrap pass start product work
+- Keep packets narrow
+- Stop on blockers instead of guessing
+- List assumptions explicitly
+- Do not silently broaden scope
+- Fill the Handoff section before declaring done
+- Update memory.md after tasks that reveal operational facts
 
-## Recommended maintenance
+## Maintenance
 
-After a successful task:
+After successful tasks or repo changes:
 
-- add stable discoveries to `.ai/memory.md`
-- record real architectural choices in `.ai/decisions.md`
-- tighten `AGENTS.md` only when a rule should truly persist
+```text
+Use the maintenance skill.
+```
+
+This refreshes `.ai/project.yaml`, `.ai/memory.md`, and `.ai/decisions.md` based on current repo state.
 
 ## Notes
 
-- `AGENTS.md` is the main Codex-facing repo instruction surface.
-- `.claude/skills/*` contains reusable Claude behaviors.
+- `AGENTS.md` is the main Codex-facing instruction surface.
+- `.claude/skills/*` contains reusable Claude behaviors (invoke directly, no templates needed).
 - `.ai/project.yaml` is the mutable adapter layer per project.
-- `backend/AGENTS.md`, `frontend/AGENTS.md`, and `infra/AGENTS.md` are optional local overrides.
+- `.ai/packets/*` are schemas — they define the structure, skills fill the content.

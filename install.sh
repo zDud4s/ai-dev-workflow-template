@@ -9,7 +9,6 @@ echo "Installing AI workflow into: $TARGET_DIR"
 mkdir -p "$TARGET_DIR/.ai"
 mkdir -p "$TARGET_DIR/.ai/workflow"
 mkdir -p "$TARGET_DIR/.ai/packets"
-mkdir -p "$TARGET_DIR/.ai/templates"
 mkdir -p "$TARGET_DIR/.claude/skills/bootstrap"
 mkdir -p "$TARGET_DIR/.claude/skills/planner"
 mkdir -p "$TARGET_DIR/.claude/skills/reviewer"
@@ -35,23 +34,37 @@ copy_always() {
   echo "Updated $dst"
 }
 
+# Mutable project layer — only create if missing
 copy_if_missing "$SCRIPT_DIR/.ai/project.yaml" "$TARGET_DIR/.ai/project.yaml"
 copy_if_missing "$SCRIPT_DIR/.ai/memory.md" "$TARGET_DIR/.ai/memory.md"
 copy_if_missing "$SCRIPT_DIR/.ai/decisions.md" "$TARGET_DIR/.ai/decisions.md"
 
-copy_if_missing "$SCRIPT_DIR/.ai/templates/bootstrap-prompt.md" "$TARGET_DIR/.ai/templates/bootstrap-prompt.md"
-copy_if_missing "$SCRIPT_DIR/.ai/templates/maintenance-prompt.md" "$TARGET_DIR/.ai/templates/maintenance-prompt.md"
-
+# Skills — only create if missing (user may have customized)
 copy_if_missing "$SCRIPT_DIR/.claude/skills/bootstrap/SKILL.md" "$TARGET_DIR/.claude/skills/bootstrap/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/planner/SKILL.md" "$TARGET_DIR/.claude/skills/planner/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/reviewer/SKILL.md" "$TARGET_DIR/.claude/skills/reviewer/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/maintenance/SKILL.md" "$TARGET_DIR/.claude/skills/maintenance/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/rescue/SKILL.md" "$TARGET_DIR/.claude/skills/rescue/SKILL.md"
 
+# Workflow core and packets — always update (immutable core)
 copy_always "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
 copy_always "$SCRIPT_DIR/.ai/workflow/claude-workflow.md" "$TARGET_DIR/.ai/workflow/claude-workflow.md"
+copy_always "$SCRIPT_DIR/.ai/packets/plan.md" "$TARGET_DIR/.ai/packets/plan.md"
+copy_always "$SCRIPT_DIR/.ai/packets/execute.md" "$TARGET_DIR/.ai/packets/execute.md"
+copy_always "$SCRIPT_DIR/.ai/packets/review.md" "$TARGET_DIR/.ai/packets/review.md"
+copy_always "$SCRIPT_DIR/.ai/packets/rescue.md" "$TARGET_DIR/.ai/packets/rescue.md"
 
-python3 - "$TARGET_DIR" "$SCRIPT_DIR" <<'PY'
+PYTHON_CMD=""
+if command -v python3 &>/dev/null; then
+  PYTHON_CMD="python3"
+elif command -v python &>/dev/null; then
+  PYTHON_CMD="python"
+else
+  echo "Error: python3 or python is required but not found."
+  exit 1
+fi
+
+$PYTHON_CMD - "$TARGET_DIR" "$SCRIPT_DIR" <<'PY'
 from pathlib import Path
 import sys
 
@@ -108,5 +121,7 @@ upsert_block(
 )
 PY
 
+echo ""
 echo "Done."
-echo "Next step: open Claude/Sonnet in the repo and run .ai/templates/bootstrap-prompt.md"
+echo "Next step: open Claude or Sonnet in the repo and run the bootstrap skill."
+echo "  Example: 'Use the bootstrap skill. Adapt this repository to the workflow scaffold.'"

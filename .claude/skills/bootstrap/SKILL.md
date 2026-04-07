@@ -8,28 +8,36 @@ You are the bootstrap skill.
 Goal:
 Adapt the workflow scaffold to the current repository without implementing product changes.
 
-You must:
+## You must
+
 1. Detect the stack, package managers, and likely entrypoints.
-2. Identify install, dev, build, test, lint, format, and typecheck commands.
+2. Identify install, dev, build, test, lint, format, and typecheck commands. If a command cannot be confirmed from repo evidence, mark it as an assumption.
 3. Identify major directories and assign rough ownership domains.
 4. Identify risky areas, generated files, do-not-touch zones, and security-sensitive areas.
 5. Update only:
    - AGENTS.md (only project-specific sections if needed)
    - CLAUDE.md (only project-specific sections if needed)
-   - .ai/project.yaml
-   - .ai/memory.md
+   - `.ai/project.yaml`
+   - `.ai/memory.md`
 6. Preserve the fixed workflow roles:
    - Sonnet = planner/orchestrator
    - Codex = executor
    - Opus = escalation/reviewer
 7. Record uncertainty explicitly in `assumptions` and `unknowns`.
-8. Do not implement features or fixes.
+8. If the project has clear subdirectories with distinct domains (e.g. `backend/`, `frontend/`, `packages/*`), create local AGENTS.md files for each with domain-specific constraints. Do NOT create subdirectory AGENTS.md files for projects without clear subdomain separation (CLI tools, single-purpose libraries, monoliths with flat structure). Track created files in `subdirectory_agents` in `.ai/project.yaml`.
+9. Do not implement features or fixes.
 
-Output format:
+## Token budget
+
+Bootstrap output ≤150 lines.
+
+## Output format
+
 - Detected stack
-- Commands
+- Commands (confirmed vs assumed)
 - Important dirs/files
 - Risks and boundaries
+- Subdirectory AGENTS.md files created (if any)
 - Updated files
 - Assumptions
 - Unknowns
