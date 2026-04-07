@@ -14,6 +14,7 @@ mkdir -p "$TARGET_DIR/.claude/skills/planner"
 mkdir -p "$TARGET_DIR/.claude/skills/reviewer"
 mkdir -p "$TARGET_DIR/.claude/skills/maintenance"
 mkdir -p "$TARGET_DIR/.claude/skills/rescue"
+mkdir -p "$TARGET_DIR/.claude/skills/codex"
 
 copy_if_missing() {
   local src="$1"
@@ -45,6 +46,7 @@ copy_if_missing "$SCRIPT_DIR/.claude/skills/planner/SKILL.md" "$TARGET_DIR/.clau
 copy_if_missing "$SCRIPT_DIR/.claude/skills/reviewer/SKILL.md" "$TARGET_DIR/.claude/skills/reviewer/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/maintenance/SKILL.md" "$TARGET_DIR/.claude/skills/maintenance/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/rescue/SKILL.md" "$TARGET_DIR/.claude/skills/rescue/SKILL.md"
+copy_if_missing "$SCRIPT_DIR/.claude/skills/codex/SKILL.md" "$TARGET_DIR/.claude/skills/codex/SKILL.md"
 
 # Workflow core and packets — always update (immutable core)
 copy_always "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
@@ -120,6 +122,13 @@ upsert_block(
     claude_import_block,
 )
 PY
+
+# Codex→Claude skill — install globally so Codex discovers it at startup
+# Codex only scans ~/.agents/skills/ (no project-local discovery)
+CALL_CLAUDE_DIR="$HOME/.agents/skills/call-claude"
+mkdir -p "$CALL_CLAUDE_DIR"
+cp "$SCRIPT_DIR/.agents/skills/call-claude/SKILL.md" "$CALL_CLAUDE_DIR/SKILL.md"
+echo "Installed Codex→Claude skill to $CALL_CLAUDE_DIR/SKILL.md"
 
 echo ""
 echo "Done."
