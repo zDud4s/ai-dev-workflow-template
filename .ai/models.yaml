@@ -1,28 +1,8 @@
-# AI workflow model configuration
-# tool: claude | codex
-# Claude models: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5
-# Codex models:  o4-mini, o3, gpt-4o
+# Models Configuration
 
-plan:
-  tool: claude
-  model: claude-sonnet-4-6
-
-execute:
-  tool: codex
-  model: o4-mini
-
-review:
-  tool: claude
-  model: claude-opus-4-6
-
-rescue:
-  tool: claude
-  model: claude-opus-4-6
-
-maintenance:
-  tool: claude
-  model: claude-sonnet-4-6
-
-bootstrap:
-  tool: claude
-  model: claude-sonnet-4-6
+models:
+  - name: gpt-5.3-codex
+    version: latest
+  # Previously 'o4-mini' replaced with 'gpt-5.3-codex'
+  - name: gpt-3.5-turbo
+    version: latest
