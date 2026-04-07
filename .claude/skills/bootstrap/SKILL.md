@@ -19,13 +19,11 @@ Adapt the workflow scaffold to the current repository without implementing produ
    - CLAUDE.md (only project-specific sections if needed)
    - `.ai/project.yaml`
    - `.ai/memory.md`
-6. Preserve the fixed workflow roles:
-   - Sonnet = planner/orchestrator
-   - Codex = executor
-   - Opus = escalation/reviewer
+6. Preserve the workflow role structure (planner, executor, reviewer). Do not hardcode tool or model names — those are configured in `.ai/models.yaml`.
 7. Record uncertainty explicitly in `assumptions` and `unknowns`.
-8. If the project has clear subdirectories with distinct domains (e.g. `backend/`, `frontend/`, `packages/*`), create local AGENTS.md files for each with domain-specific constraints. Do NOT create subdirectory AGENTS.md files for projects without clear subdomain separation (CLI tools, single-purpose libraries, monoliths with flat structure). Track created files in `subdirectory_agents` in `.ai/project.yaml`.
-9. Do not implement features or fixes.
+8. After filling `.ai/project.yaml`, prompt the user to review `.ai/models.yaml` and adjust tool/model assignments if the defaults do not match their setup.
+9. If the project has clear subdirectories with distinct domains (e.g. `backend/`, `frontend/`, `packages/*`), create local AGENTS.md files for each with domain-specific constraints. Do NOT create subdirectory AGENTS.md files for projects without clear subdomain separation (CLI tools, single-purpose libraries, monoliths with flat structure). Track created files in `subdirectory_agents` in `.ai/project.yaml`.
+10. Do not implement features or fixes.
 
 ## Token budget
 

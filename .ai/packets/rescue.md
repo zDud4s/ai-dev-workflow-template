@@ -11,4 +11,4 @@ Assumptions likely wrong: <!-- list each with confidence: high | medium | low --
 Scope to re-open: <!-- what part of the plan needs rethinking -->
 Safer fallback: <!-- simplest thing that could still work -->
 Next narrow experiment: <!-- one small, testable step to validate or invalidate an assumption -->
-Escalate to Opus?: <!-- yes | no — with reason -->
+Escalate to review model?: <!-- yes | no — with reason; check .ai/models.yaml for which model is assigned to `review` -->

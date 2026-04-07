@@ -10,9 +10,8 @@
 
 ## Roles
 
-- Sonnet = planning, triage, decomposition, repo adaptation
-- Codex = scoped implementation (follows packets literally)
-- Opus = review, escalation, architectural decisions
+Role assignments are configured in `.ai/models.yaml`.
+Default: plan=claude/sonnet-4-6, execute=codex/o4-mini, review=claude/opus-4-6
 
 ## Rules
 

@@ -1,10 +1,8 @@
 # AI Dev Workflow Template
 
-A plug-and-play scaffold for a disciplined multi-agent coding workflow:
+A plug-and-play scaffold for a disciplined multi-agent coding workflow.
 
-- **Sonnet** = planning, triage, decomposition, repo adaptation
-- **Codex** = scoped implementation (follows execution packets literally)
-- **Opus** = escalation, architecture review, and failure analysis
+Role assignments are configured in `.ai/models.yaml`. Default: plan=claude/sonnet-4-6, execute=codex/o4-mini, review=claude/opus-4-6.
 
 ## What this gives you
 
@@ -26,6 +24,7 @@ A plug-and-play scaffold for a disciplined multi-agent coding workflow:
 │  ├─ project.yaml                # Project metadata (filled by bootstrap)
 │  ├─ memory.md                   # Operational facts
 │  ├─ decisions.md                # Stable architecture decisions
+│  ├─ models.yaml                 # Tool/model assignment per workflow phase
 │  ├─ packets/
 │  │  ├─ plan.md                  # Planning packet schema
 │  │  ├─ execute.md               # Execution packet schema (with Steps + Handoff)
@@ -43,6 +42,33 @@ A plug-and-play scaffold for a disciplined multi-agent coding workflow:
       └─ rescue/SKILL.md          # Recover from failed attempts
 ```
 
+## Model configuration
+
+Model assignments live in `.ai/models.yaml`. Each phase has a `tool` (`claude` or `codex`) and a `model` field.
+
+```yaml
+plan:
+  tool: claude
+  model: claude-sonnet-4-6
+
+execute:
+  tool: codex
+  model: o4-mini
+```
+
+Default assignments:
+
+| Phase | Tool | Model |
+|-------|------|-------|
+| plan | claude | claude-sonnet-4-6 |
+| execute | codex | o4-mini |
+| review | claude | claude-opus-4-6 |
+| rescue | claude | claude-opus-4-6 |
+| maintenance | claude | claude-sonnet-4-6 |
+| bootstrap | claude | claude-sonnet-4-6 |
+
+Edit any field to swap models or tools. `install.sh` copies this file as `copy_if_missing` so customizations survive re-runs.
+
 ## Setup
 
 ### 1. Install the scaffold
@@ -57,7 +83,7 @@ This copies the workflow files into your repo, creates `AGENTS.md` and `CLAUDE.m
 
 ### 2. Bootstrap the project
 
-Open Claude (Sonnet) in the target repo and run:
+Open the tool assigned to `bootstrap` in `.ai/models.yaml` and run:
 
 ```text
 Use the bootstrap skill. Adapt this repository to the workflow scaffold.
@@ -82,7 +108,7 @@ Bootstrap will detect the stack, commands, directories, boundaries, and fill `.a
 | trivial | single file, <10 lines | one-line instruction, no packets |
 | small | 1-3 files, clear scope | minimal execution packet, review only if risky |
 | medium | 4-10 files or cross-subsystem | full plan + execute + review |
-| large | >10 files or unclear architecture | full plan + execute + Opus review |
+| large | >10 files or unclear architecture | full plan + execute + review (review model from models.yaml) |
 
 ### Running a task
 
@@ -94,7 +120,7 @@ Use the planner skill.
 Task: [describe the task]
 ```
 
-The planner will triage, plan, and produce execution packet(s). Give the packet to Codex. After execution, the filled Handoff section feeds into review.
+The planner will triage, plan, and produce execution packet(s). Give the packet to the tool assigned to `execute` in `.ai/models.yaml`. After execution, the filled Handoff section feeds into review.
 
 ### Recovery after failure
 

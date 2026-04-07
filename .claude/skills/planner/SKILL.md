@@ -18,7 +18,7 @@ Classify the task size before producing any output:
 - **trivial**: single file, <10 lines, no cross-cutting risk. Output only: `TRIVIAL: [one-line instruction]` and stop. No packets needed.
 - **small**: 1-3 files, clear scope. Produce a minimal execution packet. Skip review unless the change touches risky areas listed in `.ai/project.yaml` boundaries.
 - **medium**: 4-10 files or crosses subsystem boundaries. Full plan + execution packet(s) + review.
-- **large**: >10 files, unclear architecture, or touches risky/security-sensitive areas. Full plan + execution packet(s) + Opus review mandatory.
+- **large**: >10 files, unclear architecture, or touches risky/security-sensitive areas. Full plan + execution packet(s) + review mandatory (use the model assigned to `review` in `.ai/models.yaml`).
 
 State the size at the top of your output.
 

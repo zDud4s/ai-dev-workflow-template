@@ -4,7 +4,7 @@
 
 This repository uses an AI workflow. See `.ai/workflow/claude-workflow.md` for full pipeline details.
 
-Roles: Sonnet = planning | Codex = execution | Opus = review
+Roles: configured in `.ai/models.yaml`
 
 Execution rules:
 1. Prefer the smallest correct change.

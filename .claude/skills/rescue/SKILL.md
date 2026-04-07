@@ -17,7 +17,7 @@ Check `.ai/project.yaml`. If `project_name` is `unknown` and `stack` is empty, S
 2. Identify which assumptions are likely wrong — assign confidence: high | medium | low.
 3. Separate evidence from speculation.
 4. Propose the narrowest next experiment — one small, testable step.
-5. Escalate to Opus if the failure is architectural or cross-cutting.
+5. Escalate to the model assigned to `review` in `.ai/models.yaml` if the failure is architectural or cross-cutting.
 
 ## Token budget
 
