@@ -15,6 +15,7 @@ mkdir -p "$TARGET_DIR/.claude/skills/reviewer"
 mkdir -p "$TARGET_DIR/.claude/skills/maintenance"
 mkdir -p "$TARGET_DIR/.claude/skills/rescue"
 mkdir -p "$TARGET_DIR/.claude/skills/codex"
+mkdir -p "$TARGET_DIR/.claude/skills/orchestrate"
 
 copy_if_missing() {
   local src="$1"
@@ -48,6 +49,7 @@ copy_if_missing "$SCRIPT_DIR/.claude/skills/reviewer/SKILL.md" "$TARGET_DIR/.cla
 copy_if_missing "$SCRIPT_DIR/.claude/skills/maintenance/SKILL.md" "$TARGET_DIR/.claude/skills/maintenance/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/rescue/SKILL.md" "$TARGET_DIR/.claude/skills/rescue/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/codex/SKILL.md" "$TARGET_DIR/.claude/skills/codex/SKILL.md"
+copy_if_missing "$SCRIPT_DIR/.claude/skills/orchestrate/SKILL.md" "$TARGET_DIR/.claude/skills/orchestrate/SKILL.md"
 
 # Workflow core and packets — always update (immutable core)
 copy_always "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
@@ -130,6 +132,24 @@ CALL_CLAUDE_DIR="$HOME/.agents/skills/call-claude"
 mkdir -p "$CALL_CLAUDE_DIR"
 cp "$SCRIPT_DIR/.agents/skills/call-claude/SKILL.md" "$CALL_CLAUDE_DIR/SKILL.md"
 echo "Installed Codex→Claude skill to $CALL_CLAUDE_DIR/SKILL.md"
+
+# Codex global config — ensure approval_policy allows --full-auto to work
+# approval_policy = "on-request" means Codex auto-approves all actions when --full-auto is passed
+# Only adds the setting if not already present — never overwrites a user's existing policy
+CODEX_CONFIG="$HOME/.codex/config.toml"
+if [ -f "$CODEX_CONFIG" ]; then
+  if ! grep -q "approval_policy" "$CODEX_CONFIG"; then
+    echo "" >> "$CODEX_CONFIG"
+    echo 'approval_policy = "on-request"' >> "$CODEX_CONFIG"
+    echo "Added approval_policy = \"on-request\" to $CODEX_CONFIG"
+  else
+    echo "Kept existing approval_policy in $CODEX_CONFIG"
+  fi
+else
+  mkdir -p "$HOME/.codex"
+  echo 'approval_policy = "on-request"' > "$CODEX_CONFIG"
+  echo "Created $CODEX_CONFIG with approval_policy = \"on-request\""
+fi
 
 echo ""
 echo "Done."

@@ -110,24 +110,43 @@ Bootstrap will detect the stack, commands, directories, boundaries, and fill `.a
 | medium | 4-10 files or cross-subsystem | full plan + execute + review |
 | large | >10 files or unclear architecture | full plan + execute + review (review model from models.yaml) |
 
-### Running a task
+### Running a task (full pipeline)
 
-Invoke the planner skill directly with your task:
+Invoke the orchestrate skill with your task — Claude handles the full pipeline automatically:
 
 ```text
-Use the planner skill.
+Use the orchestrate skill.
 
 Task: [describe the task]
 ```
 
-The planner will triage, plan, and produce execution packet(s). Give the packet to the tool assigned to `execute` in `.ai/models.yaml`. After execution, the filled Handoff section feeds into review.
+Claude will:
+1. Triage the task size (trivial / small / medium / large)
+2. Produce an execution packet and send it to Codex
+3. Review the output if the size requires it
+4. Ask you before sending changes back to Codex if issues are found
+5. Apply memory updates and report when done
 
-### Recovery after failure
+### Running phases manually
 
+If you want to control each phase individually:
+
+**Plan only:**
+```text
+Use the planner skill.
+Task: [describe the task]
+```
+
+**Review only** (paste the Handoff from Codex):
+```text
+Use the reviewer skill.
+[paste Handoff here]
+```
+
+**Recovery after failure:**
 ```text
 Use the rescue skill.
-
-Task: [the original task]
+Task: [original task]
 What was attempted: [summary]
 What failed: [evidence]
 ```
