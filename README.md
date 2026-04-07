@@ -2,7 +2,7 @@
 
 A plug-and-play scaffold for a disciplined multi-agent coding workflow.
 
-Role assignments are configured in `.ai/models.yaml`. Default: plan=claude/sonnet-4-6, execute=codex/o4-mini, review=claude/opus-4-6.
+Role assignments are configured in `.ai/models.yaml`. Default: plan=claude/sonnet-4-6, execute=codex/gpt-5.4, review=claude/opus-4-6.
 
 ## What this gives you
 
@@ -53,7 +53,7 @@ plan:
 
 execute:
   tool: codex
-  model: o4-mini
+  model: gpt-5.4
 ```
 
 Default assignments:
@@ -61,7 +61,7 @@ Default assignments:
 | Phase | Tool | Model |
 |-------|------|-------|
 | plan | claude | claude-sonnet-4-6 |
-| execute | codex | o4-mini |
+| execute | codex | gpt-5.4 |
 | review | claude | claude-opus-4-6 |
 | rescue | claude | claude-opus-4-6 |
 | maintenance | claude | claude-sonnet-4-6 |
