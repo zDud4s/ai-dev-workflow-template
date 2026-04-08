@@ -13,6 +13,8 @@
 Role assignments are configured in `.ai/models.yaml`.
 Default: plan=claude/sonnet-4-6, execute=codex/o4-mini, review=claude/opus-4-6
 
+The orchestrator is a controller only. It must dispatch each phase through the tool and model configured in `.ai/models.yaml` and must not substitute the current session model for plan, review, rescue, maintenance, or bootstrap.
+
 ## Rules
 
 1. If `project_name` in `.ai/project.yaml` is `unknown`, run bootstrap first.
@@ -23,3 +25,4 @@ Default: plan=claude/sonnet-4-6, execute=codex/o4-mini, review=claude/opus-4-6
 6. Executor must fill the Handoff section of the execution packet before declaring done.
 7. Prefer the smallest correct change.
 8. Do not broaden scope silently.
+9. A phase only counts as correctly executed if it was launched through the configured tool/model for that phase.

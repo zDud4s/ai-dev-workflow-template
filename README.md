@@ -2,14 +2,16 @@
 
 A plug-and-play scaffold for a disciplined multi-agent coding workflow.
 
-Role assignments are configured in `.ai/models.yaml`. Default: plan=claude/sonnet-4-6, execute=codex/gpt-5.4, review=claude/opus-4-6.
+Role assignments are configured in `.ai/models.yaml`. Default: plan=`claude/sonnet-4-6`, execute=`codex/gpt-5.4`, review=`claude/opus-4-6`.
+
+The orchestrator must dispatch each phase through the configured tool and model. These assignments are runtime controls, not hints.
 
 ## What this gives you
 
-- Task triage by size (trivial / small / medium / large) to avoid over-engineering
-- Structured handoff packets for plan → execute → review → rescue
+- Task triage by size (`trivial` / `small` / `medium` / `large`) to avoid over-engineering
+- Structured handoff packets for `plan -> execute -> review -> rescue`
 - Token budget constraints on every skill output
-- Bootstrap prerequisite guard (no skill runs on empty project metadata)
+- Bootstrap prerequisite guard so skills do not run on empty project metadata
 - Post-execution handoff that feeds directly into review
 - Memory contract for persisting operational discoveries
 - Reusable Claude skills under `.claude/skills/`
@@ -18,28 +20,28 @@ Role assignments are configured in `.ai/models.yaml`. Default: plan=claude/sonne
 
 ```text
 .
-├─ AGENTS.md                      # Codex-facing execution rules (managed block)
-├─ CLAUDE.md                      # Claude import (managed block)
-├─ .ai/
-│  ├─ project.yaml                # Project metadata (filled by bootstrap)
-│  ├─ memory.md                   # Operational facts
-│  ├─ decisions.md                # Stable architecture decisions
-│  ├─ models.yaml                 # Tool/model assignment per workflow phase
-│  ├─ packets/
-│  │  ├─ plan.md                  # Planning packet schema
-│  │  ├─ execute.md               # Execution packet schema (with Steps + Handoff)
-│  │  ├─ review.md                # Review packet schema (with checklist)
-│  │  └─ rescue.md                # Rescue packet schema
-│  └─ workflow/
-│     ├─ agents-block.md          # Injected into AGENTS.md
-│     └─ claude-workflow.md       # Pipeline contract + shared rules
-└─ .claude/
-   └─ skills/
-      ├─ bootstrap/SKILL.md       # Onboard a repo to the workflow
-      ├─ planner/SKILL.md         # Triage + plan + produce packets
-      ├─ reviewer/SKILL.md        # Review execution output
-      ├─ maintenance/SKILL.md     # Refresh project metadata
-      └─ rescue/SKILL.md          # Recover from failed attempts
+|-- AGENTS.md                      # Codex-facing execution rules (managed block)
+|-- CLAUDE.md                      # Claude import (managed block)
+|-- .ai/
+|   |-- project.yaml              # Project metadata (filled by bootstrap)
+|   |-- memory.md                 # Operational facts
+|   |-- decisions.md              # Stable architecture decisions
+|   |-- models.yaml               # Tool/model assignment per workflow phase
+|   |-- packets/
+|   |   |-- plan.md               # Planning packet schema
+|   |   |-- execute.md            # Execution packet schema (with Steps + Handoff)
+|   |   |-- review.md             # Review packet schema (with checklist)
+|   |   `-- rescue.md             # Rescue packet schema
+|   `-- workflow/
+|       |-- agents-block.md       # Injected into AGENTS.md
+|       `-- claude-workflow.md    # Pipeline contract + shared rules
+`-- .claude/
+    `-- skills/
+        |-- bootstrap/SKILL.md
+        |-- planner/SKILL.md
+        |-- reviewer/SKILL.md
+        |-- maintenance/SKILL.md
+        `-- rescue/SKILL.md
 ```
 
 ## Model configuration
@@ -69,6 +71,8 @@ Default assignments:
 
 Edit any field to swap models or tools. `install.sh` copies this file as `copy_if_missing` so customizations survive re-runs.
 
+When you run the orchestrate skill, it should read `.ai/models.yaml` and launch each phase with the configured tool and model explicitly. Example: if orchestration starts in Sonnet but `plan.model` is `claude-opus-4-6`, the orchestrator should spawn Opus for planning instead of planning in the starter session.
+
 ## Setup
 
 ### 1. Install the scaffold
@@ -83,23 +87,23 @@ This copies the workflow files into your repo, creates `AGENTS.md` and `CLAUDE.m
 
 ### 2. Bootstrap the project
 
-Open the tool assigned to `bootstrap` in `.ai/models.yaml` and run:
+To preserve strict phase-to-model matching, launch bootstrap through the tool and model assigned to `bootstrap` in `.ai/models.yaml`, then run:
 
 ```text
 Use the bootstrap skill. Adapt this repository to the workflow scaffold.
 ```
 
-Bootstrap will detect the stack, commands, directories, boundaries, and fill `.ai/project.yaml`. It will also create subdirectory AGENTS.md files if the project has clear domain separation.
+Bootstrap detects the stack, commands, directories, and boundaries, fills `.ai/project.yaml`, and may create subdirectory `AGENTS.md` files when the repo has clear domain separation.
 
 ## Task flow
 
 ### Pipeline
 
-1. **Triage** — planner classifies size: trivial, small, medium, large
-2. **Plan** — planner produces execution packet(s)
-3. **Execute** — executor follows steps, fills Handoff section
-4. **Review** — reviewer checks Handoff (skip for trivial/safe-small)
-5. **Maintain** — update memory.md and decisions.md with discoveries
+1. **Triage**: planner classifies size (`trivial`, `small`, `medium`, `large`)
+2. **Plan**: planner produces execution packet(s)
+3. **Execute**: executor follows steps and fills the Handoff section
+4. **Review**: reviewer checks Handoff output (skip for trivial, optional for safe small tasks)
+5. **Maintain**: update `memory.md` and `decisions.md` with discoveries
 
 ### Size gate
 
@@ -108,11 +112,11 @@ Bootstrap will detect the stack, commands, directories, boundaries, and fill `.a
 | trivial | single file, <10 lines | one-line instruction, no packets |
 | small | 1-3 files, clear scope | minimal execution packet, review only if risky |
 | medium | 4-10 files or cross-subsystem | full plan + execute + review |
-| large | >10 files or unclear architecture | full plan + execute + review (review model from models.yaml) |
+| large | >10 files or unclear architecture | full plan + execute + review |
 
 ### Running a task (full pipeline)
 
-Invoke the orchestrate skill with your task — Claude handles the full pipeline automatically:
+Invoke the orchestrate skill with your task. The starter session acts as a controller and dispatches each phase to the configured tool/model automatically:
 
 ```text
 Use the orchestrate skill.
@@ -120,16 +124,18 @@ Use the orchestrate skill.
 Task: [describe the task]
 ```
 
-Claude will:
-1. Triage the task size (trivial / small / medium / large)
-2. Produce an execution packet and send it to Codex
-3. Review the output if the size requires it
-4. Ask you before sending changes back to Codex if issues are found
-5. Apply memory updates and report when done
+The orchestrator will:
+1. Triage the task size
+2. Dispatch planning to the tool/model configured for `plan`
+3. Send the execution packet to the tool/model configured for `execute`
+4. Dispatch review to the tool/model configured for `review` if needed
+5. Ask you before sending changes back to Codex if issues are found
+6. Dispatch maintenance to the tool/model configured for `maintenance` if memory updates are needed
+7. Report the outcome, including which tool/model ran each phase
 
 ### Running phases manually
 
-If you want to control each phase individually:
+If you want to control each phase individually, start that phase in the tool/model assigned in `.ai/models.yaml`. Manual runs are only guaranteed to match the configured model when launched that way.
 
 **Plan only:**
 ```text
@@ -158,7 +164,7 @@ What failed: [evidence]
 - List assumptions explicitly
 - Do not silently broaden scope
 - Fill the Handoff section before declaring done
-- Update memory.md after tasks that reveal operational facts
+- Update `memory.md` after tasks that reveal operational facts
 
 ## Maintenance
 
@@ -173,6 +179,6 @@ This refreshes `.ai/project.yaml`, `.ai/memory.md`, and `.ai/decisions.md` based
 ## Notes
 
 - `AGENTS.md` is the main Codex-facing instruction surface.
-- `.claude/skills/*` contains reusable Claude behaviors (invoke directly, no templates needed).
+- `.claude/skills/*` contains reusable Claude behaviors.
 - `.ai/project.yaml` is the mutable adapter layer per project.
-- `.ai/packets/*` are schemas — they define the structure, skills fill the content.
+- `.ai/packets/*` are schemas; the skills fill the content.
