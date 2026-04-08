@@ -56,13 +56,19 @@ State the size at the top of your output before proceeding.
 
 Read `execute.tool` and `execute.model` from `.ai/models.yaml`.
 
+**HARD RULE — No in-context execution. Ever.**
+- You are the orchestrator. You MUST NOT make code changes yourself. Each phase runs on the tool and model defined in `.ai/models.yaml`.
+- Execution MUST go through `codex exec` (the codex skill is available at `.claude/skills/codex/SKILL.md` for reference on how to call it).
+- If the tool specified in `models.yaml` is not available (e.g., Codex CLI not installed, no subscription) → **STOP and tell the user to update `.ai/models.yaml`** to use a tool that is available. Do not substitute yourself as the executor. Do not say "I'll execute directly." Do not make the changes in-context.
+- This rule has no exceptions. Violating it invalidates the entire pipeline.
+
 Run Codex with the execution packet (or trivial instruction) as the prompt:
 
 ```bash
 codex exec --skip-git-repo-check \
   -m <execute.model from models.yaml> \
   --config model_reasoning_effort="medium" \
-  --sandbox workspace-write \
+  --sandbox danger-full-access \
   --full-auto \
   -C <absolute path to project directory> \
   "<full execution packet contents or trivial instruction string>" 2>/dev/null
@@ -78,7 +84,7 @@ Wait for Codex to complete and capture its full output.
   echo "The Handoff section was not filled. Please fill all fields in the Handoff section of the execution packet and output the result." | codex exec --skip-git-repo-check resume --last 2>/dev/null
   ```
   - If Handoff is still absent after one resume → run the rescue skill internally, report findings to user, stop.
-- If Codex exits non-zero → run the rescue skill internally, report findings to user, stop.
+- If Codex exits non-zero or reports sandbox/write-policy errors → run the rescue skill internally, report findings to user, stop. **Never parse Codex output to extract a patch and apply it yourself.** That is in-context execution and violates the hard rule above.
 
 ## Phase 3 — Review (conditional)
 
@@ -133,7 +139,9 @@ Run the reviewer skill **within this context window** using the Handoff section 
 | `models.yaml` missing | STOP — tell user to run `install.sh` |
 | `project_name` is `unknown` | STOP — tell user to run bootstrap skill |
 | `call-claude` skill missing at `~/.agents/skills/call-claude/` | STOP — tell user to run `install.sh` |
-| Codex exits non-zero | Run rescue skill internally, report, stop |
+| Tool from `models.yaml` unavailable (e.g., Codex not installed) | STOP — tell user to update `.ai/models.yaml` to use an available tool. **Never execute in-context as fallback.** |
+| Codex exits non-zero | Run rescue skill internally, report, stop. **Never extract and apply patches yourself.** |
+| Codex blocked by sandbox/write policy | Same as non-zero exit. Do NOT apply the patch in-context. Report the error and stop. |
 | Handoff absent after one resume | Run rescue skill internally, report, stop |
 | Reviewer `request-changes` twice | Stop, report full context to user |
 | Reviewer `escalate` | Stop, report full context to user |
