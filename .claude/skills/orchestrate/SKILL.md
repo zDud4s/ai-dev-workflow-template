@@ -62,17 +62,44 @@ Read `execute.tool` and `execute.model` from `.ai/models.yaml`.
 - If the tool specified in `models.yaml` is not available (e.g., Codex CLI not installed, no subscription) → **STOP and tell the user to update `.ai/models.yaml`** to use a tool that is available. Do not substitute yourself as the executor. Do not say "I'll execute directly." Do not make the changes in-context.
 - This rule has no exceptions. Violating it invalidates the entire pipeline.
 
-Run Codex with the execution packet (or trivial instruction) as the prompt:
+**Forbidden actions — if you catch yourself doing any of these, STOP immediately:**
+- Using Edit, Write, or any file-modification tool to apply code changes from a Codex patch or plan
+- Offering "Let me execute directly" or "Let me apply the changes myself" as an option to the user
+- Saying "Codex produced the correct patch but was blocked by sandbox write policy. Let me apply its patch directly."
+- Extracting diff/patch content from Codex output and applying it yourself
+- Presenting "execute directly" or "apply it myself" as one of the options when Codex fails
+- Framing in-context execution as "the pragmatic path" or any other euphemism
+
+**When Codex fails (sandbox error, non-zero exit, write policy block), your ONLY allowed responses are:**
+1. Report the exact error to the user
+2. Suggest the user update `.ai/models.yaml` to use an available tool
+3. Suggest the user fix the Codex environment/configuration
+4. Run the rescue skill to diagnose the failure
+5. STOP and wait for user direction
+
+You may NOT offer yourself as executor. Not as an option. Not as a fallback. Not as a suggestion. Not even if the user seems frustrated.
+
+Run Codex with the execution packet (or trivial instruction) as the prompt.
+
+**Passing the prompt safely:** Shell quoting breaks when packet content contains single quotes, double quotes, backticks, or other special characters. Always write the prompt to a temp file and pipe it via stdin:
 
 ```bash
-codex exec --skip-git-repo-check \
+# 1. Write packet content to a temp file (use Write tool or printf with proper escaping)
+#    e.g., write to /tmp/codex-packet.md
+
+# 2. Pipe the file into codex exec
+cat /tmp/codex-packet.md | codex exec --skip-git-repo-check \
   -m <execute.model from models.yaml> \
   --config model_reasoning_effort="medium" \
-  --sandbox danger-full-access \
-  --full-auto \
+  --dangerously-bypass-approvals-and-sandbox \
   -C <absolute path to project directory> \
-  "<full execution packet contents or trivial instruction string>" 2>/dev/null
+  2>/dev/null
+
+# 3. Clean up the temp file
+rm -f /tmp/codex-packet.md
 ```
+
+**Never** pass packet contents as a positional argument or inside a heredoc — use the temp-file-to-stdin approach above.
 
 Wait for Codex to complete and capture its full output.
 
@@ -81,7 +108,7 @@ Wait for Codex to complete and capture its full output.
 - If Handoff is present and at least `Files changed` is filled → proceed.
 - If Handoff is absent or all fields are empty → attempt one recovery resume:
   ```bash
-  echo "The Handoff section was not filled. Please fill all fields in the Handoff section of the execution packet and output the result." | codex exec --skip-git-repo-check resume --last 2>/dev/null
+  printf '%s' 'The Handoff section was not filled. Please fill all fields in the Handoff section of the execution packet and output the result.' | codex exec --skip-git-repo-check resume --last 2>/dev/null
   ```
   - If Handoff is still absent after one resume → run the rescue skill internally, report findings to user, stop.
 - If Codex exits non-zero or reports sandbox/write-policy errors → run the rescue skill internally, report findings to user, stop. **Never parse Codex output to extract a patch and apply it yourself.** That is in-context execution and violates the hard rule above.
@@ -101,9 +128,12 @@ Run the reviewer skill **within this context window** using the Handoff section 
 - **request-changes** → show the reviewer's findings to the user and ask:
   > "The reviewer found issues. Do you want me to send these back to Codex for fixes? (yes/no)"
 
-  - If **yes** → resume Codex (no config flags on resume):
+  - If **yes** → resume Codex (no config flags on resume). Write the resume prompt to a temp file first to avoid quoting issues, then pipe it:
     ```bash
-    printf "Reviewer findings:\n%s\n\nOriginal objective: %s\n" "<reviewer findings summary>" "<Objective field from execution packet>" | codex exec --skip-git-repo-check resume --last 2>/dev/null
+    # Write resume prompt to temp file using the Write tool (not heredoc/echo)
+    # Content: "Reviewer findings:\n<findings>\n\nOriginal objective: <objective>"
+    cat /tmp/codex-resume.md | codex exec --skip-git-repo-check resume --last 2>/dev/null
+    rm -f /tmp/codex-resume.md
     ```
     Re-run the reviewer on the new Handoff.
     - If verdict is still `request-changes` → stop. Report full reviewer findings and Handoff to user. Do not loop further.
@@ -140,8 +170,8 @@ Run the reviewer skill **within this context window** using the Handoff section 
 | `project_name` is `unknown` | STOP — tell user to run bootstrap skill |
 | `call-claude` skill missing at `~/.agents/skills/call-claude/` | STOP — tell user to run `install.sh` |
 | Tool from `models.yaml` unavailable (e.g., Codex not installed) | STOP — tell user to update `.ai/models.yaml` to use an available tool. **Never execute in-context as fallback.** |
-| Codex exits non-zero | Run rescue skill internally, report, stop. **Never extract and apply patches yourself.** |
-| Codex blocked by sandbox/write policy | Same as non-zero exit. Do NOT apply the patch in-context. Report the error and stop. |
+| Codex exits non-zero | Run rescue skill internally, report error + allowed options (see Phase 2), stop. **Never extract and apply patches yourself. Never offer to execute directly.** |
+| Codex blocked by sandbox/write policy | Same as non-zero exit. Report the error and the 5 allowed responses from Phase 2. Do NOT apply the patch in-context. Do NOT offer "let me do it" as an option. |
 | Handoff absent after one resume | Run rescue skill internally, report, stop |
 | Reviewer `request-changes` twice | Stop, report full context to user |
 | Reviewer `escalate` | Stop, report full context to user |
