@@ -45,7 +45,34 @@ For every workflow phase (`plan`, `execute`, `review`, `rescue`, `maintenance`, 
    - exit status
 5. If the configured tool is unavailable, STOP and tell the user to update `.ai/models.yaml` or fix the tool installation. Do not substitute the current session model.
 
-Never run a configured phase "within this context window" as a shortcut, even if the current session appears to use the same model. The only way to guarantee the phase model is to launch the configured tool with the configured model explicitly.
+Never run a configured phase within this context window unless the phase resolves to `inline` via the dispatch routing logic. Inline execution is permitted when `dispatch_mode: auto` resolves the phase to inline (same tool + same model as session), or when an explicit `mode: inline` override is set. In all other cases, dispatch through the configured tool and model.
+
+## Dispatch routing
+
+When `dispatch_mode: auto`, compute each phase's execution mode before dispatching:
+
+- `phase.tool != session.tool`                       →  dispatcher
+- `phase.tool == session.tool` but models differ     →  agent
+- `phase.tool == session.tool` and models match      →  inline
+
+A phase may also carry an explicit `mode` field (`inline | agent | dispatcher`) that overrides auto-routing:
+
+Example:
+  review:
+    tool: claude
+    model: claude-opus-4-6
+    mode: agent
+
+Full routing table:
+
+| `dispatch_mode` | phase `mode` field | Result |
+|---|---|---|
+| `auto` | not set | computed from session comparison |
+| `auto` | set | explicit `mode` overrides auto |
+| `manual` | set | use explicit `mode` |
+| `manual` | not set | default to `dispatcher` (backward compat) |
+
+Model comparison is exact-string. Unrecognized `session.model` values are passed through; validation is the tool's responsibility.
 
 ## Dispatcher rules
 
@@ -53,6 +80,20 @@ The subprocess does not inherit this session automatically. Do not send a bare i
 
 Use temp files and stdin for all delegated prompts to avoid shell quoting issues.
 
+Resolve the execution mode for the phase (see Dispatch routing above), then execute accordingly:
+
+**Mode: inline**
+Execute the phase logic directly in the current session. Assemble the full phase prompt (skill instructions + task context + packet schema) as you would for a subprocess, but follow it within this session instead of spawning a process.
+
+If `mode: inline` is set explicitly and the session model differs from `phase.model`, warn the user before executing:
+> "Warning: Phase `<phase>` is set to inline but session model (`<session.model>`) differs from phase model (`<phase.model>`). Running in session model."
+
+**Mode: agent** (same tool, different model)
+```bash
+cat /tmp/phase-prompt.md | claude -p "Execute the attached <phase> phase exactly. Return only the phase result." --model <phase.model> 2>/dev/null
+```
+
+**Mode: dispatcher** (different tool)
 - If `<phase>.tool` is `claude`:
   ```bash
   cat /tmp/phase-prompt.md | claude -p "Execute the attached <phase> phase exactly. Return only the phase result." --model <phase.model> 2>/dev/null
@@ -66,7 +107,7 @@ Use temp files and stdin for all delegated prompts to avoid shell quoting issues
     2>/dev/null
   ```
 
-If either command exits non-zero, treat that phase as failed and follow the error policy for that phase.
+If a subprocess exits non-zero, treat that phase as failed and follow the error policy for that phase.
 
 ## Phase 1 - Triage + Plan
 
@@ -108,11 +149,11 @@ If the planner output does not clearly state the size at the top, STOP and repor
 
 Read `execute.tool` and `execute.model` from `.ai/models.yaml`.
 
-**HARD RULE - No in-context execution. Ever.**
-- You are the orchestrator. You must not make code changes yourself.
-- Execution must go through `codex exec`.
-- If the tool specified in `models.yaml` is not available (for example, Codex CLI not installed, no subscription) -> STOP and tell the user to update `.ai/models.yaml` to use a tool that is available.
-- This rule has no exceptions. Violating it invalidates the entire pipeline.
+**HARD RULE - No in-context execution unless dispatch routing resolves to inline.**
+- You are the orchestrator. You must not make code changes yourself unless the `execute` phase resolves to `inline` via the dispatch routing logic (same tool + same model as session).
+- When `execute` resolves to inline, follow the phase prompt exactly within this session.
+- When `execute` does not resolve to inline, execution must go through the configured tool (e.g. `codex exec`).
+- If the tool specified in `models.yaml` is not available -> STOP and tell the user to update `.ai/models.yaml` to use a tool that is available.
 
 **Forbidden actions - if you catch yourself doing any of these, STOP immediately:**
 - Using Edit, Write, or any file-modification tool to apply code changes from a Codex patch or plan
@@ -219,7 +260,16 @@ Dispatch the reviewer phase through the configured tool/model. Do not review ins
    - **Validation:** commands run and result
    - **Risks:** any risks noted by executor or reviewer
    - **Memory updates applied:** list or "none"
-   - **Phase execution log:** requested tool/model and actual command used for each phase that ran
+   - **Phase execution log:** for each phase that ran, report:
+     - `tool` and `model` from config
+     - `configured`: per-phase `mode` value if set, otherwise the top-level `dispatch_mode` value
+     - `resolved`: final execution mode used (`inline`, `agent`, or `dispatcher`)
+     - actual command used (or "inline" if no subprocess was spawned)
+
+     Example format:
+       plan        tool=claude  model=claude-sonnet-4-6   configured=auto   resolved=inline      command=inline
+       execute     tool=codex   model=gpt-5.3-codex        configured=auto   resolved=dispatcher  command=codex exec ...
+       review      tool=claude  model=claude-opus-4-6      configured=auto   resolved=agent       command=claude -p ...
 
 ## Error table
 
@@ -229,6 +279,11 @@ Dispatch the reviewer phase through the configured tool/model. Do not review ins
 | `project_name` is `unknown` | STOP - tell user to run bootstrap skill |
 | `call-claude` skill missing at `~/.agents/skills/call-claude/` | STOP - tell user to run `install.sh` |
 | Tool from `models.yaml` unavailable | STOP - tell user to update `.ai/models.yaml` to use an available tool. Never execute in-context as fallback. |
+| `dispatch_mode: auto` but `session` block missing or partial | STOP — "Auto dispatch requires a complete `session` block in `.ai/models.yaml` with both `session.tool` and `session.model`." |
+| `dispatch_mode` has an unrecognized value | STOP — "`dispatch_mode` must be `auto` or `manual`. Got: `<value>`." |
+| `session.tool` has an unrecognized value | STOP — "`session.tool` must be one of: `claude`, `codex`. Got: `<value>`." |
+| `mode: inline` override where session model differs from phase model | Warn: "Warning: Phase `<phase>` is set to inline but session model (`<session.model>`) differs from phase model (`<phase.model>`). Running in session model." Proceed. |
+| `dispatch_mode` field absent from `models.yaml` | Treat as `dispatch_mode: manual`. All phases default to `dispatcher` unless an explicit per-phase `mode` is set. |
 | Planner output missing size classification | STOP - report invalid planner output |
 | Codex exits non-zero | Dispatch rescue using `rescue.tool` and `rescue.model`, report error + allowed options, stop. Never extract and apply patches yourself. |
 | Codex blocked by sandbox or write policy | Same as non-zero exit. Report the error and the 5 allowed responses from Phase 2. Do not apply the patch in-context. |
@@ -238,8 +293,8 @@ Dispatch the reviewer phase through the configured tool/model. Do not review ins
 
 ## Notes
 
-- `plan`, `execute`, `review`, `rescue`, `maintenance`, and `bootstrap` must all run through the tool and model configured in `.ai/models.yaml`.
-- The starter session never substitutes its own model for a configured phase.
+- `plan`, `execute`, `review`, `rescue`, `maintenance`, and `bootstrap` are dispatched according to the routing logic in `models.yaml`. When `dispatch_mode: auto` resolves a phase to `inline`, that phase runs in the current session — this is intentional and the most token-efficient path when tool and model match.
+- The starter session never substitutes its own model for a configured phase unless routing explicitly resolves to inline.
 - Manual phase runs are only guaranteed to match `.ai/models.yaml` if you launch them through the configured tool/model as well.
 - Never pass config flags (`-m`, `--config`, `--sandbox`, `--full-auto`) when using `resume --last`. Only the prompt is passed.
 - The retry cap for `request-changes` is exactly 1. Do not loop beyond that.
