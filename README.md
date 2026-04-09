@@ -85,6 +85,33 @@ bash /path/to/ai-dev-workflow-template/install.sh .
 
 This copies the workflow files into your repo, creates `AGENTS.md` and `CLAUDE.md` managed blocks, and preserves any existing instructions in those files.
 
+### 1.1 Update an existing project
+
+If you changed a shared workflow skill and want to propagate that update to a project that already uses this scaffold, run:
+
+```bash
+bash /path/to/ai-dev-workflow-template/update-workflow.sh /path/to/target-project
+```
+
+By default this updates:
+- `.claude/skills/*`
+- `.ai/workflow/*`
+- managed blocks in `AGENTS.md` and `CLAUDE.md`
+- `~/.agents/skills/call-claude/SKILL.md`
+
+By default this preserves:
+- `.ai/packets/*`
+- `.ai/models.yaml`
+- `.ai/project.yaml`
+- `.ai/memory.md`
+- `.ai/decisions.md`
+
+If you also want to refresh packet templates:
+
+```bash
+bash /path/to/ai-dev-workflow-template/update-workflow.sh /path/to/target-project --include-packets
+```
+
 ### 2. Bootstrap the project
 
 To preserve strict phase-to-model matching, launch bootstrap through the tool and model assigned to `bootstrap` in `.ai/models.yaml`, then run:
