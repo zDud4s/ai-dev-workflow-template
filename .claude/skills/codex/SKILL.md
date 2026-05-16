@@ -5,21 +5,31 @@ description: Use when the user asks to run Codex CLI (codex exec, codex resume) 
 
 # Codex Skill Guide
 
+## Invocation modes
+
+This skill has two callers with opposite requirements. Identify which one you are before doing anything else.
+
+- **Direct (user-driven).** The user typed something like "run codex" or invoked this skill explicitly. You may ask the user for model and reasoning effort via `AskUserQuestion`, and you may follow up after each run.
+- **Controller (orchestrator-driven).** The orchestrator (or any other controller listed in `.ai/workflow/dispatch.md`) is dispatching the `execute` phase through codex. In this mode you MUST NOT prompt the user — the controller already passed `tool`, `model`, `reasoning_effort` (or its phase default), and the full prompt via stdin. Use them verbatim and emit the result + Handoff. The non-interactive invariant in `dispatch.md` applies: no `AskUserQuestion`, no confirmation prompts, no "press enter".
+
+How to tell: if the prompt arrives via stdin from a controller (typical signs: a filled execution packet schema, a `## Handoff` section to complete, an explicit "Execute the attached execute phase exactly" preamble), you are in **controller mode**. Skip every `AskUserQuestion` step below.
+
 ## Running a Task
-1. Ask the user (via `AskUserQuestion`) which model to run (`gpt-5.4`, `gpt-5.3-codex-spark`, or `gpt-5.3-codex`) AND which reasoning effort to use (`xhigh`, `high`, `medium`, or `low`) in a **single prompt with two questions**.
+
+1. **Direct mode only:** ask the user (via `AskUserQuestion`) which model to run (`gpt-5.4`, `gpt-5.3-codex-spark`, or `gpt-5.3-codex`) AND which reasoning effort to use (`xhigh`, `high`, `medium`, or `low`) in a **single prompt with two questions**. In controller mode, skip this — the values are already in the prompt.
 2. Always use `--dangerously-bypass-approvals-and-sandbox`. On Windows, the `--sandbox` flag and `--full-auto` are unreliable because the Windows Agent sandbox requires admin privileges to set up restricted user accounts. `--dangerously-bypass-approvals-and-sandbox` skips the sandbox system entirely and is the only flag guaranteed to allow writes on Windows.
-3. Assemble the command with the appropriate options:
+3. Always use `--skip-git-repo-check`. Controller mode authorizes this implicitly — do NOT prompt for permission.
+4. Assemble the command with the appropriate options:
    - `-m, --model <MODEL>`
    - `--config model_reasoning_effort="<xhigh|high|medium|low>"`
    - `--dangerously-bypass-approvals-and-sandbox`
    - `-C, --cd <DIR>`
    - `--skip-git-repo-check`
    - `"your prompt here"` (as final positional argument)
-3. Always use --skip-git-repo-check.
-4. When continuing a previous session, use `codex exec --skip-git-repo-check resume --last` via stdin. When resuming don't use any configuration flags unless explicitly requested by the user e.g. if he species the model or the reasoning effort when requesting to resume a session. Resume syntax: write the prompt to a temp file first, then `cat /tmp/codex-resume.md | codex exec --skip-git-repo-check resume --last 2>/dev/null && rm -f /tmp/codex-resume.md`. This avoids shell quoting issues with heredocs and nested quotes. All flags have to be inserted between exec and resume.
-5. **IMPORTANT**: By default, append `2>/dev/null` to all `codex exec` commands to suppress thinking tokens (stderr). Only show stderr if the user explicitly requests to see thinking tokens or if debugging is needed.
-6. Run the command, capture stdout/stderr (filtered as appropriate), and summarize the outcome for the user.
-7. **After Codex completes**, inform the user: "You can resume this Codex session at any time by saying 'codex resume' or asking me to continue with additional analysis or changes."
+5. When continuing a previous session, use `codex exec --skip-git-repo-check resume --last` via stdin. When resuming don't use any configuration flags unless explicitly requested by the user e.g. if he specifies the model or the reasoning effort when requesting to resume a session. Resume syntax: write the prompt to a temp file first, then `cat /tmp/codex-resume.md | codex exec --skip-git-repo-check resume --last 2>/dev/null && rm -f /tmp/codex-resume.md`. This avoids shell quoting issues with heredocs and nested quotes. All flags have to be inserted between `exec` and `resume`.
+6. **IMPORTANT**: By default, append `2>/dev/null` to all `codex exec` commands to suppress thinking tokens (stderr). Only show stderr if the user explicitly requests to see thinking tokens or if debugging is needed.
+7. Run the command, capture stdout/stderr (filtered as appropriate), and summarize the outcome for the user.
+8. **After Codex completes (direct mode only)**, inform the user: "You can resume this Codex session at any time by saying 'codex resume' or asking me to continue with additional analysis or changes." In controller mode, just emit the final Handoff and exit — the controller decides what happens next.
 
 ### Quick Reference
 | Use case | Sandbox mode | Key flags |
@@ -29,7 +39,10 @@ description: Use when the user asks to run Codex CLI (codex exec, codex resume) 
 | Resume recent session | Inherited from original | Write prompt to temp file, then `cat /tmp/codex-resume.md \| codex exec --skip-git-repo-check resume --last 2>/dev/null` (no flags allowed) |
 | Run from another directory | Match task needs | `-C <DIR>` plus other flags `2>/dev/null` |
 
-## Following Up
+## Following Up (direct mode only)
+
+These steps apply only when the user invoked codex directly. In controller mode, skip — emit the final Handoff and exit. The controller (orchestrator) handles follow-ups.
+
 - After every `codex` command, immediately use `AskUserQuestion` to confirm next steps, collect clarifications, or decide whether to resume with `codex exec resume --last`.
 - When resuming, write the new prompt to a temp file and pipe via stdin: write prompt to `/tmp/codex-resume.md`, then `cat /tmp/codex-resume.md | codex exec resume --last 2>/dev/null && rm -f /tmp/codex-resume.md`. The resumed session automatically uses the same model, reasoning effort, and sandbox mode from the original session.
 - Restate the chosen model, reasoning effort, and sandbox mode when proposing follow-up actions.
@@ -58,6 +71,6 @@ Codex is powered by OpenAI models with their own knowledge cutoffs and limitatio
 5. Let the user decide how to proceed if there's genuine ambiguity
 
 ## Error Handling
-- Stop and report failures whenever `codex --version` or a `codex exec` command exits non-zero; request direction before retrying.
-- Before you use high-impact flags (`--full-auto`, `--sandbox danger-full-access`, `--skip-git-repo-check`) ask the user for permission using AskUserQuestion unless it was already given.
-- When output includes warnings or partial results, summarize them and ask how to adjust using `AskUserQuestion`.
+- Stop and report failures whenever `codex --version` or a `codex exec` command exits non-zero. Direct mode: request direction from the user before retrying. Controller mode: emit the `## Escalation` block defined in `.ai/workflow/dispatch.md` and exit non-zero.
+- Direct mode: before you use high-impact flags (`--full-auto`, `--sandbox danger-full-access`, `--skip-git-repo-check`) ask the user for permission using `AskUserQuestion` unless it was already given. Controller mode: do NOT prompt — `--skip-git-repo-check` and (for execute) `--dangerously-bypass-approvals-and-sandbox` are authorized implicitly by the dispatch contract.
+- Direct mode: when output includes warnings or partial results, summarize them and ask how to adjust using `AskUserQuestion`. Controller mode: include warnings in the Handoff under `New risks discovered`.

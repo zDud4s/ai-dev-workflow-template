@@ -1,11 +1,13 @@
 ---
 name: orchestrate
-description: Run the full workflow pipeline from a single prompt - plan, execute with Codex, review if needed, and wrap up. Use this as the primary entry point for any development task.
+description: Run the full workflow pipeline from a single prompt - plan, execute with the configured executor, review if needed, and wrap up. Use this as the primary entry point for any development task.
 ---
 
-You are the orchestrator.
+You are the orchestrator. You run the full workflow pipeline end-to-end from a single task description.
 
-Your job is to run the full workflow pipeline end-to-end from a single task description.
+**Read `.ai/workflow/dispatch.md` once before starting.** It defines the dispatch contract, routing logic (`inline | agent | dispatcher`), the prompt-passing convention (temp file → stdin), the resume rule (no config flags on `resume --last`), and the dispatch-time error table. Everything below assumes those rules. Do not duplicate them.
+
+**Packets are read-only templates.** `.ai/packets/*.md` is the schema layer — phases READ them and EMIT filled copies in their output. Filled execution packets flow through temp files (e.g. `/tmp/execute-packet.md`) to the executor and are deleted after dispatch. For medium/large tasks the planner MAY persist a filled plan at `.ai/plans/<YYYY-MM-DD>-<slug>.md` (new file only). You must never call Edit/Write on any file under `.ai/packets/`. See the Layer model in `.ai/workflow/claude-workflow.md`.
 
 ## Entry point
 
@@ -18,283 +20,155 @@ Task: [description]
 
 ## Pre-flight checks
 
-Before starting any phase, verify all of the following. Stop immediately if any check fails.
+Stop immediately if any of these fail:
 
-1. `.ai/models.yaml` exists. If not -> STOP: "`.ai/models.yaml` not found. Run `install.sh` first."
-2. `.ai/project.yaml` `project_name` is not `unknown`. If it is -> STOP: "Project not bootstrapped. Run the bootstrap skill first."
-3. `~/.agents/skills/call-claude/SKILL.md` exists. If not -> STOP: "Codex-Claude bridge skill not installed. Run `install.sh` first."
+1. `.ai/models.yaml` exists.
+2. `.ai/project.yaml` `project_name` is not `unknown` (otherwise run bootstrap first).
+3. `~/.agents/skills/call-claude/SKILL.md` exists.
+4. `.ai/workflow/dispatch.md` exists (this skill depends on it). If missing → STOP: "`.ai/workflow/dispatch.md` not found. Run `install.sh` (or `update-workflow.sh`) to install the dispatch contract."
 
-## Dispatch contract
+Specific messages for each are in the dispatch error table.
 
-The starter session is an orchestrator only. It does triage coordination, prompt assembly, dispatch, and result validation. It does not substitute its own model for any configured workflow phase.
+## Phase 1 — Triage + Plan
 
-For every workflow phase (`plan`, `execute`, `review`, `rescue`, `maintenance`, `bootstrap`):
+Read `plan.tool` and `plan.model` from `.ai/models.yaml`. Build a planner prompt combining `.claude/skills/planner/SKILL.md`, the user task, relevant facts from `project.yaml` / `memory.md` / `decisions.md`, and the `.ai/packets/execute.md` schema. Dispatch through the configured tool/model.
 
-1. Read `<phase>.tool` and `<phase>.model` from `.ai/models.yaml`.
-2. Build a standalone prompt packet for that phase. Include:
-   - the relevant skill instructions from `.claude/skills/<phase>/SKILL.md` when available
-   - the current objective
-   - the required repo context
-   - the relevant packet schema from `.ai/packets/`
-3. Execute that phase through the configured tool and model.
-4. Capture and retain:
-   - phase name
-   - requested tool
-   - requested model
-   - actual command used
-   - exit status
-5. If the configured tool is unavailable, STOP and tell the user to update `.ai/models.yaml` or fix the tool installation. Do not substitute the current session model.
+The planner output must state both `Size` and `Risk level` at the top.
 
-Never run a configured phase within this context window unless the phase resolves to `inline` via the dispatch routing logic. Inline execution is permitted when `dispatch_mode: auto` resolves the phase to inline (same tool + same model as session), or when an explicit `mode: inline` override is set. In all other cases, dispatch through the configured tool and model.
+**Size** controls plan complexity:
 
-## Dispatch routing
+- **trivial** — single file, <10 lines, no cross-cutting concern. Planner emits a one-line instruction (no packet). Allowed ONLY when Risk level is `low`; if Risk level is `elevated`, the planner must promote to `small`.
+- **small** — 1-3 files, clear scope. Minimal execution packet.
+- **medium** — 4-10 files or crosses subsystems. Full execution packet.
+- **large** — >10 files or unclear architecture. Full execution packet.
 
-When `dispatch_mode: auto`, compute each phase's execution mode before dispatching:
+**Risk level** controls the review gate. The planner computes it by intersecting `Relevant files` with `boundaries.risky_areas`, `security_sensitive`, `migration_sensitive`. The orchestrator does NOT re-check — trust the planner's `Risk level` + `Risk matches`.
 
-- `phase.tool != session.tool`                       →  dispatcher
-- `phase.tool == session.tool` but models differ     →  agent
-- `phase.tool == session.tool` and models match      →  inline
+**Review gate (single rule):** run Phase 3 if `Risk level: elevated` OR Size is `medium` OR Size is `large`. Skip otherwise.
 
-A phase may also carry an explicit `mode` field (`inline | agent | dispatcher`) that overrides auto-routing:
+If the planner output is missing `Size`, missing `Risk level`, or emits `TRIVIAL:` with `Risk level: elevated`, STOP and report invalid planner output.
 
-Example:
-  review:
-    tool: claude
-    model: claude-opus-4-6
-    mode: agent
+## Phase 2 — Execute
 
-Full routing table:
+Read `execute.tool` and `execute.model` from `.ai/models.yaml`. Dispatch the execution packet (or trivial instruction) through the configured tool. Tool-specific invocation details (flags, sandbox bypass, resume mechanics, output filtering) live in `.claude/skills/<execute.tool>/SKILL.md` — read that skill alongside this one when dispatching. For example, the codex skill specifies `--dangerously-bypass-approvals-and-sandbox` for write tasks; other executors will have their own conventions.
 
-| `dispatch_mode` | phase `mode` field | Result |
-|---|---|---|
-| `auto` | not set | computed from session comparison |
-| `auto` | set | explicit `mode` overrides auto |
-| `manual` | set | use explicit `mode` |
-| `manual` | not set | default to `dispatcher` (backward compat) |
+### Hard rule: no in-context execution
 
-Model comparison is exact-string. Unrecognized `session.model` values are passed through; validation is the tool's responsibility.
+The orchestrator does not make code changes itself unless the `execute` phase resolves to `inline` per the dispatch routing rules. When `execute` does not resolve to inline, all code changes must come from the configured tool.
 
-## Dispatcher rules
+If the executor fails (timeout, non-zero exit, environment/permission block from the tool), your only allowed responses are:
 
-The subprocess does not inherit this session automatically. Do not send a bare instruction like "Use the planner skill." Inline the relevant skill instructions and task context into the delegated prompt.
+1. Report the exact error to the user.
+2. Suggest the user update `.ai/models.yaml` to use an available tool.
+3. Suggest the user fix the executor's environment or configuration (see the tool's skill for diagnostics).
+4. Dispatch the rescue phase using `rescue.tool` and `rescue.model`.
+5. STOP and wait for user direction.
 
-Use temp files and stdin for all delegated prompts to avoid shell quoting issues.
+You must NOT: use Edit/Write to apply a patch produced by the executor, extract a diff from the executor's output and apply it, offer "let me apply it myself" as an option, or frame in-context execution as the pragmatic path. If you catch yourself doing any of these, STOP.
 
-Resolve the execution mode for the phase (see Dispatch routing above), then execute accordingly:
+### Handoff check
 
-**Mode: inline**
-Execute the phase logic directly in the current session. Assemble the full phase prompt (skill instructions + task context + packet schema) as you would for a subprocess, but follow it within this session instead of spawning a process.
+Wait for the executor to complete (within the configured timeout — see dispatch.md). Then handle the exit:
 
-If `mode: inline` is set explicitly and the session model differs from `phase.model`, warn the user before executing:
-> "Warning: Phase `<phase>` is set to inline but session model (`<session.model>`) differs from phase model (`<phase.model>`). Running in session model."
+- **Timed out (exit 124 / wrapper kill)** → freeze. Dispatch rescue with the timeout context, report to user, stop. Do not auto-retry.
+- **Non-zero exit with `## Escalation` block in output** → structured escalation. Parse the four fields (`reason`, `needed`, `suggested-next`, `partial-output`), surface them to the user verbatim, and ask whether to dispatch rescue, re-plan, or abandon. Do not advance to review.
+- **Non-zero exit without escalation block** → crash / environment / tooling failure. Follow the Phase 2 allowed responses above.
+- **Exit 0** → proceed to the Handoff check below.
 
-**Mode: agent** (same tool, different model)
-```bash
-cat /tmp/phase-prompt.md | claude -p "Execute the attached <phase> phase exactly. Return only the phase result." --model <phase.model> 2>/dev/null
-```
+Look for the filled `## Handoff` section (fields: Files changed, Tests added, Validation evidence, Deviations from plan, New risks discovered, Memory updates, Pending deletions).
 
-**Mode: dispatcher** (different tool)
-- If `<phase>.tool` is `claude`:
-  ```bash
-  cat /tmp/phase-prompt.md | claude -p "Execute the attached <phase> phase exactly. Return only the phase result." --model <phase.model> 2>/dev/null
-  ```
-- If `<phase>.tool` is `codex`:
-  ```bash
-  cat /tmp/phase-prompt.md | codex exec --skip-git-repo-check \
-    -m <phase.model> \
-    --config model_reasoning_effort="medium" \
-    -C <absolute path to project directory> \
-    2>/dev/null
-  ```
+Proceed only if ALL:
+- `Files changed` is filled, AND
+- `Tests added` is filled — and if the planning packet's `Tests to add` was non-empty, every planned test must be marked `added` or carry a concrete skip reason (vague skips like "did not test" fail this check), AND
+- `Validation evidence` contains one block per command in `Validation.Commands`, each with `$ <cmd>`, `exit:`, and `tail:` lines. A command may instead carry `could not run: <reason>` — accept only if the reason is concrete (e.g. "tool not installed in execution environment"), reject vague ones ("did not test").
 
-If a subprocess exits non-zero, treat that phase as failed and follow the error policy for that phase.
+If incomplete, attempt ONE recovery resume. The resume mechanism is tool-specific — consult `.claude/skills/<execute.tool>/SKILL.md`. The prompt to send is:
 
-## Phase 1 - Triage + Plan
+> "The Handoff section is incomplete. Re-fill it. `Validation evidence` must contain one block per command in Validation.Commands with `$ <cmd>`, `exit: <code>`, `tail: <last 10 lines>`. If a command could not run, state a concrete reason. Output the completed Handoff."
 
-Read `plan.tool` and `plan.model` from `.ai/models.yaml`.
-
-Construct a standalone planner prompt by combining:
-- `.claude/skills/planner/SKILL.md`
-- the user task
-- relevant facts from `.ai/project.yaml`, `.ai/memory.md`, and `.ai/decisions.md`
-- the packet schema from `.ai/packets/execute.md`
-
-Dispatch the planner phase through the configured tool/model.
-
-The planner output must classify task size as one of:
-
-- **trivial** - single file, <10 lines, no cross-cutting risk:
-  - Produce a single instruction string (no execution packet).
-  - Go directly to Phase 2 passing the instruction as the Codex prompt.
-  - Skip Phase 3 entirely.
-  - Phase 4: minimal wrap-up (report files changed only; skip memory updates unless Codex's Handoff `Memory updates` field is non-empty).
-
-- **small** - 1-3 files, clear scope:
-  - Produce a minimal execution packet using `.ai/packets/execute.md` schema.
-  - After Phase 2, check if any file in `Allowed files` appears in `.ai/project.yaml` under `boundaries.risky_areas`, `boundaries.security_sensitive`, or `boundaries.migration_sensitive`.
-  - If those lists are all empty -> skip Phase 3.
-  - If any match -> run Phase 3.
-
-- **medium** - 4-10 files or crosses subsystem boundaries:
-  - Produce full execution packet using `.ai/packets/execute.md` schema.
-  - Phase 3 is mandatory.
-
-- **large** - >10 files, unclear architecture, or touches risky/security-sensitive areas:
-  - Produce full execution packet using `.ai/packets/execute.md` schema.
-  - Phase 3 is mandatory.
-
-If the planner output does not clearly state the size at the top, STOP and report invalid planner output.
-
-## Phase 2 - Execute (Codex)
-
-Read `execute.tool` and `execute.model` from `.ai/models.yaml`.
-
-**HARD RULE - No in-context execution unless dispatch routing resolves to inline.**
-- You are the orchestrator. You must not make code changes yourself unless the `execute` phase resolves to `inline` via the dispatch routing logic (same tool + same model as session).
-- When `execute` resolves to inline, follow the phase prompt exactly within this session.
-- When `execute` does not resolve to inline, execution must go through the configured tool (e.g. `codex exec`).
-- If the tool specified in `models.yaml` is not available -> STOP and tell the user to update `.ai/models.yaml` to use a tool that is available.
-
-**Forbidden actions - if you catch yourself doing any of these, STOP immediately:**
-- Using Edit, Write, or any file-modification tool to apply code changes from a Codex patch or plan
-- Offering "Let me execute directly" or "Let me apply the changes myself" as an option to the user
-- Saying "Codex produced the correct patch but was blocked by sandbox write policy. Let me apply its patch directly."
-- Extracting diff or patch content from Codex output and applying it yourself
-- Presenting "execute directly" or "apply it myself" as one of the options when Codex fails
-- Framing in-context execution as "the pragmatic path" or any other euphemism
-
-**When Codex fails (sandbox error, non-zero exit, write policy block), your only allowed responses are:**
-1. Report the exact error to the user
-2. Suggest the user update `.ai/models.yaml` to use an available tool
-3. Suggest the user fix the Codex environment or configuration
-4. Dispatch the rescue phase using `rescue.tool` and `rescue.model`
-5. STOP and wait for user direction
-
-Run Codex with the execution packet (or trivial instruction) as the prompt.
-
-**Passing the prompt safely:** Shell quoting breaks when packet content contains single quotes, double quotes, backticks, or other special characters. Always write the prompt to a temp file and pipe it via stdin:
+Example for codex (other executors invoke resume differently — see their skill):
 
 ```bash
-# 1. Write packet content to a temp file
-#    e.g. /tmp/codex-packet.md
-
-# 2. Pipe the file into codex exec
-cat /tmp/codex-packet.md | codex exec --skip-git-repo-check \
-  -m <execute.model from models.yaml> \
-  --config model_reasoning_effort="medium" \
-  --dangerously-bypass-approvals-and-sandbox \
-  -C <absolute path to project directory> \
-  2>/dev/null
-
-# 3. Clean up the temp file
-rm -f /tmp/codex-packet.md
+# Codex-specific. Defer to .claude/skills/codex/SKILL.md for current conventions.
+printf '%s' '<resume prompt above>' | codex exec --skip-git-repo-check resume --last 2>/dev/null
 ```
 
-Never pass packet contents as a positional argument or inside a heredoc - use the temp-file-to-stdin approach above.
+After the resume:
+- Handoff still incomplete → dispatch rescue, report, stop.
+- `Validation evidence` shows non-zero exit on a command that actually ran → executor failure: dispatch rescue, report, stop. Do not advance to review.
 
-Wait for Codex to complete and capture its full output.
+## Phase 3 — Review (conditional)
 
-**Handoff check:**
-- Look for the filled `## Handoff` section in Codex output (fields: Files changed, Actual commands run, Deviations from plan, New risks discovered, Memory updates).
-- If Handoff is present and at least `Files changed` is filled -> proceed.
-- If Handoff is absent or all fields are empty -> attempt one recovery resume:
-  ```bash
-  printf '%s' 'The Handoff section was not filled. Please fill all fields in the Handoff section of the execution packet and output the result.' | codex exec --skip-git-repo-check resume --last 2>/dev/null
-  ```
-  - If Handoff is still absent after one resume -> dispatch the rescue phase using `rescue.tool` and `rescue.model`, report findings to user, stop.
-- If Codex exits non-zero or reports sandbox or write-policy errors -> dispatch the rescue phase using `rescue.tool` and `rescue.model`, report findings to user, stop. Never parse Codex output to extract a patch and apply it yourself.
+Run if the review gate from Phase 1 says so. Skip otherwise.
 
-## Phase 3 - Review (conditional)
+Read `review.tool` and `review.model` from `.ai/models.yaml`. Build a reviewer prompt combining `.claude/skills/reviewer/SKILL.md`, the execution packet objective, the executor's filled Handoff, and `.ai/packets/review.md`. Dispatch through the configured tool/model.
 
-Skip if: trivial, or small with no risky, security-sensitive, or migration-sensitive files matched.
+Verdict handling:
 
-Run if: medium, large, or small with risky files matched.
+- **approve** → proceed to Phase 4.
 
-Read `review.tool` and `review.model` from `.ai/models.yaml`.
+- **request-changes** → show findings to the user and ask:
+  > "The reviewer found issues (iteration N). Options: (1) send back to the executor for another pass, (2) accept current state and proceed to wrap-up, (3) stop."
 
-Construct a standalone reviewer prompt by combining:
-- `.claude/skills/reviewer/SKILL.md`
-- the execution packet objective
-- the executor's filled Handoff
-- `.ai/packets/review.md`
+  - **(1) send back** → resume the executor session with `Reviewer findings:\n<findings>\n\nOriginal objective: <objective>` via temp file → stdin (no config flags on resume — see dispatch.md). Resume mechanics are tool-specific (`.claude/skills/<execute.tool>/SKILL.md`). Re-run the reviewer on the new Handoff. The new verdict goes through this same verdict handler — increment iteration N when re-asking. There is no automatic cap; the user gates each additional pass.
+  - **(2) accept** → proceed to Phase 4. In the wrap-up report, surface the unresolved reviewer findings under `Risks` with the line "Reviewer findings accepted without changes (iteration N)".
+  - **(3) stop** → STOP, report findings as-is.
 
-Dispatch the reviewer phase through the configured tool/model. Do not review inside the starter session.
+  Track iteration N across the loop and include it in every prompt so the user sees cost accumulating. If N reaches 5, prepend a warning to the prompt: "This is iteration 5 — consider whether the plan itself is wrong before continuing."
 
-**Verdict handling:**
+- **escalate** → STOP, report full findings and Handoff context.
 
-- **approve** -> proceed to Phase 4.
+## Phase 4 — Wrap up
 
-- **request-changes** -> show the reviewer's findings to the user and ask:
-  > "The reviewer found issues. Do you want me to send these back to Codex for fixes? (yes/no)"
+1. **Pending deletions.** Check the Handoff `Pending deletions` field.
+   - Non-empty → ask: *"The executor flagged these for deletion. Confirm: [list]"*
+   - Confirmed → execute each deletion.
+   - Declined → report as unresolved and skip.
 
-  - If **yes** -> resume Codex (no config flags on resume). Write the resume prompt to a temp file first to avoid quoting issues, then pipe it:
-    ```bash
-    # Write resume prompt to temp file
-    # Content: "Reviewer findings:\n<findings>\n\nOriginal objective: <objective>"
-    cat /tmp/codex-resume.md | codex exec --skip-git-repo-check resume --last 2>/dev/null
-    rm -f /tmp/codex-resume.md
-    ```
-    Re-run the reviewer through `review.tool` and `review.model` on the new Handoff.
-    - If verdict is still `request-changes` -> stop. Report full reviewer findings and Handoff to user. Do not loop further.
-    - If verdict is `approve` -> proceed to Phase 4.
+2. **Memory updates.** Collect from executor Handoff (`Memory updates`) and reviewer output (`Memory updates to apply`, if review ran).
+   - Read the current threshold from `.ai/project.yaml` at `memory_tuning.consolidation_threshold_lines` (default 150 if the block is absent).
+   - Check `.ai/memory.md` line count. If `current_lines + new_updates > threshold`, include `consolidate: true` in the maintenance prompt so the skill runs a consolidation pass before appending.
+   - If any memory updates contradict an existing entry (same `[topic]`, incompatible fact), include `consolidate: true` regardless of size.
+   - Dispatch the maintenance phase using `maintenance.tool` and `maintenance.model`. If consolidation ran, surface its summary in the final report under "Memory updates applied", including the `Threshold update` line (old → new and the smoothed ratio).
 
-  - If **no** -> stop. Report reviewer findings to user as-is.
+3. **Report to user:**
+   - **Summary** — what was done (1-3 sentences)
+   - **Files changed** — list from Handoff
+   - **Validation** — commands run and result
+   - **Risks** — anything noted by executor or reviewer
+   - **Memory updates applied** — list or "none"
+   - **Phase execution log** — for each phase that ran:
+     - `tool` / `model` from config
+     - `configured`: per-phase `mode` if set, otherwise the top-level `dispatch_mode`
+     - `resolved`: final mode (`inline` / `agent` / `dispatcher`)
+     - actual command (or "inline" if no subprocess)
 
-- **escalate** -> stop. Report full reviewer findings and Handoff context to user.
+     Example:
+     ```
+     plan      tool=claude  model=claude-sonnet-4-6  configured=auto  resolved=inline      command=inline
+     execute   tool=codex   model=gpt-5.3-codex       configured=auto  resolved=dispatcher  command=codex exec ...
+     review    tool=claude  model=claude-opus-4-6     configured=auto  resolved=agent       command=claude -p ...
+     ```
 
-## Phase 4 - Wrap up
+## Pipeline error table
 
-1. **Pending deletions:** Check the Handoff `Pending deletions` field.
-   - If non-empty -> show the list to the user and ask:
-     > "The executor flagged these files/dirs for deletion. Confirm to proceed: [list]"
-   - If confirmed -> execute each deletion.
-   - If declined -> report them as unresolved and skip.
-
-2. Collect memory updates:
-   - From executor Handoff: `Memory updates` field.
-   - From reviewer output: `Memory updates to apply` field (if review ran).
-3. If any memory updates exist -> dispatch the maintenance phase using `maintenance.tool` and `maintenance.model` to append them to `.ai/memory.md`.
-4. Report to user:
-   - **Summary:** what was done (1-3 sentences)
-   - **Files changed:** list from Handoff
-   - **Validation:** commands run and result
-   - **Risks:** any risks noted by executor or reviewer
-   - **Memory updates applied:** list or "none"
-   - **Phase execution log:** for each phase that ran, report:
-     - `tool` and `model` from config
-     - `configured`: per-phase `mode` value if set, otherwise the top-level `dispatch_mode` value
-     - `resolved`: final execution mode used (`inline`, `agent`, or `dispatcher`)
-     - actual command used (or "inline" if no subprocess was spawned)
-
-     Example format:
-       plan        tool=claude  model=claude-sonnet-4-6   configured=auto   resolved=inline      command=inline
-       execute     tool=codex   model=gpt-5.3-codex        configured=auto   resolved=dispatcher  command=codex exec ...
-       review      tool=claude  model=claude-opus-4-6      configured=auto   resolved=agent       command=claude -p ...
-
-## Error table
+Dispatch-layer errors (missing config, tool unavailable, unrecognized values, session-block issues) are in `.ai/workflow/dispatch.md`. The rows below are pipeline-specific.
 
 | Situation | Action |
-|-----------|--------|
-| `models.yaml` missing | STOP - tell user to run `install.sh` |
-| `project_name` is `unknown` | STOP - tell user to run bootstrap skill |
-| `call-claude` skill missing at `~/.agents/skills/call-claude/` | STOP - tell user to run `install.sh` |
-| Tool from `models.yaml` unavailable | STOP - tell user to update `.ai/models.yaml` to use an available tool. Never execute in-context as fallback. |
-| `dispatch_mode: auto` but `session` block missing or partial | STOP — "Auto dispatch requires a complete `session` block in `.ai/models.yaml` with both `session.tool` and `session.model`." |
-| `dispatch_mode` has an unrecognized value | STOP — "`dispatch_mode` must be `auto` or `manual`. Got: `<value>`." |
-| `session.tool` has an unrecognized value | STOP — "`session.tool` must be one of: `claude`, `codex`. Got: `<value>`." |
-| `mode: inline` override where session model differs from phase model | Warn: "Warning: Phase `<phase>` is set to inline but session model (`<session.model>`) differs from phase model (`<phase.model>`). Running in session model." Proceed. |
-| `dispatch_mode` field absent from `models.yaml` | Treat as `dispatch_mode: manual`. All phases default to `dispatcher` unless an explicit per-phase `mode` is set. |
-| Planner output missing size classification | STOP - report invalid planner output |
-| Codex exits non-zero | Dispatch rescue using `rescue.tool` and `rescue.model`, report error + allowed options, stop. Never extract and apply patches yourself. |
-| Codex blocked by sandbox or write policy | Same as non-zero exit. Report the error and the 5 allowed responses from Phase 2. Do not apply the patch in-context. |
-| Handoff absent after one resume | Dispatch rescue using `rescue.tool` and `rescue.model`, report, stop |
-| Reviewer `request-changes` twice | Stop, report full context to user |
-| Reviewer `escalate` | Stop, report full context to user |
+|---|---|
+| Planner output missing `Size` | STOP — report invalid planner output |
+| Planner output missing `Risk level` | STOP — report invalid planner output |
+| Planner emits `TRIVIAL:` but `Risk level: elevated` | STOP — planner should have promoted to `small` |
+| Executor timed out | See dispatch.md timeout row — freeze, dispatch rescue, no auto-retry. |
+| Executor non-zero with `## Escalation` block | Surface the four escalation fields to the user; ask whether to rescue, re-plan, or abandon. Do not advance to review. |
+| Executor non-zero without escalation block | Crash / environment / permission failure. Follow Phase 2 allowed options. Never extract and apply patches. |
+| Handoff absent or `Validation evidence` incomplete after one resume | Dispatch rescue, report, stop |
+| `Validation evidence` shows non-zero exit on a command that ran | Dispatch rescue, report, stop. Do not advance to review. |
+| Reviewer `request-changes` (any iteration) | Ask user: send back / accept / stop. No automatic cap. Warn from iteration 5 onward. |
+| Reviewer `escalate` | Stop, report full context |
 
 ## Notes
 
-- `plan`, `execute`, `review`, `rescue`, `maintenance`, and `bootstrap` are dispatched according to the routing logic in `models.yaml`. When `dispatch_mode: auto` resolves a phase to `inline`, that phase runs in the current session — this is intentional and the most token-efficient path when tool and model match.
-- The starter session never substitutes its own model for a configured phase unless routing explicitly resolves to inline.
-- Manual phase runs are only guaranteed to match `.ai/models.yaml` if you launch them through the configured tool/model as well.
-- Never pass config flags (`-m`, `--config`, `--sandbox`, `--full-auto`) when using `resume --last`. Only the prompt is passed.
-- The retry cap for `request-changes` is exactly 1. Do not loop beyond that.
+- When `dispatch_mode: auto` resolves a phase to `inline`, run it in this session — that is the token-efficient path when tool and model match.
+- Manual phase runs from outside the orchestrator are only guaranteed to match `.ai/models.yaml` if launched through the configured tool/model.
+- Reviewer `request-changes` has no automatic retry cap. Each iteration prompts the user with three options (send back / accept / stop). The iteration counter is shown in every prompt; from iteration 5 onward a warning is prepended to make the user re-evaluate the plan itself.
