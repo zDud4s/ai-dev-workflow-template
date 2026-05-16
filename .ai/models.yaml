@@ -1,7 +1,16 @@
 # AI workflow model configuration
 # tool: claude | codex
-# Claude models: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5
-# Codex models:  gpt-5.3-codex, gpt-5.4
+# Available models (refreshed May 2026):
+#   Claude: claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5
+#           docs: https://platform.claude.com/docs/en/about-claude/models/overview
+#   Codex:  gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex
+#           docs: https://developers.openai.com/codex/models
+#
+# Optional per-phase fields:
+#   mode: inline | agent | dispatcher   # override auto-routing for that phase
+#   timeout_seconds: <int>              # subprocess wall-clock timeout (see .ai/workflow/dispatch.md)
+#   reasoning_effort: xhigh|high|medium|low   # codex only; default medium when absent
+# Default timeouts: 1800 for execute; 600 for plan/review/rescue/maintenance/bootstrap.
 
 dispatch_mode: auto    # auto | manual
 
@@ -16,6 +25,7 @@ plan:
 execute:
   tool: codex
   model: gpt-5.3-codex
+  # timeout_seconds: 1800
 
 review:
   tool: claude

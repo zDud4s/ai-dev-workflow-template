@@ -48,3 +48,10 @@ definition_of_done:
 
 assumptions: []
 unknowns: []
+
+memory_tuning:
+  consolidation_threshold_lines: 150  # current trigger for memory.md consolidation
+  floor: 50                            # never go below this
+  ceiling: 300                         # never go above this
+  last_ratios: []                      # last 3 compaction ratios (lines_before / lines_after); newest first
+  last_consolidated_at: ""             # YYYY-MM-DD of last consolidation pass
