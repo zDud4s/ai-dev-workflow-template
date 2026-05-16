@@ -2,9 +2,9 @@
 
 A plug-and-play scaffold for a disciplined multi-agent coding workflow.
 
-Role assignments are configured in `.ai/models.yaml`. Default: plan=`claude/sonnet-4-6`, execute=`codex/gpt-5.4`, review=`claude/opus-4-6`.
+Role assignments are configured in `.ai/models.yaml`. Default: plan=`claude/opus-4-7`, execute=`codex/gpt-5.5`, review=`claude/opus-4-7`.
 
-The orchestrator must dispatch each phase through the configured tool and model. These assignments are runtime controls, not hints.
+The orchestrator must dispatch each phase through the configured tool and model. These assignments are runtime controls, not hints. Dispatch routing is contracted in `.ai/workflow/dispatch.md` and toggled with `dispatch_mode: auto | manual` in `.ai/models.yaml`.
 
 ## What this gives you
 
@@ -14,7 +14,10 @@ The orchestrator must dispatch each phase through the configured tool and model.
 - Bootstrap prerequisite guard so skills do not run on empty project metadata
 - Post-execution handoff that feeds directly into review
 - Memory contract for persisting operational discoveries
-- Reusable Claude skills under `.claude/skills/`
+- Reusable skills under `.claude/skills/` (canonical) mirrored to `.agents/skills/` so Codex sees the same set
+- Single dispatch contract (`.ai/workflow/dispatch.md`) shared by every controller
+- Persistent plan/spec history under `.ai/plans/` and `.ai/specs/`
+- Local web dashboard for tailing events, browsing plans/specs, and spawning orchestrate/planner jobs
 
 ## Folder layout
 
@@ -26,7 +29,14 @@ The orchestrator must dispatch each phase through the configured tool and model.
 |   |-- project.yaml              # Project metadata (filled by bootstrap)
 |   |-- memory.md                 # Operational facts
 |   |-- decisions.md              # Stable architecture decisions
-|   |-- models.yaml               # Tool/model assignment per workflow phase
+|   |-- models.yaml               # Tool/model assignment + dispatch_mode per phase
+|   |-- events.jsonl              # Append-only telemetry stream (gitignored)
+|   |-- plans/                    # Persistent filled plans for medium/large tasks
+|   |-- specs/                    # Persistent spec documents
+|   |-- dashboard/
+|   |   |-- index.html            # Local web UI (memory, decisions, jobs, events)
+|   |   |-- serve.py              # Static + JSON API server
+|   |   `-- jobs/                 # Per-job log dirs (gitignored)
 |   |-- packets/
 |   |   |-- plan.md               # Planning packet schema
 |   |   |-- execute.md            # Execution packet schema (with Steps + Handoff)
@@ -34,44 +44,62 @@ The orchestrator must dispatch each phase through the configured tool and model.
 |   |   `-- rescue.md             # Rescue packet schema
 |   `-- workflow/
 |       |-- agents-block.md       # Injected into AGENTS.md
-|       `-- claude-workflow.md    # Pipeline contract + shared rules
-`-- .claude/
-    `-- skills/
-        |-- bootstrap/SKILL.md
-        |-- planner/SKILL.md
-        |-- reviewer/SKILL.md
-        |-- maintenance/SKILL.md
-        `-- rescue/SKILL.md
+|       |-- workflow.md           # Pipeline contract + shared rules
+|       `-- dispatch.md           # Routing modes, prompt-passing, resume rule
+|-- .claude/
+|   `-- skills/                   # Canonical source for shared skills
+|       |-- orchestrate/SKILL.md
+|       |-- planner/SKILL.md
+|       |-- reviewer/SKILL.md
+|       |-- maintenance/SKILL.md
+|       |-- rescue/SKILL.md
+|       |-- bootstrap/SKILL.md
+|       `-- codex/SKILL.md        # Claude-side: how to call Codex
+`-- .agents/
+    `-- skills/                   # Codex-visible mirror (synced from .claude/skills/)
+        |-- claude/SKILL.md       # Codex-only: how to call Claude (no Claude counterpart)
+        `-- <shared skills>       # Mirrored copies of .claude/skills/* — edit upstream
 ```
 
 ## Model configuration
 
-Model assignments live in `.ai/models.yaml`. Each phase has a `tool` (`claude` or `codex`) and a `model` field.
+Model assignments live in `.ai/models.yaml`. Each phase has a `tool` (`claude` or `codex`) and a `model` field. Optional per-phase fields: `mode` (`inline` | `agent` | `dispatcher`), `timeout_seconds`, and (codex only) `reasoning_effort`.
 
 ```yaml
-plan:
+dispatch_mode: auto    # auto | manual
+
+session:
   tool: claude
   model: claude-sonnet-4-6
 
+plan:
+  tool: claude
+  model: claude-opus-4-7
+
 execute:
   tool: codex
-  model: gpt-5.4
+  model: gpt-5.5
 ```
 
 Default assignments:
 
 | Phase | Tool | Model |
 |-------|------|-------|
-| plan | claude | claude-sonnet-4-6 |
-| execute | codex | gpt-5.4 |
-| review | claude | claude-opus-4-6 |
+| session | claude | claude-sonnet-4-6 |
+| plan | claude | claude-opus-4-7 |
+| execute | codex | gpt-5.5 |
+| review | claude | claude-opus-4-7 |
 | rescue | claude | claude-opus-4-6 |
 | maintenance | claude | claude-sonnet-4-6 |
 | bootstrap | claude | claude-sonnet-4-6 |
 
+Available models (refreshed May 2026):
+- Claude: `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`
+- Codex: `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`
+
 Edit any field to swap models or tools. `install.sh` copies this file as `copy_if_missing` so customizations survive re-runs.
 
-When you run the orchestrate skill, it should read `.ai/models.yaml` and launch each phase with the configured tool and model explicitly. Example: if orchestration starts in Sonnet but `plan.model` is `claude-opus-4-6`, the orchestrator should spawn Opus for planning instead of planning in the starter session.
+When you run the orchestrate skill, it reads `.ai/models.yaml` and launches each phase with the configured tool and model explicitly. Example: if orchestration starts in Sonnet but `plan.model` is `claude-opus-4-6`, the orchestrator spawns Opus for planning instead of planning in the starter session. The full routing contract (auto vs. manual dispatch, prompt-passing, resume rule, error table) lives in `.ai/workflow/dispatch.md`.
 
 ## Setup
 
@@ -94,10 +122,11 @@ bash /path/to/ai-dev-workflow-template/update-workflow.sh /path/to/target-projec
 ```
 
 By default this updates:
-- `.claude/skills/*`
-- `.ai/workflow/*`
+- `.claude/skills/*` (canonical source)
+- `.agents/skills/{orchestrate,planner,reviewer,maintenance,rescue,bootstrap,codex,claude}/SKILL.md` (in-repo Codex mirror)
+- `~/.agents/skills/{orchestrate,planner,reviewer,maintenance,rescue,bootstrap,codex,claude}/SKILL.md` (global Codex mirror)
+- `.ai/workflow/*` (`workflow.md`, `dispatch.md`, `agents-block.md`)
 - managed blocks in `AGENTS.md` and `CLAUDE.md`
-- `~/.agents/skills/call-claude/SKILL.md`
 
 By default this preserves:
 - `.ai/packets/*`
@@ -203,9 +232,28 @@ Use the maintenance skill.
 
 This refreshes `.ai/project.yaml`, `.ai/memory.md`, and `.ai/decisions.md` based on current repo state.
 
+## Dashboard
+
+A local web dashboard lives under `.ai/dashboard/`. From the repo root:
+
+```bash
+python .ai/dashboard/serve.py
+```
+
+Then open <http://localhost:8765/.ai/dashboard/>. It serves the repo as read-only static files and exposes a small JSON API:
+
+- Browse `.ai/plans/` and `.ai/specs/`
+- Append entries to `memory.md` and `decisions.md` from the UI
+- Tail `.ai/events.jsonl` in real time and clear it
+- Flip `dispatch_mode` between `auto` and `manual`
+- Spawn orchestrate / planner subprocesses, stream their logs, and write to stdin
+
+Events and per-job logs (`.ai/events.jsonl`, `.ai/dashboard/jobs/`) are gitignored.
+
 ## Notes
 
-- `AGENTS.md` is the main Codex-facing instruction surface.
-- `.claude/skills/*` contains reusable Claude behaviors.
+- `AGENTS.md` is the main Codex-facing instruction surface; `CLAUDE.md` imports `.ai/workflow/workflow.md`.
+- `.claude/skills/*` is the canonical source for shared skills. `install.sh` mirrors them into `.agents/skills/` (in-repo) and `~/.agents/skills/` (global) so Codex can discover the same set — edit upstream, not in the mirrors.
 - `.ai/project.yaml` is the mutable adapter layer per project.
-- `.ai/packets/*` are schemas; the skills fill the content.
+- `.ai/packets/*` are read-only schemas; phases READ them and EMIT filled copies through stdin/temp files. Never edit packet files during a task.
+- `.ai/plans/<date>-<slug>.md` and `.ai/specs/<date>-<slug>.md` are optional persistent copies for medium/large tasks. New files only — never overwrite existing dated files.
