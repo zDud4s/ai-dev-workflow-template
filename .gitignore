@@ -1,8 +1,27 @@
-# Local notes or temporary outputs
-.ai/local/
-
 # OS files
 .DS_Store
 Thumbs.db
 
+# Local notes or temporary outputs
+.ai/local/
+.ai/events.jsonl
+.ai/dashboard/jobs/
+.ai/dashboard/jobs.jsonl
+
+# Track .ai/plans and .ai/specs as empty folders; ignore their contents
+.ai/plans/*
+.ai/specs/*
+!.ai/plans/.gitkeep
+!.ai/specs/.gitkeep
+
+# Test runner
+.pytest_cache/
+pytest*
+__pycache__/
+/tests/
+
+# Workflow script testbed (install.sh / update-workflow.sh integration tests)
+/test-env/
+
 /docs/
+
