@@ -8,6 +8,7 @@ Usage:
 
 What it updates by default:
   - .claude/skills/*
+  - .agents/skills/*  (mirror of .claude/skills/* + the codex-only claude skill)
   - .ai/workflow/*
   - .ai/dashboard/*   (the local dashboard tool)
   - managed blocks in AGENTS.md and CLAUDE.md
@@ -65,6 +66,14 @@ mkdir -p "$TARGET_DIR/.claude/skills/maintenance"
 mkdir -p "$TARGET_DIR/.claude/skills/rescue"
 mkdir -p "$TARGET_DIR/.claude/skills/codex"
 mkdir -p "$TARGET_DIR/.claude/skills/orchestrate"
+mkdir -p "$TARGET_DIR/.agents/skills/bootstrap"
+mkdir -p "$TARGET_DIR/.agents/skills/planner"
+mkdir -p "$TARGET_DIR/.agents/skills/reviewer"
+mkdir -p "$TARGET_DIR/.agents/skills/maintenance"
+mkdir -p "$TARGET_DIR/.agents/skills/rescue"
+mkdir -p "$TARGET_DIR/.agents/skills/codex"
+mkdir -p "$TARGET_DIR/.agents/skills/orchestrate"
+mkdir -p "$TARGET_DIR/.agents/skills/claude"
 
 copy_if_different() {
   local src="$1"
@@ -94,6 +103,16 @@ copy_if_different "$SCRIPT_DIR/.claude/skills/maintenance/SKILL.md" "$TARGET_DIR
 copy_if_different "$SCRIPT_DIR/.claude/skills/rescue/SKILL.md" "$TARGET_DIR/.claude/skills/rescue/SKILL.md"
 copy_if_different "$SCRIPT_DIR/.claude/skills/codex/SKILL.md" "$TARGET_DIR/.claude/skills/codex/SKILL.md"
 copy_if_different "$SCRIPT_DIR/.claude/skills/orchestrate/SKILL.md" "$TARGET_DIR/.claude/skills/orchestrate/SKILL.md"
+
+# Codex-only `claude` skill (no Claude counterpart) — source under .agents/skills/.
+copy_if_different "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agents/skills/claude/SKILL.md"
+
+# Project-local mirror of shared skills: .claude/skills/<name>/ -> .agents/skills/<name>/.
+# .claude/skills/ is the source of truth; direct edits in .agents/skills/<shared>/ get overwritten.
+for skill in bootstrap planner reviewer maintenance rescue codex orchestrate; do
+  copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
+done
+
 copy_if_different "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
 copy_if_different "$SCRIPT_DIR/.ai/workflow/workflow.md" "$TARGET_DIR/.ai/workflow/workflow.md"
 copy_if_different "$SCRIPT_DIR/.ai/workflow/dispatch.md" "$TARGET_DIR/.ai/workflow/dispatch.md"
@@ -199,14 +218,11 @@ mirror_skill_to_home() {
   copy_if_different "$src" "$dst_dir/SKILL.md"
 }
 
-for skill in bootstrap planner reviewer maintenance rescue codex orchestrate; do
-  src="$SCRIPT_DIR/.claude/skills/$skill/SKILL.md"
+for skill in bootstrap planner reviewer maintenance rescue codex orchestrate claude; do
+  src="$TARGET_DIR/.agents/skills/$skill/SKILL.md"
   [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
   mirror_skill_to_home "$src" "$skill"
 done
-
-# Codex-only skill — symmetric of .claude/skills/codex/. Source under .agents/skills/.
-mirror_skill_to_home "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "claude"
 
 echo ""
 echo "Done."

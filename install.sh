@@ -19,6 +19,14 @@ mkdir -p "$TARGET_DIR/.claude/skills/maintenance"
 mkdir -p "$TARGET_DIR/.claude/skills/rescue"
 mkdir -p "$TARGET_DIR/.claude/skills/codex"
 mkdir -p "$TARGET_DIR/.claude/skills/orchestrate"
+mkdir -p "$TARGET_DIR/.agents/skills/bootstrap"
+mkdir -p "$TARGET_DIR/.agents/skills/planner"
+mkdir -p "$TARGET_DIR/.agents/skills/reviewer"
+mkdir -p "$TARGET_DIR/.agents/skills/maintenance"
+mkdir -p "$TARGET_DIR/.agents/skills/rescue"
+mkdir -p "$TARGET_DIR/.agents/skills/codex"
+mkdir -p "$TARGET_DIR/.agents/skills/orchestrate"
+mkdir -p "$TARGET_DIR/.agents/skills/claude"
 
 copy_if_missing() {
   local src="$1"
@@ -55,6 +63,7 @@ copy_if_missing "$SCRIPT_DIR/.ai/decisions.md" "$TARGET_DIR/.ai/decisions.md"
 copy_if_missing "$SCRIPT_DIR/.ai/models.yaml" "$TARGET_DIR/.ai/models.yaml"
 
 # Skills — only create if missing (user may have customized)
+# .claude/skills/ holds the canonical source of truth for shared skills.
 copy_if_missing "$SCRIPT_DIR/.claude/skills/bootstrap/SKILL.md" "$TARGET_DIR/.claude/skills/bootstrap/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/planner/SKILL.md" "$TARGET_DIR/.claude/skills/planner/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/reviewer/SKILL.md" "$TARGET_DIR/.claude/skills/reviewer/SKILL.md"
@@ -62,6 +71,17 @@ copy_if_missing "$SCRIPT_DIR/.claude/skills/maintenance/SKILL.md" "$TARGET_DIR/.
 copy_if_missing "$SCRIPT_DIR/.claude/skills/rescue/SKILL.md" "$TARGET_DIR/.claude/skills/rescue/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/codex/SKILL.md" "$TARGET_DIR/.claude/skills/codex/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/orchestrate/SKILL.md" "$TARGET_DIR/.claude/skills/orchestrate/SKILL.md"
+
+# Codex-only `claude` skill (no Claude counterpart) — source under .agents/skills/.
+copy_if_missing "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agents/skills/claude/SKILL.md"
+
+# Project-local mirror of shared skills: .claude/skills/<name>/ -> .agents/skills/<name>/.
+# Keeps Codex's view of skills visible in-repo alongside Claude's. Always synced
+# from .claude/skills/ — edit there, not here. copy_if_different so customizations
+# in .claude/skills/ propagate; direct edits to .agents/skills/<shared>/ are overwritten.
+for skill in bootstrap planner reviewer maintenance rescue codex orchestrate; do
+  copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
+done
 
 # Workflow core and packets — always update (immutable core)
 copy_if_different "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
@@ -158,9 +178,9 @@ PY
 
 # Global skill mirror for Codex.
 # Codex only scans ~/.agents/skills/ (no project-local discovery), so every
-# workflow skill must be mirrored there for Codex to act as orchestrator,
-# planner, reviewer, etc. Shared skills come from .claude/skills/ in the repo;
-# the codex-only `claude` executor skill comes from .agents/skills/.
+# workflow skill must be mirrored there. Source for the mirror is the project's
+# own .agents/skills/ (which itself was synced from .claude/skills/ above), so
+# user customizations in the project propagate to the global discovery path.
 AGENTS_SKILLS_HOME="$HOME/.agents/skills"
 mkdir -p "$AGENTS_SKILLS_HOME"
 
@@ -170,20 +190,14 @@ mirror_skill_to_home() {
   local dst_dir="$AGENTS_SKILLS_HOME/$name"
   mkdir -p "$dst_dir"
   cp "$src" "$dst_dir/SKILL.md"
-  echo "Mirrored skill `$name` to $dst_dir/SKILL.md"
+  echo "Mirrored skill '$name' to $dst_dir/SKILL.md"
 }
 
-# Shared skills — single source under .claude/skills/<name>/, mirrored to both
-# the target project and the user's global ~/.agents/skills/ for Codex.
-for skill in bootstrap planner reviewer maintenance rescue codex orchestrate; do
-  src="$SCRIPT_DIR/.claude/skills/$skill/SKILL.md"
+for skill in bootstrap planner reviewer maintenance rescue codex orchestrate claude; do
+  src="$TARGET_DIR/.agents/skills/$skill/SKILL.md"
   [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
   mirror_skill_to_home "$src" "$skill"
 done
-
-# Codex-only skill — `claude` is the symmetric counterpart of `.claude/skills/codex/`.
-# Source lives under .agents/skills/claude/ (Claude has no use for it locally).
-mirror_skill_to_home "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "claude"
 
 # Codex global config — ensure approval_policy allows --full-auto to work
 # approval_policy = "on-request" means Codex auto-approves all actions when --full-auto is passed
