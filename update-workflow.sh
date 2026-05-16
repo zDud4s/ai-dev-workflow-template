@@ -71,7 +71,6 @@ mkdir -p "$TARGET_DIR/.agents/skills/planner"
 mkdir -p "$TARGET_DIR/.agents/skills/reviewer"
 mkdir -p "$TARGET_DIR/.agents/skills/maintenance"
 mkdir -p "$TARGET_DIR/.agents/skills/rescue"
-mkdir -p "$TARGET_DIR/.agents/skills/codex"
 mkdir -p "$TARGET_DIR/.agents/skills/orchestrate"
 mkdir -p "$TARGET_DIR/.agents/skills/claude"
 
@@ -109,7 +108,8 @@ copy_if_different "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.age
 
 # Project-local mirror of shared skills: .claude/skills/<name>/ -> .agents/skills/<name>/.
 # .claude/skills/ is the source of truth; direct edits in .agents/skills/<shared>/ get overwritten.
-for skill in bootstrap planner reviewer maintenance rescue codex orchestrate; do
+# `codex` is excluded: Codex does not need a skill describing how to invoke itself.
+for skill in bootstrap planner reviewer maintenance rescue orchestrate; do
   copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
 done
 
@@ -218,7 +218,7 @@ mirror_skill_to_home() {
   copy_if_different "$src" "$dst_dir/SKILL.md"
 }
 
-for skill in bootstrap planner reviewer maintenance rescue codex orchestrate claude; do
+for skill in bootstrap planner reviewer maintenance rescue orchestrate claude; do
   src="$TARGET_DIR/.agents/skills/$skill/SKILL.md"
   [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
   mirror_skill_to_home "$src" "$skill"

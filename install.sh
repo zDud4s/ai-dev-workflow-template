@@ -24,7 +24,6 @@ mkdir -p "$TARGET_DIR/.agents/skills/planner"
 mkdir -p "$TARGET_DIR/.agents/skills/reviewer"
 mkdir -p "$TARGET_DIR/.agents/skills/maintenance"
 mkdir -p "$TARGET_DIR/.agents/skills/rescue"
-mkdir -p "$TARGET_DIR/.agents/skills/codex"
 mkdir -p "$TARGET_DIR/.agents/skills/orchestrate"
 mkdir -p "$TARGET_DIR/.agents/skills/claude"
 
@@ -79,7 +78,9 @@ copy_if_missing "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agent
 # Keeps Codex's view of skills visible in-repo alongside Claude's. Always synced
 # from .claude/skills/ — edit there, not here. copy_if_different so customizations
 # in .claude/skills/ propagate; direct edits to .agents/skills/<shared>/ are overwritten.
-for skill in bootstrap planner reviewer maintenance rescue codex orchestrate; do
+# `codex` is excluded: Codex does not need a skill describing how to invoke itself
+# (symmetric to Claude not having a `claude` skill).
+for skill in bootstrap planner reviewer maintenance rescue orchestrate; do
   copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
 done
 
@@ -193,7 +194,7 @@ mirror_skill_to_home() {
   echo "Mirrored skill '$name' to $dst_dir/SKILL.md"
 }
 
-for skill in bootstrap planner reviewer maintenance rescue codex orchestrate claude; do
+for skill in bootstrap planner reviewer maintenance rescue orchestrate claude; do
   src="$TARGET_DIR/.agents/skills/$skill/SKILL.md"
   [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
   mirror_skill_to_home "$src" "$skill"
