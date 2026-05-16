@@ -1,3 +1,3 @@
 <!-- >>> AI WORKFLOW MANAGED IMPORT >>> -->
-@.ai/workflow/claude-workflow.md
+@.ai/workflow/workflow.md
 <!-- <<< AI WORKFLOW MANAGED IMPORT <<< -->

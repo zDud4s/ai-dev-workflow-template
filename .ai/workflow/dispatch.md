@@ -1,6 +1,6 @@
 # Dispatch mechanism
 
-Shared rules for any controller (currently the orchestrator) that dispatches workflow phases through configured tools and models. The pipeline itself lives in `.claude/skills/orchestrate/SKILL.md`; everything here is the mechanical layer underneath it.
+Shared rules for any controller (currently the orchestrator) that dispatches workflow phases through configured tools and models. The pipeline itself lives in the `orchestrate` skill (`.claude/skills/orchestrate/SKILL.md` for Claude, `~/.agents/skills/orchestrate/SKILL.md` for Codex); everything here is the mechanical layer underneath it.
 
 ## Dispatch contract
 
@@ -8,7 +8,7 @@ A controller never substitutes its own model for a configured workflow phase. Fo
 
 1. Read `<phase>.tool` and `<phase>.model` from `.ai/models.yaml`.
 2. Build a standalone prompt packet for that phase, containing:
-   - relevant skill instructions from `.claude/skills/<phase>/SKILL.md` when available
+   - relevant skill instructions from the `<phase>` skill, resolved via the controller's discovery path (`.claude/skills/<phase>/SKILL.md` for Claude, `~/.agents/skills/<phase>/SKILL.md` for Codex) when available
    - the current objective
    - the required repo context
    - the relevant packet schema from `.ai/packets/`
@@ -137,7 +137,7 @@ Errors raised by the dispatch mechanism itself, before any phase logic runs. Pip
 |---|---|
 | `.ai/models.yaml` missing | STOP — tell user to run `install.sh` |
 | `project_name` in `project.yaml` is `unknown` | STOP — tell user to run bootstrap skill |
-| `call-claude` bridge skill missing at `~/.agents/skills/call-claude/` | STOP — tell user to run `install.sh` |
+| Executor skill for the configured `<execute.tool>` missing in the controller's discovery path | STOP — tell user to run `install.sh` (or `update-workflow.sh`) so the orchestrator and executor skills are installed |
 | Tool from `models.yaml` unavailable | STOP — tell user to update `.ai/models.yaml`. Never execute in-context as fallback. |
 | `dispatch_mode: auto` but `session` block missing or partial | STOP — "Auto dispatch requires a complete `session` block in `.ai/models.yaml` with both `session.tool` and `session.model`." |
 | `dispatch_mode` has an unrecognized value | STOP — "`dispatch_mode` must be `auto` or `manual`. Got: `<value>`." |

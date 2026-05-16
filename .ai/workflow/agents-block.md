@@ -2,9 +2,17 @@
 
 ## AI workflow integration
 
-This repository uses an AI workflow. See `.ai/workflow/claude-workflow.md` for full pipeline details.
+This repository uses an AI workflow. See `.ai/workflow/workflow.md` for full pipeline details.
 
 Roles: configured in `.ai/models.yaml`
+
+## Orchestration entry point
+
+For any development task, follow the `orchestrate` skill:
+- Claude: invoke "Use the orchestrate skill. Task: <description>" (skill at `.claude/skills/orchestrate/SKILL.md`)
+- Codex: read `~/.agents/skills/orchestrate/SKILL.md` and follow it (installed globally by `install.sh`)
+
+Both paths resolve to the same pipeline contract; only the discovery path differs.
 
 Execution rules:
 1. Prefer the smallest correct change.

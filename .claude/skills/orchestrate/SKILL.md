@@ -7,7 +7,7 @@ You are the orchestrator. You run the full workflow pipeline end-to-end from a s
 
 **Read `.ai/workflow/dispatch.md` once before starting.** It defines the dispatch contract, routing logic (`inline | agent | dispatcher`), the prompt-passing convention (temp file → stdin), the resume rule (no config flags on `resume --last`), and the dispatch-time error table. Everything below assumes those rules. Do not duplicate them.
 
-**Packets are read-only templates.** `.ai/packets/*.md` is the schema layer — phases READ them and EMIT filled copies in their output. Filled execution packets flow through temp files (e.g. `/tmp/execute-packet.md`) to the executor and are deleted after dispatch. For medium/large tasks the planner MAY persist a filled plan at `.ai/plans/<YYYY-MM-DD>-<slug>.md` (new file only). You must never call Edit/Write on any file under `.ai/packets/`. See the Layer model in `.ai/workflow/claude-workflow.md`.
+**Packets are read-only templates.** `.ai/packets/*.md` is the schema layer — phases READ them and EMIT filled copies in their output. Filled execution packets flow through temp files (e.g. `/tmp/execute-packet.md`) to the executor and are deleted after dispatch. For medium/large tasks the planner MAY persist a filled plan at `.ai/plans/<YYYY-MM-DD>-<slug>.md` (new file only). You must never call Edit/Write on any file under `.ai/packets/`. See the Layer model in `.ai/workflow/workflow.md`.
 
 ## Entry point
 
@@ -24,14 +24,17 @@ Stop immediately if any of these fail:
 
 1. `.ai/models.yaml` exists.
 2. `.ai/project.yaml` `project_name` is not `unknown` (otherwise run bootstrap first).
-3. `~/.agents/skills/call-claude/SKILL.md` exists.
-4. `.ai/workflow/dispatch.md` exists (this skill depends on it). If missing → STOP: "`.ai/workflow/dispatch.md` not found. Run `install.sh` (or `update-workflow.sh`) to install the dispatch contract."
+3. `.ai/workflow/dispatch.md` exists (this skill depends on it). If missing → STOP: "`.ai/workflow/dispatch.md` not found. Run `install.sh` (or `update-workflow.sh`) to install the dispatch contract."
+4. The executor's tool-specific skill is discoverable. Resolve `execute.tool` from `.ai/models.yaml`, then verify the matching skill exists in your discovery path:
+   - If you run as Claude: `.claude/skills/<execute.tool>/SKILL.md`
+   - If you run as Codex: `~/.agents/skills/<execute.tool>/SKILL.md`
+   Missing → STOP and tell the user to run `install.sh` (or `update-workflow.sh`) to install the executor skill.
 
 Specific messages for each are in the dispatch error table.
 
 ## Phase 1 — Triage + Plan
 
-Read `plan.tool` and `plan.model` from `.ai/models.yaml`. Build a planner prompt combining `.claude/skills/planner/SKILL.md`, the user task, relevant facts from `project.yaml` / `memory.md` / `decisions.md`, and the `.ai/packets/execute.md` schema. Dispatch through the configured tool/model.
+Read `plan.tool` and `plan.model` from `.ai/models.yaml`. Build a planner prompt combining the `planner` skill (resolved via your discovery path: `.claude/skills/planner/SKILL.md` for Claude, `~/.agents/skills/planner/SKILL.md` for Codex), the user task, relevant facts from `project.yaml` / `memory.md` / `decisions.md`, and the `.ai/packets/execute.md` schema. Dispatch through the configured tool/model.
 
 The planner output must state both `Size` and `Risk level` at the top.
 
@@ -50,7 +53,7 @@ If the planner output is missing `Size`, missing `Risk level`, or emits `TRIVIAL
 
 ## Phase 2 — Execute
 
-Read `execute.tool` and `execute.model` from `.ai/models.yaml`. Dispatch the execution packet (or trivial instruction) through the configured tool. Tool-specific invocation details (flags, sandbox bypass, resume mechanics, output filtering) live in `.claude/skills/<execute.tool>/SKILL.md` — read that skill alongside this one when dispatching. For example, the codex skill specifies `--dangerously-bypass-approvals-and-sandbox` for write tasks; other executors will have their own conventions.
+Read `execute.tool` and `execute.model` from `.ai/models.yaml`. Dispatch the execution packet (or trivial instruction) through the configured tool. Tool-specific invocation details (flags, sandbox bypass, resume mechanics, output filtering) live in the skill named after `<execute.tool>` — resolve it via your discovery path (`.claude/skills/<execute.tool>/SKILL.md` for Claude, `~/.agents/skills/<execute.tool>/SKILL.md` for Codex). Read that skill alongside this one when dispatching. For example, the codex skill specifies `--dangerously-bypass-approvals-and-sandbox` for write tasks; the claude skill specifies `claude -p` invocation conventions.
 
 ### Hard rule: no in-context execution
 
@@ -82,14 +85,14 @@ Proceed only if ALL:
 - `Tests added` is filled — and if the planning packet's `Tests to add` was non-empty, every planned test must be marked `added` or carry a concrete skip reason (vague skips like "did not test" fail this check), AND
 - `Validation evidence` contains one block per command in `Validation.Commands`, each with `$ <cmd>`, `exit:`, and `tail:` lines. A command may instead carry `could not run: <reason>` — accept only if the reason is concrete (e.g. "tool not installed in execution environment"), reject vague ones ("did not test").
 
-If incomplete, attempt ONE recovery resume. The resume mechanism is tool-specific — consult `.claude/skills/<execute.tool>/SKILL.md`. The prompt to send is:
+If incomplete, attempt ONE recovery resume. The resume mechanism is tool-specific — consult the `<execute.tool>` skill in your discovery path (`.claude/skills/<execute.tool>/SKILL.md` for Claude, `~/.agents/skills/<execute.tool>/SKILL.md` for Codex). The prompt to send is:
 
 > "The Handoff section is incomplete. Re-fill it. `Validation evidence` must contain one block per command in Validation.Commands with `$ <cmd>`, `exit: <code>`, `tail: <last 10 lines>`. If a command could not run, state a concrete reason. Output the completed Handoff."
 
 Example for codex (other executors invoke resume differently — see their skill):
 
 ```bash
-# Codex-specific. Defer to .claude/skills/codex/SKILL.md for current conventions.
+# Codex-specific. Defer to the codex skill in your discovery path for current conventions.
 printf '%s' '<resume prompt above>' | codex exec --skip-git-repo-check resume --last 2>/dev/null
 ```
 
@@ -101,7 +104,7 @@ After the resume:
 
 Run if the review gate from Phase 1 says so. Skip otherwise.
 
-Read `review.tool` and `review.model` from `.ai/models.yaml`. Build a reviewer prompt combining `.claude/skills/reviewer/SKILL.md`, the execution packet objective, the executor's filled Handoff, and `.ai/packets/review.md`. Dispatch through the configured tool/model.
+Read `review.tool` and `review.model` from `.ai/models.yaml`. Build a reviewer prompt combining the `reviewer` skill (resolved via your discovery path: `.claude/skills/reviewer/SKILL.md` for Claude, `~/.agents/skills/reviewer/SKILL.md` for Codex), the execution packet objective, the executor's filled Handoff, and `.ai/packets/review.md`. Dispatch through the configured tool/model.
 
 Verdict handling:
 
@@ -110,7 +113,7 @@ Verdict handling:
 - **request-changes** → show findings to the user and ask:
   > "The reviewer found issues (iteration N). Options: (1) send back to the executor for another pass, (2) accept current state and proceed to wrap-up, (3) stop."
 
-  - **(1) send back** → resume the executor session with `Reviewer findings:\n<findings>\n\nOriginal objective: <objective>` via temp file → stdin (no config flags on resume — see dispatch.md). Resume mechanics are tool-specific (`.claude/skills/<execute.tool>/SKILL.md`). Re-run the reviewer on the new Handoff. The new verdict goes through this same verdict handler — increment iteration N when re-asking. There is no automatic cap; the user gates each additional pass.
+  - **(1) send back** → resume the executor session with `Reviewer findings:\n<findings>\n\nOriginal objective: <objective>` via temp file → stdin (no config flags on resume — see dispatch.md). Resume mechanics are tool-specific (see the `<execute.tool>` skill in your discovery path). Re-run the reviewer on the new Handoff. The new verdict goes through this same verdict handler — increment iteration N when re-asking. There is no automatic cap; the user gates each additional pass.
   - **(2) accept** → proceed to Phase 4. In the wrap-up report, surface the unresolved reviewer findings under `Risks` with the line "Reviewer findings accepted without changes (iteration N)".
   - **(3) stop** → STOP, report findings as-is.
 
