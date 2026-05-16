@@ -20,16 +20,16 @@ session:
 
 plan:
   tool: claude
-  model: claude-sonnet-4-6
+  model: claude-opus-4-7
 
 execute:
   tool: codex
-  model: gpt-5.3-codex
+  model: gpt-5.5
   # timeout_seconds: 1800
 
 review:
   tool: claude
-  model: claude-opus-4-6
+  model: claude-opus-4-7
 
 rescue:
   tool: claude
