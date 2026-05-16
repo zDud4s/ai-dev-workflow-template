@@ -11,7 +11,8 @@ What it updates by default:
   - .ai/workflow/*
   - .ai/dashboard/*   (the local dashboard tool)
   - managed blocks in AGENTS.md and CLAUDE.md
-  - ~/.agents/skills/call-claude/SKILL.md
+  - ~/.agents/skills/{orchestrate,planner,reviewer,maintenance,rescue,bootstrap,codex,claude}/SKILL.md
+    (global mirror so Codex can discover the same skills)
 
 What it preserves by default:
   - .ai/packets/*   (must already exist — run install.sh first on new projects)
@@ -94,7 +95,7 @@ copy_if_different "$SCRIPT_DIR/.claude/skills/rescue/SKILL.md" "$TARGET_DIR/.cla
 copy_if_different "$SCRIPT_DIR/.claude/skills/codex/SKILL.md" "$TARGET_DIR/.claude/skills/codex/SKILL.md"
 copy_if_different "$SCRIPT_DIR/.claude/skills/orchestrate/SKILL.md" "$TARGET_DIR/.claude/skills/orchestrate/SKILL.md"
 copy_if_different "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
-copy_if_different "$SCRIPT_DIR/.ai/workflow/claude-workflow.md" "$TARGET_DIR/.ai/workflow/claude-workflow.md"
+copy_if_different "$SCRIPT_DIR/.ai/workflow/workflow.md" "$TARGET_DIR/.ai/workflow/workflow.md"
 copy_if_different "$SCRIPT_DIR/.ai/workflow/dispatch.md" "$TARGET_DIR/.ai/workflow/dispatch.md"
 
 # Dashboard tool — keep in sync
@@ -137,7 +138,7 @@ script_dir = Path(sys.argv[2])
 
 agents_block = (script_dir / ".ai/workflow/agents-block.md").read_text()
 claude_import_block = """<!-- >>> AI WORKFLOW MANAGED IMPORT >>> -->
-@.ai/workflow/claude-workflow.md
+@.ai/workflow/workflow.md
 <!-- <<< AI WORKFLOW MANAGED IMPORT <<< -->"""
 
 def upsert_block(path: Path, start_marker: str, end_marker: str, block_text: str) -> None:
@@ -184,9 +185,28 @@ upsert_block(
 )
 PY
 
-CALL_CLAUDE_DIR="$HOME/.agents/skills/call-claude"
-mkdir -p "$CALL_CLAUDE_DIR"
-copy_if_different "$SCRIPT_DIR/.agents/skills/call-claude/SKILL.md" "$CALL_CLAUDE_DIR/SKILL.md"
+# Global skill mirror for Codex.
+# Keep ~/.agents/skills/ in sync with project-local skills so Codex can
+# orchestrate, plan, review, etc. when run from this project.
+AGENTS_SKILLS_HOME="$HOME/.agents/skills"
+mkdir -p "$AGENTS_SKILLS_HOME"
+
+mirror_skill_to_home() {
+  local src="$1"
+  local name="$2"
+  local dst_dir="$AGENTS_SKILLS_HOME/$name"
+  mkdir -p "$dst_dir"
+  copy_if_different "$src" "$dst_dir/SKILL.md"
+}
+
+for skill in bootstrap planner reviewer maintenance rescue codex orchestrate; do
+  src="$SCRIPT_DIR/.claude/skills/$skill/SKILL.md"
+  [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
+  mirror_skill_to_home "$src" "$skill"
+done
+
+# Codex-only skill — symmetric of .claude/skills/codex/. Source under .agents/skills/.
+mirror_skill_to_home "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "claude"
 
 echo ""
 echo "Done."
