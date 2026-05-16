@@ -9,18 +9,22 @@ Usage:
 What it updates by default:
   - .claude/skills/*
   - .ai/workflow/*
+  - .ai/dashboard/*   (the local dashboard tool)
   - managed blocks in AGENTS.md and CLAUDE.md
   - ~/.agents/skills/call-claude/SKILL.md
 
 What it preserves by default:
-  - .ai/packets/*
+  - .ai/packets/*   (must already exist — run install.sh first on new projects)
   - .ai/models.yaml
   - .ai/project.yaml
   - .ai/memory.md
   - .ai/decisions.md
+  - .claude/settings.json   (may contain user hooks — never overwritten)
 
 Options:
-  --include-packets   Also update .ai/packets/*
+  --include-packets   Also update .ai/packets/* (creates them if missing)
+
+Note: this script updates an existing install. For a new project, run install.sh first.
 EOF
 }
 
@@ -52,6 +56,7 @@ TARGET_DIR="$(cd -- "$TARGET_DIR" && pwd)"
 echo "Updating AI workflow in: $TARGET_DIR"
 
 mkdir -p "$TARGET_DIR/.ai/workflow"
+mkdir -p "$TARGET_DIR/.ai/dashboard"
 mkdir -p "$TARGET_DIR/.claude/skills/bootstrap"
 mkdir -p "$TARGET_DIR/.claude/skills/planner"
 mkdir -p "$TARGET_DIR/.claude/skills/reviewer"
@@ -90,13 +95,25 @@ copy_if_different "$SCRIPT_DIR/.claude/skills/codex/SKILL.md" "$TARGET_DIR/.clau
 copy_if_different "$SCRIPT_DIR/.claude/skills/orchestrate/SKILL.md" "$TARGET_DIR/.claude/skills/orchestrate/SKILL.md"
 copy_if_different "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
 copy_if_different "$SCRIPT_DIR/.ai/workflow/claude-workflow.md" "$TARGET_DIR/.ai/workflow/claude-workflow.md"
+copy_if_different "$SCRIPT_DIR/.ai/workflow/dispatch.md" "$TARGET_DIR/.ai/workflow/dispatch.md"
 
+# Dashboard tool — keep in sync
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/serve.py" "$TARGET_DIR/.ai/dashboard/serve.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/index.html" "$TARGET_DIR/.ai/dashboard/index.html"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/log_event.py" "$TARGET_DIR/.ai/dashboard/log_event.py"
+
+PACKETS_STATE="kept"   # one of: kept | updated | missing
 if [ "$INCLUDE_PACKETS" -eq 1 ]; then
   mkdir -p "$TARGET_DIR/.ai/packets"
   copy_if_different "$SCRIPT_DIR/.ai/packets/plan.md" "$TARGET_DIR/.ai/packets/plan.md"
   copy_if_different "$SCRIPT_DIR/.ai/packets/execute.md" "$TARGET_DIR/.ai/packets/execute.md"
   copy_if_different "$SCRIPT_DIR/.ai/packets/review.md" "$TARGET_DIR/.ai/packets/review.md"
   copy_if_different "$SCRIPT_DIR/.ai/packets/rescue.md" "$TARGET_DIR/.ai/packets/rescue.md"
+  PACKETS_STATE="updated"
+elif [ ! -d "$TARGET_DIR/.ai/packets" ]; then
+  echo "Warning: $TARGET_DIR/.ai/packets/ does not exist. The workflow needs these schema files." >&2
+  echo "         Run install.sh first, or re-run with --include-packets to install them now." >&2
+  PACKETS_STATE="missing"
 else
   echo "Kept packets unchanged (.ai/packets/*)"
 fi
@@ -129,13 +146,18 @@ def upsert_block(path: Path, start_marker: str, end_marker: str, block_text: str
         if start_marker in content and end_marker in content:
             before = content.split(start_marker)[0].rstrip()
             after = content.split(end_marker, 1)[1].lstrip()
-            new_content = before + "\n\n" + block_text.strip() + "\n"
-            if after:
-                new_content += "\n" + after
         else:
-            new_content = content.rstrip() + "\n\n" + block_text.strip() + "\n"
+            before = content.rstrip()
+            after = ""
     else:
-        new_content = block_text.strip() + "\n"
+        before = ""
+        after = ""
+    new_content = ""
+    if before:
+        new_content += before + "\n\n"
+    new_content += block_text.strip() + "\n"
+    if after:
+        new_content += "\n" + after
     path.write_text(new_content)
 
 agents_path = target_dir / "AGENTS.md"
@@ -147,16 +169,12 @@ upsert_block(
 )
 
 root_claude = target_dir / "CLAUDE.md"
-dot_claude_dir = target_dir / ".claude"
-dot_claude = dot_claude_dir / "CLAUDE.md"
+dot_claude = target_dir / ".claude" / "CLAUDE.md"
 
-if root_claude.exists():
-    claude_target = root_claude
-elif dot_claude.exists():
+if dot_claude.exists() and not root_claude.exists():
     claude_target = dot_claude
 else:
-    dot_claude_dir.mkdir(parents=True, exist_ok=True)
-    claude_target = dot_claude
+    claude_target = root_claude
 
 upsert_block(
     claude_target,
@@ -173,6 +191,14 @@ copy_if_different "$SCRIPT_DIR/.agents/skills/call-claude/SKILL.md" "$CALL_CLAUD
 echo ""
 echo "Done."
 echo "Updated shared workflow files in $TARGET_DIR."
-if [ "$INCLUDE_PACKETS" -eq 0 ]; then
-  echo "Packets were preserved. Use --include-packets if you want to refresh them too."
-fi
+case "$PACKETS_STATE" in
+  kept)
+    echo "Packets were preserved. Use --include-packets if you want to refresh them too."
+    ;;
+  updated)
+    echo "Packets refreshed (--include-packets)."
+    ;;
+  missing)
+    echo "Packets are still missing — re-run with --include-packets (or install.sh) to create them." >&2
+    ;;
+esac

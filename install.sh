@@ -9,6 +9,9 @@ echo "Installing AI workflow into: $TARGET_DIR"
 mkdir -p "$TARGET_DIR/.ai"
 mkdir -p "$TARGET_DIR/.ai/workflow"
 mkdir -p "$TARGET_DIR/.ai/packets"
+mkdir -p "$TARGET_DIR/.ai/plans"
+mkdir -p "$TARGET_DIR/.ai/specs"
+mkdir -p "$TARGET_DIR/.ai/dashboard"
 mkdir -p "$TARGET_DIR/.claude/skills/bootstrap"
 mkdir -p "$TARGET_DIR/.claude/skills/planner"
 mkdir -p "$TARGET_DIR/.claude/skills/reviewer"
@@ -28,10 +31,19 @@ copy_if_missing() {
   fi
 }
 
-copy_always() {
+copy_if_different() {
   local src="$1"
   local dst="$2"
   mkdir -p "$(dirname "$dst")"
+  if [ ! -f "$dst" ]; then
+    cp "$src" "$dst"
+    echo "Created $dst"
+    return
+  fi
+  if cmp -s "$src" "$dst"; then
+    echo "Kept $dst (already up to date)"
+    return
+  fi
   cp "$src" "$dst"
   echo "Updated $dst"
 }
@@ -52,12 +64,28 @@ copy_if_missing "$SCRIPT_DIR/.claude/skills/codex/SKILL.md" "$TARGET_DIR/.claude
 copy_if_missing "$SCRIPT_DIR/.claude/skills/orchestrate/SKILL.md" "$TARGET_DIR/.claude/skills/orchestrate/SKILL.md"
 
 # Workflow core and packets — always update (immutable core)
-copy_always "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
-copy_always "$SCRIPT_DIR/.ai/workflow/claude-workflow.md" "$TARGET_DIR/.ai/workflow/claude-workflow.md"
-copy_always "$SCRIPT_DIR/.ai/packets/plan.md" "$TARGET_DIR/.ai/packets/plan.md"
-copy_always "$SCRIPT_DIR/.ai/packets/execute.md" "$TARGET_DIR/.ai/packets/execute.md"
-copy_always "$SCRIPT_DIR/.ai/packets/review.md" "$TARGET_DIR/.ai/packets/review.md"
-copy_always "$SCRIPT_DIR/.ai/packets/rescue.md" "$TARGET_DIR/.ai/packets/rescue.md"
+copy_if_different "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
+copy_if_different "$SCRIPT_DIR/.ai/workflow/claude-workflow.md" "$TARGET_DIR/.ai/workflow/claude-workflow.md"
+copy_if_different "$SCRIPT_DIR/.ai/workflow/dispatch.md" "$TARGET_DIR/.ai/workflow/dispatch.md"
+copy_if_different "$SCRIPT_DIR/.ai/packets/plan.md" "$TARGET_DIR/.ai/packets/plan.md"
+copy_if_different "$SCRIPT_DIR/.ai/packets/execute.md" "$TARGET_DIR/.ai/packets/execute.md"
+copy_if_different "$SCRIPT_DIR/.ai/packets/review.md" "$TARGET_DIR/.ai/packets/review.md"
+copy_if_different "$SCRIPT_DIR/.ai/packets/rescue.md" "$TARGET_DIR/.ai/packets/rescue.md"
+
+# Local dashboard — always update (it's a small standalone tool)
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/serve.py" "$TARGET_DIR/.ai/dashboard/serve.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/index.html" "$TARGET_DIR/.ai/dashboard/index.html"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/log_event.py" "$TARGET_DIR/.ai/dashboard/log_event.py"
+
+# Project-level Claude Code settings (hook that feeds events.jsonl).
+# Only create if missing — never overwrite a user's existing settings.json.
+SETTINGS_DST="$TARGET_DIR/.claude/settings.json"
+if [ ! -f "$SETTINGS_DST" ]; then
+  cp "$SCRIPT_DIR/.claude/settings.json" "$SETTINGS_DST"
+  echo "Created $SETTINGS_DST (registers dashboard event hook)"
+else
+  echo "Kept existing $SETTINGS_DST — merge the dashboard hook manually if you want event logging"
+fi
 
 PYTHON_CMD=""
 if command -v python3 &>/dev/null; then
@@ -87,13 +115,18 @@ def upsert_block(path: Path, start_marker: str, end_marker: str, block_text: str
         if start_marker in content and end_marker in content:
             before = content.split(start_marker)[0].rstrip()
             after = content.split(end_marker, 1)[1].lstrip()
-            new_content = before + "\n\n" + block_text.strip() + "\n"
-            if after:
-                new_content += "\n" + after
         else:
-            new_content = content.rstrip() + "\n\n" + block_text.strip() + "\n"
+            before = content.rstrip()
+            after = ""
     else:
-        new_content = block_text.strip() + "\n"
+        before = ""
+        after = ""
+    new_content = ""
+    if before:
+        new_content += before + "\n\n"
+    new_content += block_text.strip() + "\n"
+    if after:
+        new_content += "\n" + after
     path.write_text(new_content)
 
 # AGENTS.md
@@ -105,18 +138,15 @@ upsert_block(
     agents_block,
 )
 
-# CLAUDE target selection
+# CLAUDE target selection — prefer root (aligned with AGENTS.md);
+# legacy .claude/CLAUDE.md is respected when present but not created.
 root_claude = target_dir / "CLAUDE.md"
-dot_claude_dir = target_dir / ".claude"
-dot_claude = dot_claude_dir / "CLAUDE.md"
+dot_claude = target_dir / ".claude" / "CLAUDE.md"
 
-if root_claude.exists():
-    claude_target = root_claude
-elif dot_claude.exists():
+if dot_claude.exists() and not root_claude.exists():
     claude_target = dot_claude
 else:
-    dot_claude_dir.mkdir(parents=True, exist_ok=True)
-    claude_target = dot_claude
+    claude_target = root_claude
 
 upsert_block(
     claude_target,
