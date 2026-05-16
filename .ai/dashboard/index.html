@@ -1,0 +1,1625 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AI workflow dashboard</title>
+  <link rel="icon" href="data:," />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..125,300..800&family=Departure+Mono&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+
+      /* ---- Type ---- */
+      --ff-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+      --ff-body:    "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+      --ff-mono:    "Departure Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+      /* Back-compat alias for any inline style="font-family:var(--mono)" */
+      --mono: var(--ff-mono);
+
+      --fs-0: 10px;
+      --fs-1: 11px;
+      --fs-2: 12px;
+      --fs-3: 13px;
+      --fs-4: 14px;
+      --fs-5: 16px;
+      --fs-6: 20px;
+      --fs-7: 28px;
+      --fs-8: 42px;
+
+      /* ---- Color (OKLCH, warm-tinted operator console) ---- */
+      --bg:         oklch(13.5% 0.006 65);
+      --bg-elev:    oklch(17%   0.009 60);
+      --bg-elev-2:  oklch(21%   0.011 55);
+      --bg-inset:   oklch(10%   0.005 65);
+      --bg-tinted:  oklch(16%   0.018 55);
+      /* Aliases preserved for inline styles in JS templates */
+      --bg-2: var(--bg-elev);
+      --bg-3: var(--bg-elev-2);
+      --fg: var(--text);
+      --fg-dim: var(--text-dim);
+
+      --border:        oklch(28% 0.012 55);
+      --border-soft:   oklch(23% 0.010 60);
+      --border-strong: oklch(40% 0.018 55);
+
+      --text:       oklch(95% 0.010 70);
+      --text-2:     oklch(80% 0.014 65);
+      --text-dim:   oklch(60% 0.018 60);
+      --text-faint: oklch(45% 0.016 55);
+      --on-accent:  oklch(15% 0.020 60);
+
+      --accent:      oklch(76% 0.135 55);
+      --accent-hi:   oklch(85% 0.115 60);
+      --accent-soft: oklch(28% 0.050 55);
+      --accent-bg:   oklch(23% 0.045 55);
+
+      --accent-2:    oklch(74% 0.085 200);
+      --teal:        var(--accent-2);
+      --teal-bg:     oklch(24% 0.035 200);
+
+      --good:  oklch(76% 0.135 150);
+      --ok:    var(--good);
+      --ok-bg: oklch(24% 0.050 150);
+      --warn:  oklch(80% 0.125 85);
+      --warn-bg: oklch(24% 0.050 80);
+      --bad:   oklch(70% 0.165 25);
+      --bad-bg: oklch(24% 0.060 25);
+
+      /* ---- Space (4pt) ---- */
+      --s-1: 4px;  --s-2: 8px;  --s-3: 12px;
+      --s-4: 16px; --s-5: 24px; --s-6: 32px;
+      --s-7: 48px; --s-8: 64px; --s-9: 96px;
+
+      --r-sm: 4px;
+      --r-md: 8px;
+      --r-lg: 14px;
+      --radius: var(--r-md);
+
+      --easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    * { box-sizing: border-box; }
+    ::selection { background: var(--accent-soft); color: var(--text); }
+
+    html, body { margin: 0; padding: 0; height: 100%; }
+    html { background: var(--bg); }
+    body {
+      color: var(--text);
+      font-family: var(--ff-body);
+      font-size: var(--fs-3);
+      line-height: 1.55;
+      display: grid;
+      grid-template-columns: 264px 1fr;
+      grid-template-rows: auto 1fr;
+      grid-template-areas:
+        "header header"
+        "nav    main";
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    /* ---------------- Header ---------------- */
+    header {
+      grid-area: header;
+      display: grid;
+      grid-template-columns: 264px 1fr auto auto;
+      align-items: stretch;
+      background: linear-gradient(180deg, var(--bg-elev), var(--bg));
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 {
+      margin: 0;
+      padding: 18px var(--s-5);
+      border-right: 1px solid var(--border);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      font-weight: 400;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--s-2);
+    }
+    header h1::before {
+      content: "\25AE";
+      color: var(--accent);
+      font-size: 14px;
+      line-height: 1;
+    }
+    header .project {
+      padding: var(--s-3) var(--s-5);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--ff-display);
+      font-size: var(--fs-5);
+      font-weight: 600;
+      color: var(--text);
+      font-variation-settings: "wdth" 105;
+      letter-spacing: -0.01em;
+    }
+    header .project::before {
+      content: "/";
+      color: var(--text-faint);
+      font-family: var(--ff-mono);
+      font-weight: 400;
+      font-size: var(--fs-3);
+    }
+    header .spacer { display: none; }
+    header .meta {
+      display: flex;
+      align-items: center;
+      padding: 0 var(--s-4);
+      color: var(--text-faint);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      letter-spacing: 0.06em;
+    }
+    .refresh {
+      all: unset;
+      cursor: pointer;
+      margin: var(--s-2) var(--s-4) var(--s-2) 0;
+      padding: 6px 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      background: var(--bg-elev);
+      color: var(--text-dim);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      align-self: center;
+      transition: border-color 120ms var(--easing), color 120ms var(--easing);
+    }
+    .refresh:hover { color: var(--accent); border-color: var(--accent); }
+
+    /* ---------------- Nav ---------------- */
+    nav {
+      grid-area: nav;
+      background: var(--bg-elev);
+      border-right: 1px solid var(--border);
+      padding: var(--s-3) var(--s-2) var(--s-7);
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      overflow-y: auto;
+    }
+    nav .section-label {
+      padding: var(--s-4) var(--s-3) var(--s-1);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--text-faint);
+    }
+    nav .section-label:first-child { padding-top: var(--s-2); }
+    nav button {
+      all: unset;
+      cursor: pointer;
+      padding: 7px 12px;
+      border-radius: var(--r-sm);
+      font-family: var(--ff-body);
+      font-size: var(--fs-3);
+      color: var(--text-2);
+      display: flex;
+      align-items: center;
+      gap: var(--s-2);
+      transition: background 120ms var(--easing), color 120ms var(--easing);
+    }
+    nav button:hover { background: var(--bg-elev-2); color: var(--text); }
+    nav button.active {
+      background: var(--bg-elev-2);
+      color: var(--accent);
+      font-weight: 500;
+    }
+    nav button .count {
+      margin-left: auto;
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      letter-spacing: 0.05em;
+      color: var(--text-faint);
+      padding: 1px 6px;
+    }
+    nav button.active .count { color: var(--accent); }
+
+    /* ---------------- Main ---------------- */
+    main {
+      grid-area: main;
+      padding: var(--s-6) clamp(var(--s-5), 3vw, var(--s-7)) var(--s-9);
+      overflow-y: auto;
+      max-width: 1320px;
+      width: 100%;
+    }
+    .view { display: none; }
+    .view.active {
+      display: block;
+      animation: fadeIn 220ms var(--easing);
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(3px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    /* ---------------- Section block ---------------- */
+    section.block { margin-bottom: var(--s-7); }
+    section.block h2 {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      text-transform: uppercase;
+      letter-spacing: 0.22em;
+      color: var(--text-faint);
+      margin: 0 0 var(--s-3);
+      font-weight: 400;
+      display: flex;
+      align-items: center;
+      gap: var(--s-3);
+    }
+    section.block h2::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, var(--border) 0%, transparent 80%);
+    }
+
+    /* ---------------- Cards ---------------- */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: var(--s-3);
+      margin-bottom: var(--s-6);
+    }
+    .card {
+      background: var(--bg-elev);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-md);
+      padding: var(--s-4) var(--s-5);
+      display: flex;
+      flex-direction: column;
+      gap: var(--s-2);
+      transition: border-color 140ms var(--easing);
+    }
+    .card:hover { border-color: var(--border); }
+    .card h3 {
+      margin: 0;
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--text-faint);
+      font-weight: 400;
+    }
+    .card .val {
+      font-family: var(--ff-display);
+      font-size: var(--fs-4);
+      color: var(--text);
+      word-break: break-word;
+      font-variation-settings: "wdth" 100;
+    }
+    .card .val.big {
+      font-family: var(--ff-display);
+      font-size: var(--fs-7);
+      line-height: 1.05;
+      letter-spacing: -0.02em;
+      color: var(--accent);
+      font-weight: 500;
+      font-variation-settings: "wdth" 95;
+    }
+
+    /* ---------------- Tables ---------------- */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--bg-elev);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-md);
+      overflow: hidden;
+      font-size: var(--fs-3);
+    }
+    table th, table td {
+      text-align: left;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    table th {
+      background: var(--bg-elev-2);
+      color: var(--text-dim);
+      font-weight: 500;
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+    table tr:last-child td { border-bottom: 0; }
+    table tbody tr { transition: background 100ms var(--easing); }
+    table tbody tr:hover { background: var(--bg-elev-2); }
+    table td.mono { font-family: var(--ff-mono); font-size: var(--fs-2); }
+
+    /* ---------------- Pills ---------------- */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      background: var(--bg-elev-2);
+      color: var(--text-dim);
+      border: 1px solid var(--border-soft);
+      gap: 6px;
+      white-space: nowrap;
+    }
+    .pill::before {
+      content: "";
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+      opacity: 0.9;
+    }
+    .pill.claude     { color: var(--accent);   background: var(--accent-bg); border-color: transparent; }
+    .pill.codex      { color: var(--accent-2); background: var(--teal-bg);   border-color: transparent; }
+    .pill.good       { color: var(--good);     background: var(--ok-bg);     border-color: transparent; }
+    .pill.warn       { color: var(--warn);     background: var(--warn-bg);   border-color: transparent; }
+    .pill.bad        { color: var(--bad);      background: var(--bad-bg);    border-color: transparent; }
+    .pill.running    { color: var(--accent);   background: var(--accent-bg); border-color: transparent; }
+    .pill.running::before { animation: pulse 1.3s var(--easing) infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.35; transform: scale(0.7); }
+    }
+    .pill.queued     { color: var(--text-dim); }
+    .pill.cancelling { color: var(--warn); background: var(--warn-bg); border-color: transparent; }
+    .pill.cancelled  { color: var(--text-faint); }
+    .pill.done       { color: var(--good); background: var(--ok-bg);   border-color: transparent; }
+
+    /* ---------------- Split ---------------- */
+    .split {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: var(--s-4);
+      align-items: start;
+    }
+    .list {
+      background: var(--bg-elev);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-md);
+      max-height: 72vh;
+      overflow-y: auto;
+    }
+    .list-item {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--border-soft);
+      cursor: pointer;
+      font-size: var(--fs-3);
+      transition: background 100ms var(--easing), color 100ms var(--easing);
+    }
+    .list-item:last-child { border-bottom: 0; }
+    .list-item:hover { background: var(--bg-elev-2); color: var(--text); }
+    .list-item.active {
+      background: var(--bg-elev-2);
+      color: var(--accent);
+    }
+    .list-item .sub {
+      font-size: var(--fs-1);
+      color: var(--text-faint);
+      font-family: var(--ff-mono);
+      margin-top: 3px;
+      letter-spacing: 0.05em;
+    }
+
+    /* ---------------- Doc / Markdown ---------------- */
+    .doc {
+      background: var(--bg-elev);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-md);
+      padding: var(--s-5) var(--s-6);
+      max-height: 72vh;
+      overflow-y: auto;
+      font-family: var(--ff-body);
+      font-size: var(--fs-3);
+      line-height: 1.65;
+      color: var(--text-2);
+    }
+    .doc > :first-child { margin-top: 0; }
+    .doc h1, .doc h2, .doc h3, .doc h4 {
+      color: var(--text);
+      margin-top: 1.8em;
+      margin-bottom: 0.55em;
+      font-family: var(--ff-display);
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .doc h1 { font-size: var(--fs-6); }
+    .doc h2 {
+      font-size: var(--fs-5);
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .doc h3 { font-size: var(--fs-4); color: var(--accent); }
+    .doc h4 {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-dim);
+      font-weight: 400;
+    }
+    .doc p { max-width: 72ch; }
+    .doc code {
+      background: var(--bg-inset);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-family: var(--ff-mono);
+      font-size: 0.86em;
+      color: var(--accent-hi);
+      border: 1px solid var(--border-soft);
+    }
+    .doc pre {
+      background: var(--bg-inset);
+      padding: var(--s-4) var(--s-5);
+      border-radius: var(--r-sm);
+      border: 1px solid var(--border-soft);
+      overflow-x: auto;
+      margin: var(--s-3) 0;
+    }
+    .doc pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      color: var(--text);
+      font-size: 0.92em;
+    }
+    .doc table { font-size: var(--fs-2); }
+    .doc a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-decoration-color: var(--accent-soft);
+      text-underline-offset: 3px;
+    }
+    .doc a:hover { text-decoration-color: var(--accent); }
+    .doc ul, .doc ol { padding-left: 24px; }
+    .doc li { margin: 3px 0; }
+    .doc blockquote {
+      margin: var(--s-4) 0;
+      padding: var(--s-3) var(--s-5) var(--s-3) var(--s-6);
+      background: var(--bg-tinted);
+      border-radius: var(--r-sm);
+      color: var(--text-2);
+      position: relative;
+      font-style: italic;
+    }
+    .doc blockquote::before {
+      content: "\201C";
+      position: absolute;
+      left: 12px;
+      top: 0;
+      font-family: var(--ff-display);
+      font-size: 32px;
+      line-height: 1.1;
+      color: var(--accent);
+      font-style: normal;
+    }
+    .doc blockquote p { margin: 0; }
+    .doc input[type="checkbox"] { accent-color: var(--accent); margin-right: 6px; }
+    .doc :is(p, li):has(> input[type="checkbox"]:checked) {
+      color: var(--text-faint);
+      text-decoration: line-through;
+      text-decoration-color: var(--text-faint);
+    }
+    .doc hr {
+      border: 0;
+      border-top: 1px solid var(--border-soft);
+      margin: var(--s-5) 0;
+    }
+
+    /* ---------------- Empty / Error ---------------- */
+    .empty {
+      padding: var(--s-7) var(--s-5);
+      text-align: center;
+      color: var(--text-dim);
+      font-family: var(--ff-body);
+      font-size: var(--fs-3);
+    }
+    .empty::before {
+      content: "\2014  no data  \2014";
+      display: block;
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+      margin-bottom: var(--s-3);
+    }
+    .err {
+      padding: var(--s-3) var(--s-4);
+      background: var(--bad-bg);
+      border: 1px solid var(--bad);
+      color: var(--bad);
+      border-radius: var(--r-sm);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+    }
+
+    /* ---------------- YAML tree ---------------- */
+    .yaml-tree {
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-md);
+      padding: var(--s-4) var(--s-5);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      line-height: 1.7;
+      white-space: pre-wrap;
+      max-height: 60vh;
+      overflow-y: auto;
+      color: var(--text-2);
+    }
+
+    /* ---------------- Events table ---------------- */
+    .events-table { font-size: var(--fs-2); }
+    .events-table td.ts {
+      white-space: nowrap;
+      color: var(--text-faint);
+      font-family: var(--ff-mono);
+    }
+    .events-table td.cmd {
+      font-family: var(--ff-mono);
+      color: var(--text-dim);
+      max-width: 500px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .events-table td.cmd:hover { white-space: normal; color: var(--text); }
+
+    /* ---------------- Toolbar ---------------- */
+    .toolbar {
+      display: flex;
+      gap: var(--s-3);
+      align-items: center;
+      margin-bottom: var(--s-3);
+      padding: var(--s-2) var(--s-3);
+      background: var(--bg-elev);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-sm);
+    }
+    .toolbar label {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .toolbar input[type="checkbox"] { accent-color: var(--accent); }
+
+    /* ---------------- Forms ---------------- */
+    .form-card {
+      background: var(--bg-elev);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-md);
+      padding: var(--s-4) var(--s-5) var(--s-5);
+      margin-bottom: var(--s-5);
+    }
+    .form-card h3 {
+      margin: 0 0 var(--s-3);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--text-faint);
+      font-weight: 400;
+    }
+    .form-row {
+      display: flex;
+      gap: var(--s-3);
+      margin-bottom: var(--s-2);
+      flex-wrap: wrap;
+    }
+    .form-row > .field { flex: 1 1 160px; min-width: 0; }
+    .form-row > .field.wide { flex: 2 1 400px; }
+    .field label {
+      display: block;
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      color: var(--text-faint);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+    .field input,
+    .field textarea,
+    .field select {
+      width: 100%;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-sm);
+      color: var(--text);
+      padding: 9px 11px;
+      font-family: var(--ff-body);
+      font-size: var(--fs-3);
+      transition: border-color 120ms var(--easing), background 120ms var(--easing);
+    }
+    .field input:hover,
+    .field textarea:hover,
+    .field select:hover { border-color: var(--border); }
+    .field input:focus,
+    .field textarea:focus,
+    .field select:focus {
+      outline: none;
+      border-color: var(--accent);
+      background: var(--bg);
+    }
+    .field textarea {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      resize: vertical;
+      min-height: 72px;
+      line-height: 1.5;
+    }
+    .field input.mono { font-family: var(--ff-mono); font-size: var(--fs-2); }
+    .form-actions {
+      display: flex;
+      gap: var(--s-3);
+      align-items: center;
+      margin-top: var(--s-3);
+    }
+    .btn {
+      all: unset;
+      cursor: pointer;
+      padding: 8px 16px;
+      border-radius: var(--r-sm);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      background: var(--accent);
+      color: var(--on-accent);
+      border: 1px solid var(--accent);
+      transition: filter 120ms var(--easing), transform 80ms var(--easing);
+    }
+    .btn:hover { filter: brightness(1.08); }
+    .btn:active { transform: translateY(1px); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn.secondary {
+      background: transparent;
+      color: var(--text-2);
+      border-color: var(--border);
+    }
+    .btn.secondary:hover {
+      color: var(--text);
+      border-color: var(--text-dim);
+      filter: none;
+    }
+    .btn.danger {
+      background: var(--bad);
+      border-color: var(--bad);
+      color: oklch(15% 0.06 25);
+    }
+    .form-msg {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      letter-spacing: 0.12em;
+      color: var(--text-faint);
+      text-transform: uppercase;
+    }
+    .form-msg.ok  { color: var(--good); }
+    .form-msg.err { color: var(--bad); }
+
+    /* ---------------- Log / Job ---------------- */
+    pre.log {
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-sm);
+      padding: var(--s-4) var(--s-5);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      line-height: 1.55;
+      max-height: 55vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text-2);
+    }
+    .job-meta {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 7px var(--s-4);
+      font-size: var(--fs-2);
+      margin-bottom: var(--s-4);
+      padding: var(--s-4) var(--s-5);
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-sm);
+    }
+    .job-meta .k {
+      color: var(--text-faint);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+    .job-meta .v {
+      font-family: var(--ff-mono);
+      word-break: break-word;
+      color: var(--text-2);
+    }
+
+    /* ---------------- Scrollbars ---------------- */
+    *::-webkit-scrollbar { width: 10px; height: 10px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 5px;
+      border: 2px solid var(--bg);
+    }
+    *::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+    /* ---------------- Reduced motion ---------------- */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+
+    /* ---------------- Responsive ---------------- */
+    @media (max-width: 920px) {
+      body {
+        grid-template-columns: 1fr;
+        grid-template-areas: "header" "nav" "main";
+      }
+      header {
+        grid-template-columns: 1fr auto;
+      }
+      header h1 { display: none; }
+      nav {
+        flex-direction: row;
+        flex-wrap: wrap;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+        padding: var(--s-2);
+      }
+      nav .section-label { display: none; }
+      .split { grid-template-columns: 1fr; }
+      main { padding: var(--s-4) var(--s-4) var(--s-7); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AI workflow</h1>
+    <span class="project" id="project-name">…</span>
+    <span class="spacer"></span>
+    <span class="meta" id="meta">loading</span>
+    <button class="refresh" onclick="loadAll()">refresh</button>
+  </header>
+
+  <nav id="nav">
+    <div class="section-label">overview</div>
+    <button data-view="overview" class="active">Overview</button>
+    <button data-view="models">Models &amp; dispatch</button>
+    <button data-view="project">Project state</button>
+    <div class="section-label">knowledge</div>
+    <button data-view="memory">Memory <span class="count" id="count-memory">·</span></button>
+    <button data-view="decisions">Decisions</button>
+    <div class="section-label">tasks</div>
+    <button data-view="plans">Plans <span class="count" id="count-plans">·</span></button>
+    <button data-view="specs">Specs <span class="count" id="count-specs">·</span></button>
+    <button data-view="packets">Packet templates</button>
+    <div class="section-label">runtime</div>
+    <button data-view="events">Events <span class="count" id="count-events">·</span></button>
+    <button data-view="run">Run <span class="count" id="count-jobs">·</span></button>
+  </nav>
+
+  <main>
+    <section class="view active" id="view-overview">
+      <div class="cards" id="overview-cards"></div>
+      <section class="block">
+        <h2>Recent activity</h2>
+        <div id="overview-activity"></div>
+      </section>
+    </section>
+
+    <section class="view" id="view-models">
+      <section class="block">
+        <h2>Dispatch mode</h2>
+        <div class="cards" id="dispatch-cards"></div>
+        <div class="form-actions" style="margin-top:8px">
+          <button class="btn secondary" id="dispatch-toggle">Toggle dispatch mode</button>
+          <span class="form-msg" id="dispatch-msg"></span>
+        </div>
+      </section>
+      <section class="block">
+        <h2>Phase routing</h2>
+        <div id="models-table"></div>
+      </section>
+    </section>
+
+    <section class="view" id="view-project">
+      <section class="block">
+        <h2>Stack &amp; commands</h2>
+        <div id="project-stack"></div>
+      </section>
+      <section class="block">
+        <h2>Boundaries</h2>
+        <div id="project-boundaries"></div>
+      </section>
+      <section class="block">
+        <h2>Raw project.yaml</h2>
+        <pre class="yaml-tree" id="project-raw"></pre>
+      </section>
+    </section>
+
+    <section class="view" id="view-memory">
+      <div class="form-card">
+        <h3>Add memory entry</h3>
+        <div class="form-row">
+          <div class="field">
+            <label for="mem-topic">Topic</label>
+            <input id="mem-topic" class="mono" placeholder="build, ci, auth, tests…" maxlength="32" />
+          </div>
+          <div class="field wide">
+            <label for="mem-fact">Fact (one line)</label>
+            <input id="mem-fact" placeholder="The thing you learned, in one sentence" maxlength="500" />
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn" id="mem-submit">Add entry</button>
+          <span class="form-msg" id="mem-msg"></span>
+        </div>
+      </div>
+      <div class="doc" id="memory-doc"></div>
+    </section>
+
+    <section class="view" id="view-decisions">
+      <div class="form-card">
+        <h3>Add decision</h3>
+        <div class="form-row">
+          <div class="field" style="max-width:140px">
+            <label for="dec-date">Date</label>
+            <input id="dec-date" class="mono" type="date" />
+          </div>
+          <div class="field wide">
+            <label for="dec-decision">Decision</label>
+            <input id="dec-decision" placeholder="What did you decide?" maxlength="200" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field wide">
+            <label for="dec-why">Why</label>
+            <textarea id="dec-why" rows="2" placeholder="Why this and not alternatives"></textarea>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field">
+            <label for="dec-consequence">Consequence</label>
+            <textarea id="dec-consequence" rows="2" placeholder="What this enables / costs"></textarea>
+          </div>
+          <div class="field">
+            <label for="dec-revisit">Revisit conditions</label>
+            <textarea id="dec-revisit" rows="2" placeholder="When to reconsider"></textarea>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn" id="dec-submit">Add decision</button>
+          <span class="form-msg" id="dec-msg"></span>
+        </div>
+      </div>
+      <div class="doc" id="decisions-doc"></div>
+    </section>
+
+    <section class="view" id="view-plans">
+      <div class="split">
+        <div class="list" id="plans-list"></div>
+        <div class="doc" id="plans-doc"><div class="empty">Select a plan</div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-specs">
+      <div class="split">
+        <div class="list" id="specs-list"></div>
+        <div class="doc" id="specs-doc"><div class="empty">Select a spec</div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-packets">
+      <div class="split">
+        <div class="list" id="packets-list"></div>
+        <div class="doc" id="packets-doc"><div class="empty">Select a packet template</div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-run">
+      <div class="form-card">
+        <h3>Trigger a workflow run</h3>
+        <div class="form-row">
+          <div class="field" style="max-width:200px">
+            <label for="run-kind">Kind</label>
+            <select id="run-kind">
+              <option value="orchestrate">Full orchestrate (plan → execute → review)</option>
+              <option value="plan">Plan only (planner skill)</option>
+            </select>
+          </div>
+          <div class="field wide">
+            <label for="run-task">Task description</label>
+            <textarea id="run-task" rows="3" placeholder="What do you want orchestrated? Describe the goal as you'd type to Claude."></textarea>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn" id="run-submit">Start</button>
+          <span class="form-msg" id="run-msg"></span>
+        </div>
+        <div class="form-msg" style="margin-top:8px;color:var(--fg-dim)">
+          Runs <code>claude -p</code> with the configured session model in the background. The subprocess cannot ask you questions — it must escalate via the escalation block instead.
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="list" id="jobs-list"></div>
+        <div class="doc" id="jobs-doc"><div class="empty">Select a job</div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-events">
+      <div class="toolbar">
+        <label><input type="checkbox" id="events-autorefresh" /> auto-refresh (5s)</label>
+        <button class="refresh" onclick="loadEvents()">reload</button>
+        <button class="refresh" onclick="clearEvents()" style="color:var(--bad);border-color:var(--bad)">clear log</button>
+        <span class="meta" id="events-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
+      </div>
+      <div id="events-body"></div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+    marked.setOptions({ gfm: true, breaks: false });
+
+    // ----- nav switching -----
+    $$("nav button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        $$("nav button").forEach((b) => b.classList.remove("active"));
+        $$(".view").forEach((v) => v.classList.remove("active"));
+        btn.classList.add("active");
+        $("#view-" + btn.dataset.view).classList.add("active");
+        if (btn.dataset.view === "run") loadJobs();
+      });
+    });
+
+    // ----- form button wiring -----
+    document.addEventListener("DOMContentLoaded", () => {
+      $("#mem-submit").addEventListener("click", submitMemory);
+      $("#dec-submit").addEventListener("click", submitDecision);
+      $("#dispatch-toggle").addEventListener("click", toggleDispatchMode);
+      $("#run-submit").addEventListener("click", submitJob);
+      $("#run-task").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitJob(); }
+      });
+      // Default decision date = today
+      const today = new Date().toISOString().slice(0, 10);
+      $("#dec-date").value = today;
+      // Enter-to-submit on Memory form
+      ["#mem-topic", "#mem-fact"].forEach((s) => {
+        $(s).addEventListener("keydown", (e) => { if (e.key === "Enter") submitMemory(); });
+      });
+    });
+
+    // ----- fetch helpers -----
+    async function getText(path) {
+      const r = await fetch("/" + path.replace(/^\/+/, ""), { cache: "no-store" });
+      if (!r.ok) throw new Error(path + " -> HTTP " + r.status);
+      return r.text();
+    }
+    async function getYaml(path) {
+      return jsyaml.load(await getText(path));
+    }
+    async function listDir(path) {
+      const r = await fetch("/api/list?path=" + encodeURIComponent(path), { cache: "no-store" });
+      if (!r.ok) return [];
+      const data = await r.json();
+      return data.entries || [];
+    }
+
+    // ----- renderers -----
+    function pillTool(tool) {
+      const cls = tool === "claude" ? "claude" : tool === "codex" ? "codex" : "";
+      return `<span class="pill ${cls}">${tool || "?"}</span>`;
+    }
+
+    function renderOverview(project, models, memoryEntries, plansCount, specsCount) {
+      const stack = (project.stack || []).join(", ") || "—";
+      const pms = (project.package_managers || []).join(", ") || "—";
+      const dispatchMode = models.dispatch_mode || "manual";
+      const dispatchPill = dispatchMode === "auto"
+        ? `<span class="pill good">${dispatchMode}</span>`
+        : `<span class="pill warn">${dispatchMode}</span>`;
+      $("#overview-cards").innerHTML = `
+        <div class="card"><h3>Project</h3><div class="val big">${escape(project.project_name || "unknown")}</div><div class="val" style="color:var(--fg-dim);margin-top:4px">${escape(project.project_type || "—")}</div></div>
+        <div class="card"><h3>Stack</h3><div class="val">${escape(stack)}</div></div>
+        <div class="card"><h3>Package managers</h3><div class="val">${escape(pms)}</div></div>
+        <div class="card"><h3>Dispatch mode</h3><div class="val">${dispatchPill}</div></div>
+        <div class="card"><h3>Memory entries</h3><div class="val big">${memoryEntries}</div></div>
+        <div class="card"><h3>Plans / Specs</h3><div class="val big">${plansCount} / ${specsCount}</div></div>
+      `;
+    }
+
+    function renderActivity(plans, specs) {
+      const items = [
+        ...plans.map((p) => ({ kind: "plan", name: p })),
+        ...specs.map((s) => ({ kind: "spec", name: s })),
+      ].sort((a, b) => b.name.localeCompare(a.name)).slice(0, 8);
+      if (!items.length) {
+        $("#overview-activity").innerHTML = `<div class="empty">No plans or specs yet. Run the planner.</div>`;
+        return;
+      }
+      $("#overview-activity").innerHTML = `<table><thead><tr><th>Kind</th><th>Name</th></tr></thead><tbody>${
+        items.map((it) => `<tr><td><span class="pill ${it.kind === "plan" ? "claude" : "codex"}">${it.kind}</span></td><td class="mono">${escape(it.name)}</td></tr>`).join("")
+      }</tbody></table>`;
+    }
+
+    function renderModels(models) {
+      const mode = models.dispatch_mode || "manual";
+      const session = models.session || {};
+      $("#dispatch-cards").innerHTML = `
+        <div class="card"><h3>Dispatch mode</h3><div class="val big">${escape(mode)}</div></div>
+        <div class="card"><h3>Session tool</h3><div class="val">${pillTool(session.tool)}</div></div>
+        <div class="card"><h3>Session model</h3><div class="val mono">${escape(session.model || "—")}</div></div>
+      `;
+      const tBtn = $("#dispatch-toggle");
+      tBtn.dataset.current = mode;
+      tBtn.textContent = mode === "auto" ? "Switch to manual" : "Switch to auto";
+      const phases = ["session", "plan", "execute", "review", "rescue", "maintenance", "bootstrap"];
+      const rows = phases.map((ph) => {
+        const cfg = models[ph] || {};
+        let resolved = "—";
+        if (ph === "session") {
+          resolved = "n/a";
+        } else if (cfg.mode) resolved = cfg.mode;
+        else if (mode === "auto" && session.tool && session.model) {
+          if (cfg.tool !== session.tool) resolved = "dispatcher";
+          else if (cfg.model !== session.model) resolved = "agent";
+          else resolved = "inline";
+        } else if (mode === "manual") resolved = "dispatcher";
+        const pillCls = resolved === "inline" ? "good" : resolved === "agent" ? "warn" : (resolved === "n/a" ? "" : "claude");
+        const showMode = ph !== "session";
+        return `<tr data-phase="${ph}">
+          <td class="mono"><strong>${ph}</strong></td>
+          <td data-field="tool">${pillTool(cfg.tool)}</td>
+          <td class="mono" data-field="model">${escape(cfg.model || "—")}</td>
+          <td data-field="mode">${showMode ? (cfg.mode ? `<span class="pill warn">${cfg.mode}</span>` : `<span class="pill" style="color:var(--fg-dim)">auto</span>`) : "—"}</td>
+          <td><span class="pill ${pillCls}">${resolved}</span></td>
+          <td style="text-align:right"><button class="btn secondary" style="padding:3px 10px;font-size:11px" onclick="editPhaseRow('${ph}')">Edit</button></td>
+        </tr>`;
+      }).join("");
+      $("#models-table").innerHTML = `<table>
+        <thead><tr><th>Phase</th><th>Tool</th><th>Model</th><th>Override</th><th>Resolved</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+      _modelsCache = models;
+    }
+
+    let _modelsCache = null;
+
+    // Mirror the comments at the top of .ai/models.yaml.
+    // Catalog of available models per tool. Listed newest-first within each family.
+    // Last refreshed: May 2026.
+    //   Claude — https://platform.claude.com/docs/en/about-claude/models/overview
+    //   Codex  — https://developers.openai.com/codex/models
+    const MODELS_BY_TOOL = {
+      claude: [
+        "claude-opus-4-7",     // most capable, agentic coding flagship
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",   // 1M ctx, balanced speed/intelligence
+        "claude-haiku-4-5",    // fastest / cheapest
+      ],
+      codex: [
+        "gpt-5.5",             // current frontier
+        "gpt-5.4",             // computer-use, 1M ctx
+        "gpt-5.4-mini",        // fast subagent
+        "gpt-5.3-codex",       // previous codex generation
+      ],
+    };
+
+    function modelOptionsHtml(tool, currentModel) {
+      const list = MODELS_BY_TOOL[tool] || [];
+      const opts = list.slice();
+      if (currentModel && !opts.includes(currentModel)) opts.unshift(currentModel);
+      return opts.map((m) => `<option value="${escape(m)}"${m === currentModel ? " selected" : ""}>${escape(m)}${list.includes(m) ? "" : " (custom)"}</option>`).join("");
+    }
+
+    function editPhaseRow(phase) {
+      const tr = document.querySelector(`#models-table tr[data-phase="${phase}"]`);
+      if (!tr) return;
+      const cfg = (_modelsCache && _modelsCache[phase]) || {};
+      const showMode = phase !== "session";
+      const initialTool = cfg.tool || "claude";
+      tr.innerHTML = `
+        <td class="mono"><strong>${phase}</strong></td>
+        <td>
+          <select id="pe-tool" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 5px">
+            <option value="claude" ${initialTool === "claude" ? "selected" : ""}>claude</option>
+            <option value="codex" ${initialTool === "codex" ? "selected" : ""}>codex</option>
+          </select>
+        </td>
+        <td>
+          <select id="pe-model" class="mono" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 5px;font-size:12px">
+            ${modelOptionsHtml(initialTool, cfg.model || "")}
+          </select>
+        </td>
+        <td>
+          ${showMode ? `<select id="pe-mode" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 5px">
+            <option value=""${!cfg.mode ? " selected" : ""}>(auto)</option>
+            <option value="inline"${cfg.mode === "inline" ? " selected" : ""}>inline</option>
+            <option value="agent"${cfg.mode === "agent" ? " selected" : ""}>agent</option>
+            <option value="dispatcher"${cfg.mode === "dispatcher" ? " selected" : ""}>dispatcher</option>
+          </select>` : "—"}
+        </td>
+        <td>
+          ${showMode ? `<select id="pe-reff" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 5px;font-size:11px" title="reasoning_effort (codex only)">
+            <option value=""${!cfg.reasoning_effort ? " selected" : ""}>(default)</option>
+            <option value="xhigh"${cfg.reasoning_effort === "xhigh" ? " selected" : ""}>xhigh</option>
+            <option value="high"${cfg.reasoning_effort === "high" ? " selected" : ""}>high</option>
+            <option value="medium"${cfg.reasoning_effort === "medium" ? " selected" : ""}>medium</option>
+            <option value="low"${cfg.reasoning_effort === "low" ? " selected" : ""}>low</option>
+          </select>` : "—"}
+        </td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn" style="padding:3px 10px;font-size:11px" onclick="savePhaseRow('${phase}')">Save</button>
+          <button class="btn secondary" style="padding:3px 10px;font-size:11px" onclick="loadAll()">Cancel</button>
+        </td>
+      `;
+      // When tool changes, repopulate the model dropdown for that tool.
+      $("#pe-tool").addEventListener("change", (e) => {
+        const newTool = e.target.value;
+        const sel = $("#pe-model");
+        const keep = sel.value;  // try to preserve user's current pick if compatible
+        sel.innerHTML = modelOptionsHtml(newTool, MODELS_BY_TOOL[newTool]?.includes(keep) ? keep : "");
+      });
+    }
+
+    async function savePhaseRow(phase) {
+      const tool = $("#pe-tool")?.value;
+      const model = $("#pe-model")?.value.trim();
+      const showMode = phase !== "session";
+      const payload = { phase, tool, model };
+      if (showMode) {
+        payload.mode = $("#pe-mode")?.value || "";
+        payload.reasoning_effort = $("#pe-reff")?.value || "";
+      }
+      if (!model) {
+        alert("model is required");
+        return;
+      }
+      try {
+        await postJson("/api/models/phase", payload);
+        await loadAll();
+      } catch (e) {
+        alert("save failed: " + e.message);
+      }
+    }
+
+    function renderProject(project, rawText) {
+      const cmds = project.commands || {};
+      const cmdRows = Object.entries(cmds).map(([k, v]) => {
+        const arr = Array.isArray(v) ? v : [v];
+        const val = arr.length && arr[0] ? arr.join(" && ") : "—";
+        return `<tr><td class="mono">${k}</td><td class="mono">${escape(val)}</td></tr>`;
+      }).join("");
+      $("#project-stack").innerHTML = cmdRows
+        ? `<table><thead><tr><th>Command</th><th>Value</th></tr></thead><tbody>${cmdRows}</tbody></table>`
+        : `<div class="empty">No commands declared. Run bootstrap.</div>`;
+
+      const b = project.boundaries || {};
+      const boundaryRows = Object.entries(b).map(([k, v]) => {
+        const arr = Array.isArray(v) ? v : [];
+        const val = arr.length ? arr.map((x) => `<span class="pill">${escape(x)}</span>`).join(" ") : "—";
+        return `<tr><td class="mono">${k}</td><td>${val}</td></tr>`;
+      }).join("");
+      $("#project-boundaries").innerHTML = boundaryRows
+        ? `<table><thead><tr><th>Category</th><th>Entries</th></tr></thead><tbody>${boundaryRows}</tbody></table>`
+        : `<div class="empty">No boundaries declared.</div>`;
+
+      $("#project-raw").textContent = rawText;
+    }
+
+    function renderMarkdown(el, text) { el.innerHTML = marked.parse(text || ""); }
+
+    function countMemoryEntries(text) {
+      const m = text.match(/^- \d{4}-\d{2}-\d{2}/gm);
+      return m ? m.length : 0;
+    }
+
+    function buildList(containerSel, items, onSelect) {
+      const el = $(containerSel);
+      if (!items.length) {
+        el.innerHTML = `<div class="empty">Empty</div>`;
+        return;
+      }
+      el.innerHTML = items.map((it) => {
+        const date = (it.match(/^(\d{4}-\d{2}-\d{2})/) || [])[1] || "";
+        return `<div class="list-item" data-name="${escape(it)}">
+          <div>${escape(it.replace(/\.md$/, ""))}</div>
+          ${date ? `<div class="sub">${date}</div>` : ""}
+        </div>`;
+      }).join("");
+      el.querySelectorAll(".list-item").forEach((li) => {
+        li.addEventListener("click", () => {
+          el.querySelectorAll(".list-item").forEach((x) => x.classList.remove("active"));
+          li.classList.add("active");
+          onSelect(li.dataset.name);
+        });
+      });
+    }
+
+    function escape(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    // ----- POST helper -----
+    async function postJson(path, body) {
+      const r = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      let data = null;
+      try { data = await r.json(); } catch (_) { /* no body */ }
+      if (!r.ok) {
+        const msg = (data && data.error) || ("HTTP " + r.status);
+        throw new Error(msg);
+      }
+      return data || {};
+    }
+
+    function setMsg(sel, kind, text, timeoutMs) {
+      const el = $(sel);
+      el.className = "form-msg " + (kind || "");
+      el.textContent = text || "";
+      if (timeoutMs) {
+        clearTimeout(el._t);
+        el._t = setTimeout(() => { el.textContent = ""; el.className = "form-msg"; }, timeoutMs);
+      }
+    }
+
+    // ----- Memory form -----
+    async function submitMemory() {
+      const btn = $("#mem-submit");
+      const topic = $("#mem-topic").value.trim();
+      const fact = $("#mem-fact").value.trim();
+      if (!topic || !fact) { setMsg("#mem-msg", "err", "topic and fact required"); return; }
+      btn.disabled = true;
+      setMsg("#mem-msg", "", "saving…");
+      try {
+        const res = await postJson("/api/memory", { topic, fact });
+        $("#mem-topic").value = "";
+        $("#mem-fact").value = "";
+        setMsg("#mem-msg", "ok", "added: " + res.line, 4000);
+        const memText = await getText(".ai/memory.md").catch(() => "");
+        renderMarkdown($("#memory-doc"), memText);
+        $("#count-memory").textContent = countMemoryEntries(memText);
+      } catch (e) {
+        setMsg("#mem-msg", "err", e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ----- Decisions form -----
+    async function submitDecision() {
+      const btn = $("#dec-submit");
+      const payload = {
+        date: $("#dec-date").value || undefined,
+        decision: $("#dec-decision").value.trim(),
+        why: $("#dec-why").value.trim(),
+        consequence: $("#dec-consequence").value.trim(),
+        revisit: $("#dec-revisit").value.trim(),
+      };
+      if (!payload.decision || !payload.why) {
+        setMsg("#dec-msg", "err", "decision and why required");
+        return;
+      }
+      btn.disabled = true;
+      setMsg("#dec-msg", "", "saving…");
+      try {
+        await postJson("/api/decisions", payload);
+        ["#dec-decision", "#dec-why", "#dec-consequence", "#dec-revisit"].forEach((s) => { $(s).value = ""; });
+        setMsg("#dec-msg", "ok", "decision added", 4000);
+        const txt = await getText(".ai/decisions.md").catch(() => "");
+        renderMarkdown($("#decisions-doc"), txt);
+      } catch (e) {
+        setMsg("#dec-msg", "err", e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ----- Events clear -----
+    async function clearEvents() {
+      if (!confirm("Clear .ai/events.jsonl ? This deletes the file.")) return;
+      try {
+        await postJson("/api/events/clear", {});
+        await loadEvents();
+      } catch (e) {
+        $("#events-meta").textContent = "clear failed: " + e.message;
+      }
+    }
+
+    // ----- Dispatch mode toggle -----
+    async function toggleDispatchMode() {
+      const btn = $("#dispatch-toggle");
+      const current = btn.dataset.current || "auto";
+      const next = current === "auto" ? "manual" : "auto";
+      btn.disabled = true;
+      setMsg("#dispatch-msg", "", "saving…");
+      try {
+        await postJson("/api/models/dispatch_mode", { mode: next });
+        setMsg("#dispatch-msg", "ok", "switched to " + next, 4000);
+        await loadAll();  // re-renders cards and resolved phase modes
+      } catch (e) {
+        setMsg("#dispatch-msg", "err", e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ----- jobs -----
+    let _selectedJobId = null;
+    let _jobsTimer = null;
+
+    function statusPill(status) {
+      const cls = ["running","queued","cancelling","cancelled","done"].includes(status)
+        ? status
+        : (status === "failed" ? "bad" : "");
+      return `<span class="pill ${cls}">${escape(status)}</span>`;
+    }
+
+    async function loadJobs(opts) {
+      opts = opts || {};
+      try {
+        const r = await fetch("/api/jobs", { cache: "no-store" });
+        const data = await r.json();
+        const jobs = data.jobs || [];
+        $("#count-jobs").textContent = jobs.length;
+        const el = $("#jobs-list");
+        if (!jobs.length) {
+          el.innerHTML = `<div class="empty">No jobs yet</div>`;
+        } else {
+          el.innerHTML = jobs.map((j) => {
+            const taskPreview = (j.task || "").replace(/\s+/g, " ");
+            return `<div class="list-item" data-id="${escape(j.id)}">
+              <div>${statusPill(j.status)} <span style="color:var(--fg-dim);font-size:11px">${escape((j.kind || "").toUpperCase())}</span></div>
+              <div class="sub" style="margin-top:4px;white-space:normal">${escape(taskPreview.slice(0, 80))}${taskPreview.length > 80 ? "…" : ""}</div>
+            </div>`;
+          }).join("");
+          el.querySelectorAll(".list-item").forEach((li) => {
+            if (li.dataset.id === _selectedJobId) li.classList.add("active");
+            li.addEventListener("click", () => {
+              _selectedJobId = li.dataset.id;
+              el.querySelectorAll(".list-item").forEach((x) => x.classList.remove("active"));
+              li.classList.add("active");
+              loadJobDetail();
+            });
+          });
+        }
+        // Background poll if any job is running and Run tab visible
+        const anyRunning = jobs.some((j) => j.status === "running" || j.status === "queued" || j.status === "cancelling");
+        const runTabActive = $("#view-run").classList.contains("active");
+        if (_jobsTimer) { clearTimeout(_jobsTimer); _jobsTimer = null; }
+        if (anyRunning && runTabActive) {
+          _jobsTimer = setTimeout(loadJobs, 2000);
+        }
+        // Refresh open job's log too
+        if (_selectedJobId && runTabActive) loadJobDetail();
+      } catch (e) {
+        $("#jobs-list").innerHTML = `<div class="err">${escape(e.message)}</div>`;
+      }
+    }
+
+    async function loadJobDetail() {
+      if (!_selectedJobId) return;
+      try {
+        const r = await fetch("/api/jobs/" + _selectedJobId + "?tail=400", { cache: "no-store" });
+        if (!r.ok) {
+          $("#jobs-doc").innerHTML = `<div class="err">HTTP ${r.status}</div>`;
+          return;
+        }
+        const j = await r.json();
+        const cancelable = j.status === "running" || j.status === "queued";
+        $("#jobs-doc").innerHTML = `
+          <div class="job-meta">
+            <div class="k">id</div>      <div class="v">${escape(j.id)}</div>
+            <div class="k">kind</div>    <div class="v">${escape(j.kind)}</div>
+            <div class="k">status</div>  <div class="v">${statusPill(j.status)} ${j.exit_code != null ? `exit ${j.exit_code}` : ""}</div>
+            <div class="k">created</div> <div class="v">${escape(j.created_at || "—")}</div>
+            <div class="k">started</div> <div class="v">${escape(j.started_at || "—")}</div>
+            <div class="k">ended</div>   <div class="v">${escape(j.ended_at || "—")}</div>
+            <div class="k">command</div> <div class="v">${escape(j.command || "—")}</div>
+            <div class="k">task</div>    <div class="v">${escape(j.task || "—")}</div>
+          </div>
+          <div style="margin-bottom:6px;font-size:11px;color:var(--fg-dim);text-transform:uppercase;letter-spacing:0.5px">log (last 400 lines)</div>
+          <pre class="log" id="job-log">${escape(j.log_tail || "(no output yet)")}</pre>
+          <div class="form-actions" style="margin-top:10px">
+            ${cancelable ? `<button class="btn danger" onclick="cancelJob('${escape(j.id)}')">Cancel job</button>` : ""}
+            <span class="form-msg" id="job-action-msg"></span>
+          </div>
+        `;
+        // Auto-scroll log
+        const log = $("#job-log");
+        if (log) log.scrollTop = log.scrollHeight;
+      } catch (e) {
+        $("#jobs-doc").innerHTML = `<div class="err">${escape(e.message)}</div>`;
+      }
+    }
+
+    async function submitJob() {
+      const btn = $("#run-submit");
+      const kind = $("#run-kind").value;
+      const task = $("#run-task").value.trim();
+      if (!task) { setMsg("#run-msg", "err", "task is required"); return; }
+      btn.disabled = true;
+      setMsg("#run-msg", "", "starting…");
+      try {
+        const res = await postJson("/api/jobs", { kind, task });
+        setMsg("#run-msg", "ok", "job " + res.id.slice(0, 8) + " started", 4000);
+        $("#run-task").value = "";
+        _selectedJobId = res.id;
+        await loadJobs();
+      } catch (e) {
+        setMsg("#run-msg", "err", e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function cancelJob(jobId) {
+      try {
+        await postJson("/api/jobs/" + jobId + "/cancel", {});
+        setMsg("#job-action-msg", "ok", "cancellation requested", 4000);
+        await loadJobs();
+      } catch (e) {
+        setMsg("#job-action-msg", "err", e.message);
+      }
+    }
+
+    // ----- events -----
+    function relativeTime(iso) {
+      const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+      if (diff < 60) return Math.floor(diff) + "s ago";
+      if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+      if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+      return Math.floor(diff / 86400) + "d ago";
+    }
+
+    async function loadEvents() {
+      const meta = $("#events-meta");
+      const body = $("#events-body");
+      try {
+        const r = await fetch("/.ai/events.jsonl", { cache: "no-store" });
+        if (r.status === 404) {
+          body.innerHTML = `<div class="empty">No events yet.<br><br>The hook is registered in <code>.claude/settings.json</code> and will start logging dispatches on the next Claude Code session that runs workflow phases.</div>`;
+          $("#count-events").textContent = "0";
+          meta.textContent = "no events";
+          return;
+        }
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const text = await r.text();
+        const lines = text.split("\n").filter((l) => l.trim());
+        const events = [];
+        for (const line of lines) {
+          try { events.push(JSON.parse(line)); } catch (_) {}
+        }
+        events.reverse();
+        $("#count-events").textContent = events.length;
+        if (!events.length) {
+          body.innerHTML = `<div class="empty">No events yet.</div>`;
+          meta.textContent = "0 events";
+          return;
+        }
+        const rows = events.map((e) => {
+          const exitPill = e.exit_code === 0
+            ? `<span class="pill good">${e.exit_code}</span>`
+            : e.exit_code == null
+              ? `<span class="pill">—</span>`
+              : `<span class="pill bad">${e.exit_code}</span>`;
+          return `<tr>
+            <td class="ts" title="${escape(e.ts)}">${escape(relativeTime(e.ts))}</td>
+            <td><span class="pill">${escape(e.phase || "?")}</span></td>
+            <td>${pillTool(e.tool)}</td>
+            <td class="mono">${escape(e.model || "—")}</td>
+            <td>${exitPill}</td>
+            <td class="cmd" title="${escape(e.command_preview || "")}">${escape(e.command_preview || "")}</td>
+          </tr>`;
+        }).join("");
+        body.innerHTML = `<table class="events-table">
+          <thead><tr><th>When</th><th>Phase</th><th>Tool</th><th>Model</th><th>Exit</th><th>Command</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+        meta.textContent = `${events.length} event${events.length === 1 ? "" : "s"} · updated ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        body.innerHTML = `<div class="err">${escape(err.message)}</div>`;
+      }
+    }
+
+    let _eventsTimer = null;
+    document.addEventListener("change", (e) => {
+      if (e.target && e.target.id === "events-autorefresh") {
+        if (_eventsTimer) { clearInterval(_eventsTimer); _eventsTimer = null; }
+        if (e.target.checked) {
+          loadEvents();
+          _eventsTimer = setInterval(loadEvents, 5000);
+        }
+      }
+    });
+
+    // ----- main loader -----
+    async function loadAll() {
+      $("#meta").textContent = "loading…";
+      try {
+        const [projectRaw, modelsRaw, memoryText, decisionsText, plans, specs, packets] = await Promise.all([
+          getText(".ai/project.yaml"),
+          getText(".ai/models.yaml"),
+          getText(".ai/memory.md").catch(() => ""),
+          getText(".ai/decisions.md").catch(() => ""),
+          listDir(".ai/plans").then((xs) => xs.filter((x) => x.endsWith(".md")).sort().reverse()),
+          listDir(".ai/specs").then((xs) => xs.filter((x) => x.endsWith(".md")).sort().reverse()),
+          listDir(".ai/packets").then((xs) => xs.filter((x) => x.endsWith(".md")).sort()),
+        ]);
+
+        const project = jsyaml.load(projectRaw) || {};
+        const models = jsyaml.load(modelsRaw) || {};
+
+        $("#project-name").textContent = project.project_name || "unknown";
+        const memoryCount = countMemoryEntries(memoryText);
+        $("#count-memory").textContent = memoryCount;
+        $("#count-plans").textContent = plans.length;
+        $("#count-specs").textContent = specs.length;
+
+        renderOverview(project, models, memoryCount, plans.length, specs.length);
+        renderActivity(plans, specs);
+        renderModels(models);
+        renderProject(project, projectRaw);
+        renderMarkdown($("#memory-doc"), memoryText || "_(empty)_");
+        renderMarkdown($("#decisions-doc"), decisionsText || "_(empty)_");
+
+        buildList("#plans-list", plans, async (name) => {
+          renderMarkdown($("#plans-doc"), await getText(".ai/plans/" + name));
+        });
+        buildList("#specs-list", specs, async (name) => {
+          renderMarkdown($("#specs-doc"), await getText(".ai/specs/" + name));
+        });
+        buildList("#packets-list", packets, async (name) => {
+          renderMarkdown($("#packets-doc"), await getText(".ai/packets/" + name));
+        });
+
+        await loadEvents();
+        await loadJobs();
+
+        $("#meta").textContent = `updated ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        $("#meta").textContent = "error";
+        $("#overview-cards").innerHTML = `<div class="err">${escape(err.message)}</div>`;
+        console.error(err);
+      }
+    }
+
+    loadAll();
+  </script>
+</body>
+</html>
