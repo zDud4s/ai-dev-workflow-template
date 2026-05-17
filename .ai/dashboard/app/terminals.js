@@ -223,10 +223,63 @@
       // event coming to replace it — clear it explicitly.
       termClearThinkingPlaceholder(t);
       t.pane.classList.add("dead");
-      t.input.disabled = true;
-      t.sendBtn.disabled = true;
       const status = t.pane.querySelector(".status-pill");
       if (status && label) status.outerHTML = `<span class="pill ${label === "done" ? "done" : "bad"} status-pill">${escape(label)}</span>`;
+
+      // For chat panes whose claude subprocess has exited but where the
+      // session_id is known, repurpose the composer as a "resume" entry
+      // point: the next message spawns a fresh job with --resume <sid>,
+      // and the new pane opens alongside (the dead pane stays as history).
+      // Without this, the operator has to manually go back to the Run tab,
+      // copy the session id, and create a new job. Annoying.
+      if (t.kind === "chat" && t.sessionId) {
+        t.input.disabled = false;
+        t.sendBtn.disabled = false;
+        t.input.placeholder = "session ended — next message resumes in a fresh job";
+        t.sendBtn.textContent = "resume →";
+        // Replace the original send handler with the resume handler.
+        const resume = async () => {
+          const text = t.input.value.trim();
+          if (!text) return;
+          t.sendBtn.disabled = true;
+          try {
+            const res = await postJson("/api/jobs", {
+              kind: "chat",
+              task: text,
+              resume_session_id: t.sessionId,
+            });
+            t.input.value = "";
+            // Open the resumed pane alongside this dead one.
+            termOpen(res.id, res);
+            await loadJobs();
+          } catch (e) {
+            const err = document.createElement("div");
+            err.className = "msg system";
+            err.style.color = "var(--bad)";
+            err.textContent = `[resume failed: ${e.message}]`;
+            t.body.appendChild(err);
+          } finally {
+            t.sendBtn.disabled = false;
+          }
+        };
+        // Replace the node to drop the previous "send" listener cleanly.
+        const newBtn = t.sendBtn.cloneNode(true);
+        t.sendBtn.parentNode.replaceChild(newBtn, t.sendBtn);
+        t.sendBtn = newBtn;
+        newBtn.addEventListener("click", resume);
+        // Same for Enter-to-send on the input.
+        const newInput = t.input.cloneNode(true);
+        t.input.parentNode.replaceChild(newInput, t.input);
+        newInput.value = "";
+        newInput.placeholder = "session ended — next message resumes in a fresh job";
+        t.input = newInput;
+        newInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); resume(); }
+        });
+      } else {
+        t.input.disabled = true;
+        t.sendBtn.disabled = true;
+      }
     }
 
     function termClose(jobId) {
@@ -489,8 +542,27 @@
       termAutoScroll(t);
     }
 
+    // Patterns that are pure noise from the operator's POV — Node deprecation
+    // warnings printed to stderr, the `[unhandled rate_limit_event]` line that
+    // claude prints when it hits a rate-limit telemetry frame, blank lines.
+    // Adding patterns here is preferred over surfacing them as "msg system"
+    // blocks that drown the actual conversation.
+    var RAW_NOISE_PATTERNS = [
+      /^\s*$/,                                              // blank
+      /^\(node:\d+\)\s/,                                    // node warnings
+      /^\[unhandled (rate_limit_event|.*)\]\s*$/,           // unhandled telemetry
+      /^DeprecationWarning:/,                               // node deprecation
+      /^\(Use `node --trace-deprecation/,                   // node trace hint
+      /^# job [0-9a-f-]+ kind=/,                            // pump-injected header
+      /^# task:/,                                           // pump-injected task line
+    ];
     function termRenderRaw(t, line) {
-      // Non-JSON line (rare: e.g. CLI noise). Show dim, monospace.
+      // Non-JSON line (rare: e.g. CLI noise). Silence known-noise patterns
+      // entirely; everything else surfaces as a dim system block so we
+      // notice genuinely-unexpected output rather than hiding it.
+      for (const pat of RAW_NOISE_PATTERNS) {
+        if (pat.test(line)) return;
+      }
       const div = document.createElement("div");
       div.className = "msg system";
       div.textContent = line;
@@ -506,6 +578,53 @@
       // After a user turn, prepare for a fresh assistant block on the next
       // assistant event.
       t.currentAssistant = null;
+    }
+
+    // Convert a model id into a human-friendly label for the role chip:
+    //   claude-sonnet-4-6              -> CLAUDE SONNET 4.6
+    //   claude-opus-4-7                -> CLAUDE OPUS 4.7
+    //   claude-haiku-4-5-20251001      -> CLAUDE HAIKU 4.5  (drops YYYYMMDD)
+    //   o4-mini                        -> O4 MINI
+    //   gpt-5                          -> GPT 5
+    // The tooltip on the role chip carries the unmodified id so power users
+    // can still read the exact version.
+    function termFormatModel(model) {
+      if (!model) return "";
+      return String(model)
+        .replace(/-\d{8}$/, "")
+        .replace(/-(\d+)-(\d+)(?=$|-)/, " $1.$2")
+        .replace(/-/g, " ")
+        .toUpperCase();
+    }
+
+    // Resolve the best label for an assistant role chip, given what we know
+    // about the pane: explicit model wins; otherwise fall back to the tool
+    // identity ("claude" / "codex") implied by the job kind; otherwise the
+    // generic "assistant".
+    function termAssistantRoleLabel(t) {
+      if (t.model) return termFormatModel(t.model);
+      if (t.kind === "chat") return "claude";
+      if (t.kind === "chat-codex") return "codex";
+      return "assistant";
+    }
+
+    // Record a model id for this pane and retro-update any assistant role
+    // chips that were created before the model was known (chat-mode panes
+    // create the block on the first text_delta, but stream-json's `init`
+    // frame arrives just before that — they race).
+    function termSetPaneModel(t, model) {
+      if (!model || t.model === model) return;
+      t.model = model;
+      const label = termFormatModel(model);
+      const title = "model: " + model;
+      t.body.querySelectorAll(".msg.assistant:not(.thinking-placeholder) .role")
+        .forEach((r) => {
+          // Skip chips that were locked by another caller (e.g. the dispatch
+          // tracker pane renames its role to "dispatch result").
+          if (r.dataset.roleLocked === "1") return;
+          r.textContent = label;
+          r.title = title;
+        });
     }
 
     // Show an animated "thinking" bubble while we wait for the first
@@ -536,7 +655,9 @@
       termClearThinkingPlaceholder(t);
       const msg = document.createElement("div");
       msg.className = "msg assistant";
-      msg.innerHTML = `<div class="role">assistant</div><div class="text"></div>`;
+      const label = termAssistantRoleLabel(t);
+      const titleAttr = t.model ? ` title="model: ${escape(t.model)}"` : "";
+      msg.innerHTML = `<div class="role"${titleAttr}>${escape(label)}</div><div class="text"></div>`;
       t.body.appendChild(msg);
       t.currentAssistant = msg;
       return msg;
@@ -902,6 +1023,7 @@
         const role = document.createElement("div");
         role.className = "role";
         role.textContent = isError ? "dispatch failed" : "dispatch result";
+        role.dataset.roleLocked = "1";  // protect from termSetPaneModel retro-rename
         block.appendChild(role);
         const text = document.createElement("div");
         text.className = "text";
@@ -995,6 +1117,14 @@
       // Silence transcript-format meta noise (hooks, queue ops, snapshots).
       if (TRANSCRIPT_META_NOISE.has(type)) return;
 
+      // Capture the model identifier early so the assistant role chip can
+      // render with the real model name (e.g. "CLAUDE SONNET 4.6") instead
+      // of the generic "assistant". stream-json carries it on the `init`
+      // frame and on every `assistant` message; transcripts only on the
+      // assistant record. First one wins, but later updates retro-apply.
+      const declaredModel = obj.model || (obj.message && obj.message.model);
+      if (declaredModel) termSetPaneModel(t, declaredModel);
+
       // Transcript-format ai-title: rename the pane.
       if (type === "ai-title" && typeof obj.aiTitle === "string") {
         const head = t.pane.querySelector(".term-head .task");
@@ -1031,11 +1161,19 @@
             } else if (blk.type === "thinking" && typeof blk.thinking === "string") {
               const block = termAssistantBlock(t);
               const t2 = block.querySelector(".text");
-              const i = document.createElement("div");
-              i.style.opacity = "0.6";
-              i.style.fontStyle = "italic";
-              i.textContent = blk.thinking;
-              t2.appendChild(i);
+              // Render thinking as a collapsed <details> so long internal
+              // monologues don't drown the actual answer. Click summary to
+              // expand. The char-count gives a sense of how much thinking
+              // happened without forcing the user to read all of it.
+              const det = document.createElement("details");
+              det.className = "thinking-block";
+              const sum = document.createElement("summary");
+              sum.textContent = `thinking · ${blk.thinking.length} chars`;
+              const pre = document.createElement("pre");
+              pre.textContent = blk.thinking;
+              det.appendChild(sum);
+              det.appendChild(pre);
+              t2.appendChild(det);
             }
           }
         } else if (typeof content === "string") {
@@ -1149,6 +1287,8 @@
         currentAssistant: null,   // element for the in-progress assistant message
         toolUseEls: new Map(),    // tool_use_id -> {pill, detail}
         attached: { images: [], files: [] },
+        sessionId: meta?.session_id || "",  // enables resume on dead-pane
+        model: meta?.model || "",  // seed from /api/jobs; replaced on first init/assistant frame
       };
       TERMS.set(jobId, t);
 
@@ -1369,7 +1509,11 @@
       });
 
       // First send forks the IDE session into a writable dashboard chat
-      // (claude --resume <sid>). The mirror pane is then closed.
+      // (claude --resume <sid>). The mirror pane is KEPT OPEN alongside
+      // the fork so the operator can compare the original IDE branch
+      // (still owned by the IDE writer) to the new dashboard branch
+      // side-by-side. Mirror's composer is disabled after the first fork
+      // — additional forks should come from the IDE-side itself.
       const forkAndSend = async () => {
         const text = t.input.value.trim();
         if (!text) return;
@@ -1380,16 +1524,21 @@
             task: text,
             resume_session_id: sessionId,
           });
-          // Show a banner in the mirror explaining the fork.
+          // Banner inside the mirror documenting what just happened.
           const banner = document.createElement("div");
           banner.className = "msg system";
-          banner.style.borderLeftColor = "var(--warn)";
           banner.style.color = "var(--warn)";
-          banner.textContent = `[forked into dashboard chat ${res.id.slice(0,8)} — IDE side is now stale]`;
+          banner.textContent = `[forked into dashboard chat ${res.id.slice(0,8)} — new pane opened to the right]`;
           t.body.appendChild(banner);
+          // Lock down the mirror's composer; this branch is now history.
           t.input.value = "";
-          // Close the mirror and open the new writable chat pane.
-          termClose(paneKey);
+          t.input.disabled = true;
+          t.input.placeholder = "mirror pane is read-only — continue in the fork pane";
+          t.sendBtn.disabled = true;
+          t.sendBtn.textContent = "forked";
+          const sp = t.pane.querySelector(".status-pill");
+          if (sp) { sp.textContent = "forked"; sp.classList.add("warn"); }
+          // Open the writable chat pane next to this one.
           termOpen(res.id, res);
           await loadJobs();
         } catch (e) {
@@ -1398,7 +1547,6 @@
           err.style.color = "var(--bad)";
           err.textContent = `[fork failed: ${e.message}]`;
           t.body.appendChild(err);
-        } finally {
           t.sendBtn.disabled = false;
         }
       };
@@ -1466,6 +1614,10 @@
       //   {type:"ai-title", aiTitle:"..."}
       // We map them to the same UI primitives as the chat panes.
       const type = obj.type;
+      // Mirror the chat-mode behaviour: capture the model id so subsequent
+      // assistant blocks render with the real model name in the role chip.
+      const declaredModel = obj.model || (obj.message && obj.message.model);
+      if (declaredModel) termSetPaneModel(t, declaredModel);
       if (type === "user" && obj.message) {
         const content = obj.message.content;
         if (typeof content === "string") {

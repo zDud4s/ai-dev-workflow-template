@@ -2168,8 +2168,16 @@ def _start_subprocess_job(
                 # transcript that claude itself writes is the persistent
                 # record.
                 #
-                # For chat-kind jobs we ALSO accumulate complete JSON lines
-                # and update the running cost from ``type=result`` events as
+                # IMPORTANT: publish only COMPLETE lines (everything up to
+                # the last ``\n``), keeping any trailing partial line in the
+                # buffer for the next iteration. claude emits one JSON record
+                # per line; if we forwarded raw 1024-byte chunks, a long
+                # record (the 8KB SessionStart hook context) would arrive at
+                # the client split mid-string, and any consumer that does
+                # JSON.parse per line would choke on the partial halves.
+                #
+                # For chat-kind jobs we ALSO inspect each complete line for
+                # ``type=result`` events and update the live cost counter as
                 # they arrive (so cost stays accurate even though we no
                 # longer keep a local log file to scan post-mortem).
                 assert proc.stdout is not None
@@ -2181,15 +2189,20 @@ def _start_subprocess_job(
                         break
                     text = chunk.decode("utf-8", errors="replace")
                     text = text.replace("\r\n", "\n").replace("\r", "\n")
+                    line_buf += text
+                    # Split off everything up to (and including) the last newline.
+                    last_nl = line_buf.rfind("\n")
+                    if last_nl < 0:
+                        # No newline yet — keep accumulating, publish nothing.
+                        continue
+                    publishable = line_buf[: last_nl + 1]
+                    line_buf = line_buf[last_nl + 1:]
                     if logf is not None:
-                        logf.write(text.encode("utf-8"))
+                        logf.write(publishable.encode("utf-8"))
                         logf.flush()
-                    _publish_chunk(job_id, text)
-
+                    _publish_chunk(job_id, publishable)
                     if track_cost:
-                        line_buf += text
-                        while "\n" in line_buf:
-                            line, _, line_buf = line_buf.partition("\n")
+                        for line in publishable.split("\n"):
                             line = line.strip()
                             if not line.startswith("{"):
                                 continue
@@ -2199,6 +2212,16 @@ def _start_subprocess_job(
                                 continue
                             if obj.get("type") == "result":
                                 _update_job_cost(job_id, obj)
+
+                # Flush any final partial line (no trailing newline). Add a
+                # synthetic ``\n`` so downstream line-based parsers can still
+                # cleanly bound it. This is the EOF tail — typically empty.
+                if line_buf:
+                    final = line_buf + "\n"
+                    if logf is not None:
+                        logf.write(final.encode("utf-8"))
+                        logf.flush()
+                    _publish_chunk(job_id, final)
 
                 exit_code = proc.wait()
             finally:
@@ -2440,6 +2463,55 @@ def _evict_old_jobs() -> None:
         finished.sort(key=lambda x: x[1].get("ended_at") or "")
         for jid, _j in finished[: len(JOBS) - JOBS_MAX]:
             JOBS.pop(jid, None)
+
+
+# Record types considered "interesting" for a chat-pane catch-up dump.
+# Hook outputs, queue ops, file snapshots and attachment frames are
+# operational metadata the human reader never wants to see.
+_CHAT_CATCHUP_INCLUDE_TYPES = frozenset({
+    "user",            # user turn (own + injected wrappers — client filters further)
+    "assistant",       # assistant turn (text/tool_use/thinking blocks)
+    "tool_use_result", # tool result (replaces pill state on client)
+    "tool_result",
+    "result",          # turn-done meta (cost / duration / num_turns)
+    "system",          # init/shutdown/error subtypes (client filters subtype)
+    "ai-title",        # session title (renames pane header)
+})
+
+
+def _tail_chat_catchup(path: Path, max_records: int = 100) -> str:
+    """Return up to ``max_records`` recent conversation records from a chat
+    transcript / log file, suitable for SSE catch-up.
+
+    Filters out IDE-transcript noise (attachment / queue-operation /
+    file-history-snapshot / last-prompt / summary / compaction) so the
+    browser only has to render the actual conversation, not megabytes of
+    plumbing. Records keep their original encoded line; we just decide
+    which ones survive."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return ""
+    kept: list[str] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith("{"):
+            # Plain-text noise (deprecation warnings, etc) — drop from catch-up.
+            continue
+        try:
+            obj = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        t = obj.get("type")
+        if t not in _CHAT_CATCHUP_INCLUDE_TYPES:
+            continue
+        kept.append(raw if raw.endswith("\n") else raw + "\n")
+    if len(kept) > max_records:
+        kept = kept[-max_records:]
+    return "".join(kept)
 
 
 def _lookup_session_task(session_id: str) -> str | None:
@@ -3795,10 +3867,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
 
-            # 1. Catch-up: flush whatever is already on disk.
+            # 1. Catch-up: flush what's already on disk. For chat jobs whose
+            # log_path is the IDE transcript file (potentially MBs of history
+            # — hooks, attachments, queue ops), we tail just the recent
+            # conversation records so the browser doesn't choke parsing the
+            # entire backlog. For non-chat jobs (orchestrate/plan/codex) the
+            # log file is dashboard-owned and small; full dump stays.
+            with JOBS_LOCK:
+                catchup_kind = JOBS.get(job_id, {}).get("kind")
             if log_path and Path(log_path).exists():
                 try:
-                    existing = Path(log_path).read_text(encoding="utf-8", errors="replace")
+                    if catchup_kind == "chat":
+                        existing = _tail_chat_catchup(Path(log_path))
+                    else:
+                        existing = Path(log_path).read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     existing = ""
                 if existing:

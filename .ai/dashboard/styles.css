@@ -1268,12 +1268,15 @@
       text-align: center;
     }
     .term-body.chat .msg.user .role {
+      /* The user bubble is already cyan-tinted (accent-bg) and the body
+         text is bright cyan (accent-hi), so a cyan-family label drowns
+         in its own hue. Step out of the cyan axis using a cool near-white
+         (--text-2) — same role the assistant label plays on a neutral
+         bubble: the contrasting "accent color" that pops cleanly off both
+         bg and body without competing with content. */
       text-align: left;
-      display: inline-block;
-      padding: 1px 6px;
-      background: oklch(30% 0.055 200);
-      color: var(--accent-hi);
-      margin-bottom: 6px;
+      color: var(--text-2);
+      margin-bottom: 4px;
     }
     /* Thinking placeholder bubble: identical shape to an assistant bubble,
        dimmed role, and three staggered dots that pulse while we wait for
@@ -1310,6 +1313,57 @@
       from { opacity: 0; transform: translateY(2px); }
       to   { opacity: 1; transform: none; }
     }
+
+    /* Collapsed thinking block inside an assistant bubble. Default state
+       is closed — only the summary chip is visible. Click to expand. */
+    .thinking-block {
+      margin: 6px 0;
+      font-family: var(--ff-body);
+    }
+    .thinking-block summary {
+      cursor: pointer;
+      list-style: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text-faint);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      user-select: none;
+      transition: color 140ms var(--easing), border-color 140ms var(--easing);
+    }
+    .thinking-block summary::-webkit-details-marker { display: none; }
+    .thinking-block summary::before {
+      content: "▸";
+      display: inline-block;
+      transition: transform 140ms var(--easing);
+      font-size: 9px;
+      opacity: 0.7;
+    }
+    .thinking-block[open] summary::before { transform: rotate(90deg); }
+    .thinking-block summary:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    .thinking-block pre {
+      margin: 6px 0 0;
+      padding: 8px 12px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text-dim);
+      font-family: var(--ff-mono);
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 320px;
+      overflow-y: auto;
+    }
     .term-body.chat .msg .role {
       font-family: var(--ff-mono);
       font-size: var(--fs-0);
@@ -1321,7 +1375,8 @@
       opacity: 0.95;
     }
     .term-body.chat .msg.assistant .role { color: var(--accent); }
-    .term-body.chat .msg.user .role { color: var(--accent-hi); }
+    /* .msg.user .role color lives in the dedicated user-role rule above
+       (sentence-case alignment + accent-soft for label/body contrast). */
     .term-body.chat .msg .text {
       white-space: pre-wrap;
       word-break: break-word;
