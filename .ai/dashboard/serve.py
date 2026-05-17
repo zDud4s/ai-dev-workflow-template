@@ -91,6 +91,22 @@ _IMPROVER_DEFAULTS = {
 # after the subprocess dies).
 _JOB_RUNTIME_FIELDS = frozenset({"proc", "subscribers", "stdin_lock"})
 
+# Terminal job statuses — used to know when scanned log-file cost can be
+# memoised back onto the job entry (cost can't change once the subprocess
+# is dead).
+_TERMINAL_JOB_STATUSES = frozenset({"done", "failed", "cancelled", "interrupted"})
+
+
+def _write_text_lf(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` with LF line endings, regardless of platform.
+
+    Python's ``Path.write_text`` defaults to ``newline=None`` which translates
+    ``\\n`` to the OS line terminator (``\\r\\n`` on Windows). The repo's
+    ``.gitattributes`` pins ``*.yaml`` / ``*.md`` to ``eol=lf``, so writing
+    those files through the dashboard previously produced spurious
+    ``"CRLF will be replaced by LF"`` git warnings on Windows."""
+    path.write_text(text, encoding="utf-8", newline="\n")
+
 
 def _persist_job(job_id: str) -> None:
     """Append the current snapshot of ``JOBS[job_id]`` to the persistence
@@ -700,8 +716,17 @@ JOBS_MAX = 50  # cap memory; oldest finished entries get evicted
 def _load_improver_config() -> dict:
     """Read the optional ``improver:`` block from ``.ai/models.yaml`` and
     overlay it on ``_IMPROVER_DEFAULTS``. Always returns a fully populated
-    config dict, even if the YAML block is missing or malformed."""
+    config dict, even if the YAML block is missing or malformed.
+
+    Honours ``AI_WORKFLOW_DISABLE_IMPROVER``: when that env var is truthy
+    the config is returned with ``enabled=False`` regardless of YAML.
+    Used by the pytest suite to stop the auto-improver from spawning real
+    ``claude -p`` subprocesses (each one creates a new chat session in
+    Claude Code's history)."""
     cfg = dict(_IMPROVER_DEFAULTS)
+    if str(os.environ.get("AI_WORKFLOW_DISABLE_IMPROVER", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        cfg["enabled"] = False
+        return cfg
     fields = _read_yaml_field(ROOT / ".ai" / "models.yaml", "improver")
     if not fields:
         return cfg
@@ -1224,12 +1249,33 @@ def _post_job_skill_actions(job_id: str, skill_ids: list[str]) -> None:
     _trigger_improvers_for_job(job_id, skill_ids)
 
 
+def _purge_claude_transcript(session_id: str | None) -> None:
+    """Delete the per-session JSONL Claude Code wrote for a one-shot
+    background call (e.g. an improver run). Without this every improver
+    invocation pollutes ``~/.claude/projects/<slug>/`` with a stray
+    "OUTPUT FORMAT (STRICT)" session row in the user's chat history.
+    Best-effort: missing dir / missing file / OS errors are swallowed."""
+    if not session_id:
+        return
+    try:
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        if tdir is None:
+            return
+        f = tdir / f"{session_id}.jsonl"
+        if f.is_file():
+            f.unlink()
+    except OSError:
+        pass
+
+
 def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
                             job_id: str, log_path: str | None,
                             cfg: dict) -> None:
     """End-to-end: read skill -> call LLM -> parse JSON -> persist proposal
     -> auto-apply if small. Best-effort: any failure is audited and the
-    function returns silently."""
+    function returns silently. When the tool is ``claude`` we generate a
+    dedicated ``--session-id`` and delete the resulting transcript at
+    exit so background improver runs never show up in the chat list."""
     try:
         skill_content = skill_md_path.read_text(encoding="utf-8")
     except OSError as e:
@@ -1244,50 +1290,61 @@ def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
     # processes the request) — observed empirically. stdin works for any size.
     tool_bin = shutil.which(cfg["tool"]) or cfg["tool"]
     argv = [tool_bin, "-p", "--model", cfg["model"]]
+    # Pin a session id ONLY for claude — codex doesn't write per-session
+    # JSONLs into ~/.claude/projects/ so it doesn't have the same pollution
+    # problem. The id lets _purge_claude_transcript know exactly which file
+    # to delete in the finally block below.
+    improver_sid: str | None = None
+    if cfg.get("tool") == "claude":
+        improver_sid = str(uuid.uuid4())
+        argv += ["--session-id", improver_sid]
     try:
-        proc = subprocess.run(
-            argv, cwd=str(ROOT), input=prompt,
-            capture_output=True, text=True,
-            timeout=cfg.get("timeout_seconds", 120), encoding="utf-8",
-            errors="replace",
-        )
-    except (subprocess.TimeoutExpired, OSError) as e:
-        _audit_improvement(skill_id, "failed", f"subprocess error: {e}", None, None, 0)
-        return
-    if proc.returncode != 0:
-        _audit_improvement(skill_id, "failed",
-                           f"exit {proc.returncode}: {(proc.stderr or '')[:200]}",
-                           None, None, 0)
-        return
+        try:
+            proc = subprocess.run(
+                argv, cwd=str(ROOT), input=prompt,
+                capture_output=True, text=True,
+                timeout=cfg.get("timeout_seconds", 120), encoding="utf-8",
+                errors="replace",
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            _audit_improvement(skill_id, "failed", f"subprocess error: {e}", None, None, 0)
+            return
+        if proc.returncode != 0:
+            _audit_improvement(skill_id, "failed",
+                               f"exit {proc.returncode}: {(proc.stderr or '')[:200]}",
+                               None, None, 0)
+            return
 
-    parsed = _parse_improver_output(proc.stdout or "")
-    if not parsed:
-        _audit_improvement(skill_id, "no_change", "improver returned unparseable output",
-                           None, None, 0)
-        return
-    new_content = parsed.get("new_content")
-    if not isinstance(new_content, str) or not new_content.strip():
-        _audit_improvement(skill_id, "no_change",
-                           parsed.get("rationale") or "improver returned null",
-                           None, None, 0)
-        return
+        parsed = _parse_improver_output(proc.stdout or "")
+        if not parsed:
+            _audit_improvement(skill_id, "no_change", "improver returned unparseable output",
+                               None, None, 0)
+            return
+        new_content = parsed.get("new_content")
+        if not isinstance(new_content, str) or not new_content.strip():
+            _audit_improvement(skill_id, "no_change",
+                               parsed.get("rationale") or "improver returned null",
+                               None, None, 0)
+            return
 
-    diff_lines = _diff_line_count(skill_content, new_content)
-    if diff_lines == 0:
-        _audit_improvement(skill_id, "no_change", "no effective change", None, None, 0)
-        return
+        diff_lines = _diff_line_count(skill_content, new_content)
+        if diff_lines == 0:
+            _audit_improvement(skill_id, "no_change", "no effective change", None, None, 0)
+            return
 
-    proposal = _write_proposal(skill_id, skill_md_path, skill_content,
-                               new_content, parsed, diff_lines, job_id)
-    if diff_lines <= int(cfg.get("small_change_max_lines", 6)):
-        _apply_improvement(skill_md_path, new_content, source="auto",
-                           reason=parsed.get("change_summary", "") or "",
-                           proposal_id=proposal["id"], skill_id=skill_id,
-                           diff_lines=diff_lines)
-    else:
-        _audit_improvement(skill_id, "pending",
-                           parsed.get("change_summary", "") or "",
-                           proposal["id"], None, diff_lines)
+        proposal = _write_proposal(skill_id, skill_md_path, skill_content,
+                                   new_content, parsed, diff_lines, job_id)
+        if diff_lines <= int(cfg.get("small_change_max_lines", 6)):
+            _apply_improvement(skill_md_path, new_content, source="auto",
+                               reason=parsed.get("change_summary", "") or "",
+                               proposal_id=proposal["id"], skill_id=skill_id,
+                               diff_lines=diff_lines)
+        else:
+            _audit_improvement(skill_id, "pending",
+                               parsed.get("change_summary", "") or "",
+                               proposal["id"], None, diff_lines)
+    finally:
+        _purge_claude_transcript(improver_sid)
 
 
 def _trigger_improvers_for_job(job_id: str, skill_ids: list[str]) -> None:
@@ -1497,6 +1554,38 @@ def _detect_skill_suggestions(threshold: float = 0.5, min_cluster: int = 3,
             "last_seen": last_seen,
             "job_ids": [j.get("id") for j in cluster_jobs],
         })
+
+    # Filter out clusters that have already been addressed: either a project
+    # skill with the same slug exists, or a previous draft proposal for this
+    # cluster was installed / accepted / rejected. Keeps the suggestions
+    # panel relevant — no nagging about work the user already did.
+    covered_cluster_ids: set[str] = set()
+    covered_names: set[str] = set(_project_skill_index().keys())
+    try:
+        if SKILL_PROPOSALS_DIR.is_dir():
+            for pj in SKILL_PROPOSALS_DIR.glob("*.json"):
+                try:
+                    o = json.loads(pj.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if o.get("kind") != "draft":
+                    continue
+                if o.get("status") not in ("installed", "accepted", "rejected"):
+                    continue
+                cid = o.get("cluster_id")
+                if cid:
+                    covered_cluster_ids.add(cid)
+                slug = o.get("skill") or o.get("suggested_name")
+                if slug:
+                    covered_names.add(slug)
+    except OSError:
+        pass
+    clusters = [
+        c for c in clusters
+        if c.get("id") not in covered_cluster_ids
+           and c.get("suggested_name") not in covered_names
+    ]
+
     clusters.sort(key=lambda c: (-c["size"], -_iso_to_epoch(c.get("last_seen") or "")))
     return clusters
 
@@ -2256,16 +2345,29 @@ def _cancel_job(job_id: str) -> bool:
     return True
 
 
+_PID_ALIVE_CACHE: dict[int, tuple[float, bool]] = {}
+_PID_ALIVE_TTL_SECONDS = 2.0
+
+
 def _pid_is_alive(pid: int) -> bool:
     """Cross-platform PID liveness check. Returns False only when we have
     high confidence the PID is gone; for uncertain cases (permission
-    errors, OS quirks) we return True so we don't spuriously fail jobs."""
+    errors, OS quirks) we return True so we don't spuriously fail jobs.
+
+    Results are cached for ``_PID_ALIVE_TTL_SECONDS`` because callers like
+    ``_reconcile_running_pids`` run on every ``GET /api/jobs`` and on
+    Windows each miss spawns a ``tasklist`` subprocess. The TTL is small
+    enough that a freshly-dead PID is still detected within ~2s."""
     try:
         pid = int(pid)
     except (TypeError, ValueError):
         return False
     if pid <= 0:
         return False
+    now = time.monotonic()
+    cached = _PID_ALIVE_CACHE.get(pid)
+    if cached is not None and (now - cached[0]) < _PID_ALIVE_TTL_SECONDS:
+        return cached[1]
     if os.name == "nt":
         try:
             out = subprocess.run(
@@ -2273,15 +2375,24 @@ def _pid_is_alive(pid: int) -> bool:
                 capture_output=True, text=True, timeout=2,
             )
         except (OSError, subprocess.TimeoutExpired):
+            # Tasklist failure is ambiguous — don't cache, don't fail jobs.
             return True
-        return f'"{pid}"' in (out.stdout or "")
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except (PermissionError, OSError):
-        return True
+        alive = f'"{pid}"' in (out.stdout or "")
+    else:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except ProcessLookupError:
+            alive = False
+        except (PermissionError, OSError):
+            return True  # ambiguous — don't cache
+    _PID_ALIVE_CACHE[pid] = (now, alive)
+    # Bound cache size; on a tiny dashboard this rarely matters but keep it
+    # from growing unbounded if many distinct PIDs are queried.
+    if len(_PID_ALIVE_CACHE) > 256:
+        for stale_pid in [k for k, (ts, _) in _PID_ALIVE_CACHE.items() if (now - ts) >= _PID_ALIVE_TTL_SECONDS]:
+            _PID_ALIVE_CACHE.pop(stale_pid, None)
+    return alive
 
 
 def _reconcile_running_pids() -> int:
@@ -2674,10 +2785,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         line = f"- {date} [{topic}] {fact_single}\n"
         path = ROOT / ".ai" / "memory.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            existing = ""
         if existing and not existing.endswith("\n"):
             existing += "\n"
-        path.write_text(existing + line, encoding="utf-8")
+        _write_text_lf(path, existing + line)
         self._json(200, {"ok": True, "line": line.rstrip()})
 
     def _handle_decisions(self, body: dict) -> None:
@@ -2706,10 +2820,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         )
         path = ROOT / ".ai" / "decisions.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            existing = ""
         if existing and not existing.endswith("\n"):
             existing += "\n"
-        path.write_text(existing + entry, encoding="utf-8")
+        _write_text_lf(path, existing + entry)
         self._json(200, {"ok": True, "entry": entry})
 
     def _handle_events_clear(self) -> None:
@@ -2741,7 +2858,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Chat jobs surface aggregated cost so the UI can show running
         # totals. Prefer the live counter (updated by the pump in real
         # time); fall back to scanning the log file post-hoc for older
-        # jobs whose live counter wasn't tracked.
+        # jobs whose live counter wasn't tracked. For terminal jobs the
+        # scanned cost is cached back onto the job entry so subsequent
+        # /api/jobs polls don't re-scan the log file every time.
         if j.get("kind") in {"chat", "chat-codex"}:
             live = j.get("cost")
             if isinstance(live, dict):
@@ -2750,6 +2869,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 cost = _extract_cost_from_log(Path(j["log_path"]))
                 if cost is not None:
                     out["cost"] = cost
+                    if j.get("status") in _TERMINAL_JOB_STATUSES:
+                        j["cost"] = cost
         return out
 
     def _handle_jobs_create(self, body: dict) -> None:
@@ -3742,7 +3863,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         else:
             # Insert after the first non-comment, non-blank line — keep it simple.
             new_text = f"dispatch_mode: {mode}    # auto | manual\n\n" + text
-        path.write_text(new_text, encoding="utf-8")
+        _write_text_lf(path, new_text)
         self._json(200, {"ok": True, "mode": mode})
 
     # ----- phase config edit -----
@@ -3796,7 +3917,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except ValueError as e:
             self._json(404, {"error": str(e)})
             return
-        path.write_text(new_text, encoding="utf-8")
+        _write_text_lf(path, new_text)
         self._json(200, {"ok": True, "phase": phase, "updated": updates})
 
 

@@ -18,6 +18,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 EVENTS_FILE = ROOT / ".ai" / "events.jsonl"
+# Cache parent-dir existence across hook invocations in the same process.
+# This hook fires on every PostToolUse so the mkdir syscall would otherwise
+# run thousands of times per session even though the directory is created once.
+_PARENT_DIR_READY = False
 
 # Patterns matching the dispatcher commands documented in .ai/workflow/dispatch.md.
 # Claude:  cat /tmp/phase-<name>-prompt.md | claude -p "Execute the attached <name> phase ..." --model <model>
@@ -72,8 +76,11 @@ def main() -> None:
         "exit_code": exit_code,
         **detected,
     }
+    global _PARENT_DIR_READY
     try:
-        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if not _PARENT_DIR_READY:
+            EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _PARENT_DIR_READY = True
         with EVENTS_FILE.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
     except Exception:

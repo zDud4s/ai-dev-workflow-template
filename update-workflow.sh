@@ -120,7 +120,20 @@ copy_if_different "$SCRIPT_DIR/.ai/workflow/dispatch.md" "$TARGET_DIR/.ai/workfl
 # Dashboard tool — keep in sync
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/serve.py" "$TARGET_DIR/.ai/dashboard/serve.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/index.html" "$TARGET_DIR/.ai/dashboard/index.html"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/styles.css" "$TARGET_DIR/.ai/dashboard/styles.css"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/log_event.py" "$TARGET_DIR/.ai/dashboard/log_event.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/core.js" "$TARGET_DIR/.ai/dashboard/app/core.js"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/skills.js" "$TARGET_DIR/.ai/dashboard/app/skills.js"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/jobs.js" "$TARGET_DIR/.ai/dashboard/app/jobs.js"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/terminals.js" "$TARGET_DIR/.ai/dashboard/app/terminals.js"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/main.js" "$TARGET_DIR/.ai/dashboard/app/main.js"
+
+# Pre-split monolithic app.js lingers from older installs — remove it so the
+# new index.html (which loads app/*.js) doesn't share a directory with dead code.
+if [ -f "$TARGET_DIR/.ai/dashboard/app.js" ]; then
+  rm -f "$TARGET_DIR/.ai/dashboard/app.js"
+  echo "Removed stale $TARGET_DIR/.ai/dashboard/app.js (now split into app/*.js)"
+fi
 
 PACKETS_STATE="kept"   # one of: kept | updated | missing
 if [ "$INCLUDE_PACKETS" -eq 1 ]; then
@@ -178,7 +191,8 @@ def upsert_block(path: Path, start_marker: str, end_marker: str, block_text: str
     new_content += block_text.strip() + "\n"
     if after:
         new_content += "\n" + after
-    path.write_text(new_content)
+    # newline="\n" so the file stays LF on Windows (matches .gitattributes eol=lf).
+    path.write_text(new_content, newline="\n")
 
 agents_path = target_dir / "AGENTS.md"
 upsert_block(

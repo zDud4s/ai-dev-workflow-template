@@ -35,7 +35,15 @@ The orchestrator must dispatch each phase through the configured tool and model.
 |   |-- specs/                    # Persistent spec documents
 |   |-- dashboard/
 |   |   |-- index.html            # Local web UI (memory, decisions, jobs, events)
+|   |   |-- styles.css            # Dashboard stylesheet
+|   |   |-- app/                  # Split frontend modules
+|   |   |   |-- core.js           # Helpers, nav, fetch, renderers, forms
+|   |   |   |-- skills.js         # Skills catalog, detail modal, proposals
+|   |   |   |-- jobs.js           # Jobs, events, timeline, dispatch toggle
+|   |   |   |-- terminals.js      # Multi-pane terminals + IDE transcripts
+|   |   |   `-- main.js           # loadAll() bootstrap
 |   |   |-- serve.py              # Static + JSON API server
+|   |   |-- log_event.py          # PostToolUse hook -> events.jsonl
 |   |   `-- jobs/                 # Per-job log dirs (gitignored)
 |   |-- packets/
 |   |   |-- plan.md               # Planning packet schema
