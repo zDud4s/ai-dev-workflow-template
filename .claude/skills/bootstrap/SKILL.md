@@ -19,6 +19,28 @@ Adapt the workflow scaffold to the current repository without implementing produ
    - CLAUDE.md (only project-specific sections if needed)
    - `.ai/project.yaml` — ensure the `memory_tuning` block exists with defaults (`consolidation_threshold_lines: 150`, `floor: 50`, `ceiling: 300`, `last_ratios: []`, `last_consolidated_at: ""`). Leave existing values intact if the block is already populated.
    - `.ai/memory.md`
+   - `.gitignore` — **only if `.gitignore` already exists at the project root.** Append the managed block below idempotently (skip if the start marker is already present). Never create a new `.gitignore`; if the project doesn't have one, leave it alone. Use `Read` to check for the marker first; use `Edit` (or append via `Write` after reading) — do not blindly overwrite.
+
+     ```
+     # >>> AI WORKFLOW INSTALL >>>
+     # Scaffold installed by ai-dev-workflow-template install.sh
+     .ai/
+     .claude/skills/bootstrap/
+     .claude/skills/planner/
+     .claude/skills/reviewer/
+     .claude/skills/maintenance/
+     .claude/skills/rescue/
+     .claude/skills/codex/
+     .claude/skills/orchestrate/
+     .agents/skills/bootstrap/
+     .agents/skills/planner/
+     .agents/skills/reviewer/
+     .agents/skills/maintenance/
+     .agents/skills/rescue/
+     .agents/skills/orchestrate/
+     .agents/skills/claude/
+     # <<< AI WORKFLOW INSTALL <<<
+     ```
 6. Preserve the workflow role structure (planner, executor, reviewer). Do not hardcode tool or model names — those are configured in `.ai/models.yaml`.
    - The model has the ability to delegate execution to Codex CLI (via the `codex` skill) or to run the full orchestration pipeline (via the `orchestrate` skill). Mention this in `.ai/memory.md` so future sessions know these options are available.
 7. Record uncertainty explicitly in `assumptions` and `unknowns`.
@@ -38,6 +60,6 @@ Bootstrap output ≤150 lines.
 - Important dirs/files
 - Risks and boundaries
 - Subdirectory AGENTS.md files created (if any)
-- Updated files
+- Updated files (note explicitly whether `.gitignore` was touched or skipped because it was absent)
 - Assumptions
 - Unknowns

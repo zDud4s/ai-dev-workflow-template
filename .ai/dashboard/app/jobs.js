@@ -188,24 +188,53 @@
     async function loadSessions() {
       const sel = $("#run-resume");
       if (!sel) return;
+      const prev = sel.value;
+      const kind = $("#run-kind")?.value || "chat";
       try {
-        const r = await fetch("/api/sessions", { cache: "no-store" });
-        if (!r.ok) return;
-        const data = await r.json();
-        const sessions = data.sessions || [];
-        const prev = sel.value;
-        const kind = $("#run-kind")?.value || "chat";
-        const compatible = sessions.filter((s) => s.kind === kind);
-        if (!compatible.length) {
-          sel.innerHTML = `<option value="">— new session —</option>`;
-          return;
+        // Dashboard-spawned sessions and IDE-spawned transcripts live in
+        // two different stores. The Resume picker should offer both so the
+        // user can continue any chat — including ones started from the
+        // VSCode/Cursor extension.
+        const [dashRes, ideRes] = await Promise.all([
+          fetch("/api/sessions", { cache: "no-store" }),
+          // Only Claude transcripts exist on disk; if Codex is selected we
+          // don't need transcript data, but the fetch is cheap.
+          fetch("/api/transcripts", { cache: "no-store" }),
+        ]);
+        const dashData = dashRes.ok ? await dashRes.json() : { sessions: [] };
+        const ideData = ideRes.ok ? await ideRes.json() : { transcripts: [] };
+        const dashSessions = (dashData.sessions || []).filter((s) => s.kind === kind);
+        // IDE transcripts are Claude-only; only relevant when kind === "chat".
+        const ideSessions = (kind === "chat") ? (ideData.transcripts || []) : [];
+
+        const parts = [`<option value="">— new session —</option>`];
+        if (dashSessions.length) {
+          parts.push(`<optgroup label="Dashboard chats">`);
+          for (const s of dashSessions) {
+            const preview = (s.task || "").replace(/\s+/g, " ").slice(0, 60);
+            const when = s.started_at ? s.started_at.slice(11, 16) : "—";
+            parts.push(`<option value="${escape(s.session_id)}">[${escape(when)}] ${escape(preview)}</option>`);
+          }
+          parts.push(`</optgroup>`);
         }
-        sel.innerHTML = `<option value="">— new session —</option>` + compatible.map((s) => {
-          const preview = (s.task || "").replace(/\s+/g, " ").slice(0, 60);
-          const when = s.started_at ? s.started_at.slice(11, 16) : "—";
-          return `<option value="${escape(s.session_id)}">[${escape(when)}] ${escape(preview)}</option>`;
-        }).join("");
-        if (compatible.find((s) => s.session_id === prev)) sel.value = prev;
+        if (ideSessions.length) {
+          parts.push(`<optgroup label="IDE chats (this repo)">`);
+          for (const s of ideSessions) {
+            const when = s.modified ? s.modified.slice(5, 16).replace("T", " ") : "—";
+            const preview = (s.task || "").replace(/\s+/g, " ").slice(0, 60)
+              || `(${(s.session_id || "").slice(0, 8)})`;
+            parts.push(`<option value="${escape(s.session_id)}">[${escape(when)}] ${escape(preview)}</option>`);
+          }
+          parts.push(`</optgroup>`);
+        }
+        sel.innerHTML = parts.join("");
+
+        // Preserve selection if it survived the refresh.
+        const allIds = new Set([
+          ...dashSessions.map((s) => s.session_id),
+          ...ideSessions.map((s) => s.session_id),
+        ]);
+        if (prev && allIds.has(prev)) sel.value = prev;
       } catch (_) { /* ignore */ }
     }
 

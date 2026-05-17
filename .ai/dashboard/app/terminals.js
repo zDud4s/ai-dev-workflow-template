@@ -219,6 +219,9 @@
     }
 
     function termSetDead(t, label) {
+      // If the subprocess died mid-turn, the placeholder has no streaming
+      // event coming to replace it — clear it explicitly.
+      termClearThinkingPlaceholder(t);
       t.pane.classList.add("dead");
       t.input.disabled = true;
       t.sendBtn.disabled = true;
@@ -250,6 +253,10 @@
         await postJson(`/api/jobs/${jobId}/input`, payload);
         if (t.kind === "chat") {
           termRenderUserMessage(t, text);
+          // Show the "thinking" bubble immediately — it's the user's only
+          // signal that the model has the turn until the first stream
+          // event arrives, which can take several seconds for cold caches.
+          termShowThinkingPlaceholder(t);
           // Echo attached files/images locally too so the operator sees
           // what they sent.
           for (const f of attached.files) {
@@ -408,11 +415,21 @@
 
     // ----- chat rendering (stream-json -> structured DOM) -----
 
+    // Compact form for the header chip: just the dollar amount, rounded
+    // to 2 decimal places once the cost crosses $0.01 (anything smaller
+    // would round to "$0.00", which reads as broken — keep the 4-decimal
+    // long form there so the user sees something).
+    function termFormatCostCompact(c) {
+      if (!c || c.cost_usd == null) return "";
+      const v = Number(c.cost_usd);
+      return "$" + v.toFixed(v >= 0.01 ? 2 : 4);
+    }
+    // Verbose form for tooltips and the legacy header layout: dollars + turns + duration.
     function termFormatCost(c) {
       if (!c) return "";
       const parts = [];
       if (c.cost_usd != null) parts.push("$" + Number(c.cost_usd).toFixed(4));
-      if (c.turns != null) parts.push(c.turns + "t");
+      if (c.turns != null) parts.push(c.turns + " turn" + (c.turns === 1 ? "" : "s"));
       if (c.duration_ms != null && c.duration_ms > 0) parts.push((c.duration_ms / 1000).toFixed(1) + "s");
       return parts.join(" · ");
     }
@@ -425,7 +442,12 @@
         if (!r.ok) return;
         const data = await r.json();
         const pill = t.pane.querySelector(".cost-pill");
-        if (pill) pill.textContent = termFormatCost(data.cost);
+        if (!pill) return;
+        pill.textContent = termFormatCostCompact(data.cost);
+        const verbose = termFormatCost(data.cost);
+        pill.title = verbose
+          ? verbose + "  ·  job " + (t.jobId || "").slice(0, 8)
+          : "aggregated cost / turns / time for this session";
       } catch (_) { /* ignore */ }
     }
 
@@ -486,8 +508,32 @@
       t.currentAssistant = null;
     }
 
+    // Show an animated "thinking" bubble while we wait for the first
+    // assistant event. Replaced in-place as soon as text/tool_use starts
+    // streaming (see termAssistantBlock and termRenderResult below).
+    function termShowThinkingPlaceholder(t) {
+      if (!t || !t.body) return;
+      if (t.kind !== "chat") return;
+      termClearThinkingPlaceholder(t);  // de-dupe
+      const msg = document.createElement("div");
+      msg.className = "msg assistant thinking-placeholder";
+      msg.innerHTML = `<div class="role">thinking</div>`
+        + `<div class="thinking-dots" aria-label="generating response">`
+        + `<span class="dot"></span><span class="dot"></span><span class="dot"></span>`
+        + `</div>`;
+      t.body.appendChild(msg);
+      termAutoScroll(t);
+    }
+
+    function termClearThinkingPlaceholder(t) {
+      if (!t || !t.body) return;
+      t.body.querySelectorAll(".thinking-placeholder").forEach((el) => el.remove());
+    }
+
     function termAssistantBlock(t) {
       if (t.currentAssistant && t.currentAssistant.isConnected) return t.currentAssistant;
+      // First real content for this turn — drop the thinking placeholder.
+      termClearThinkingPlaceholder(t);
       const msg = document.createElement("div");
       msg.className = "msg assistant";
       msg.innerHTML = `<div class="role">assistant</div><div class="text"></div>`;
@@ -889,6 +935,10 @@
     }
 
     function termRenderResult(t, obj) {
+      // Result frames close out a turn — drop any lingering thinking
+      // placeholder (e.g. when the turn finishes without any assistant
+      // text, the placeholder would otherwise persist forever).
+      termClearThinkingPlaceholder(t);
       const div = document.createElement("div");
       div.className = "msg result";
       const usd = (obj.cost_usd ?? obj.total_cost_usd);
@@ -958,11 +1008,26 @@
       if (type === "assistant" && obj.message) {
         const content = obj.message.content;
         if (Array.isArray(content)) {
+          // The final assistant message arrives AFTER the stream_event deltas
+          // that already painted the same text/tool_use into the current
+          // block. Re-appending duplicates the answer ("Hi!Hi!" syndrome) and
+          // re-renders the same tool pills twice. Dedupe by checking what we
+          // already have in the live block.
           for (const blk of content) {
             if (blk.type === "text" && typeof blk.text === "string") {
-              termAppendAssistantText(t, blk.text);
+              const cur = t.currentAssistant;
+              const accSoFar = cur ? (cur.querySelector(".text").dataset.raw || "") : "";
+              // If deltas already streamed (any) text into this block, the
+              // final text is a copy — skip. If the block is empty, this IS
+              // the first text we've seen (e.g. transcript replay where no
+              // deltas exist) — append normally.
+              if (!accSoFar) termAppendAssistantText(t, blk.text);
             } else if (blk.type === "tool_use") {
-              termAddToolPill(t, blk.id, blk.name, blk.input);
+              // stream_event/content_block_start may have already created the
+              // pill; don't duplicate it here.
+              if (!t.toolUseEls.has(blk.id)) {
+                termAddToolPill(t, blk.id, blk.name, blk.input);
+              }
             } else if (blk.type === "thinking" && typeof blk.thinking === "string") {
               const block = termAssistantBlock(t);
               const t2 = block.querySelector(".text");
@@ -1033,7 +1098,7 @@
       pane.dataset.jobId = jobId;
       pane.innerHTML = `
         <div class="term-head">
-          <span class="pill running status-pill">connecting</span>
+          <span class="pill running status-pill" title="job ${escape(jobId)}">connecting</span>
           <span class="task" title="${escape(meta?.task || "")}">${escape(taskPreview || jobId)}</span>
           <span class="cost-pill" title="aggregated cost / turns / time for this session"></span>
           <span class="id">${escape(jobId.slice(0, 8))}</span>
@@ -1191,8 +1256,17 @@
       // For chat jobs the SSE stream is one stream-json object per line;
       // buffer partial lines, parse each, and render structured messages.
       // For other kinds the chunk is plain text and goes straight in.
+      //
+      // IMPORTANT: do NOT append "\n" here. The server's pump reads stdout
+      // in 1024-byte chunks, so a single long JSON record (e.g. the 8KB
+      // SessionStart hook context) gets split across multiple SSE events.
+      // ``ev.data`` already preserves the original chunk's newline boundaries
+      // (an internal trailing newline becomes a final empty data: line);
+      // forcing an extra "\n" would prematurely terminate a partial line and
+      // hand a corrupt half-record to JSON.parse, which then falls through to
+      // termRenderRaw and dumps it as a raw "msg system" block.
       es.onmessage = (ev) => {
-        if (t.kind === "chat") termHandleChatChunk(t, ev.data + "\n");
+        if (t.kind === "chat") termHandleChatChunk(t, ev.data);
         else termAppendChunk(t, ev.data);
       };
       es.addEventListener("end", () => {

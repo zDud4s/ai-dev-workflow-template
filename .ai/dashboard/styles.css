@@ -976,6 +976,8 @@
       overflow: hidden;
       transition: border-color 160ms var(--easing), box-shadow 160ms var(--easing);
       position: relative;
+      container-type: inline-size;
+      container-name: term-pane;
     }
     .term-pane.focus {
       border-color: var(--accent);
@@ -1032,29 +1034,39 @@
     .term-head {
       display: flex;
       align-items: center;
-      gap: var(--s-3);
-      padding: 10px 14px;
+      gap: var(--s-2);
+      padding: 8px 12px;
       border-bottom: 1px solid var(--border-soft);
       background: var(--surf-3);
       font-family: var(--ff-mono);
       font-size: 11px;
       letter-spacing: 0.08em;
       color: var(--text-2);
+      min-width: 0;  /* let children shrink past content width */
     }
-    .term-head .id { color: var(--accent); font-weight: 600; }
+    /* Inline job id was visual noise — the same 8 chars live in the status
+       pill's tooltip and in the Run-tab job detail. Hide here to free up
+       header space; keep the node in DOM for callers that still reference it. */
+    .term-head .id { display: none; }
+    .term-head .status-pill {
+      flex: 0 0 auto;
+      cursor: help;
+    }
     .term-head .cost-pill {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 2px 8px;
+      gap: 4px;
+      padding: 2px 7px;
       border-radius: 999px;
       background: var(--bg-inset);
       color: var(--text-dim);
       font-family: var(--ff-mono);
       font-size: var(--fs-0);
-      letter-spacing: 0.06em;
+      letter-spacing: 0.04em;
       border: 1px solid var(--border-soft);
       white-space: nowrap;
+      flex: 0 0 auto;
+      cursor: help;
     }
     .term-head .cost-pill.has-data { color: var(--accent-2); border-color: transparent; background: var(--teal-bg); }
     .term-head .cost-pill[hidden] { display: none; }
@@ -1063,31 +1075,44 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      flex: 1;
+      flex: 1 1 80px;
+      min-width: 0;
     }
-    .term-head .actions { display: flex; gap: 6px; }
+    .term-head .actions {
+      display: flex;
+      gap: 3px;
+      flex: 0 0 auto;
+      margin-left: auto;  /* push actions to the right edge even if task collapses */
+    }
     .term-head .actions button {
       all: unset;
       cursor: pointer;
-      padding: 3px 10px;
+      padding: 3px 6px;
       border-radius: 0;
       font-family: var(--ff-mono);
-      font-size: 10px;
+      font-size: 9px;
       font-weight: 500;
-      letter-spacing: 0.14em;
+      letter-spacing: 0.10em;
       text-transform: uppercase;
       color: var(--text-dim);
       border: 1px solid var(--border-soft);
       background: var(--surf-1);
-      transition: color 140ms var(--easing), border-color 140ms var(--easing);
+      transition: color 140ms var(--easing), border-color 140ms var(--easing), background-color 140ms var(--easing);
     }
     .term-head .actions button:hover {
       color: var(--accent);
       border-color: var(--accent);
+      background: var(--panel-inset);
     }
     .term-head .actions button.danger:hover {
       color: var(--bad);
       border-color: var(--bad);
+      background: var(--panel-inset);
+    }
+    /* Narrow pane: drop the cost pill so primary actions stay reachable.
+       Full breakdown still lives on the pane's job detail in the Run tab. */
+    @container term-pane (max-width: 520px) {
+      .term-head .cost-pill { display: none; }
     }
     .term-body {
       flex: 1;
@@ -1249,6 +1274,41 @@
       background: oklch(30% 0.055 200);
       color: var(--accent-hi);
       margin-bottom: 6px;
+    }
+    /* Thinking placeholder bubble: identical shape to an assistant bubble,
+       dimmed role, and three staggered dots that pulse while we wait for
+       the first stream_event/text_delta. Replaced in-place by the real
+       assistant block as soon as content starts arriving. */
+    .term-body.chat .msg.assistant.thinking-placeholder {
+      background: var(--bg-elev);
+      border-color: var(--border-soft);
+      animation: thinking-bubble-in 220ms var(--easing);
+    }
+    .term-body.chat .msg.assistant.thinking-placeholder .role {
+      color: var(--text-faint);
+    }
+    .thinking-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 2px 2px;
+    }
+    .thinking-dots .dot {
+      width: 6px;
+      height: 6px;
+      background: var(--accent);
+      opacity: 0.3;
+      animation: thinking-pulse 1.3s var(--easing) infinite;
+    }
+    .thinking-dots .dot:nth-child(2) { animation-delay: 0.18s; }
+    .thinking-dots .dot:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes thinking-pulse {
+      0%, 80%, 100% { opacity: 0.25; transform: scale(0.7); }
+      40%          { opacity: 1;    transform: scale(1.05); }
+    }
+    @keyframes thinking-bubble-in {
+      from { opacity: 0; transform: translateY(2px); }
+      to   { opacity: 1; transform: none; }
     }
     .term-body.chat .msg .role {
       font-family: var(--ff-mono);

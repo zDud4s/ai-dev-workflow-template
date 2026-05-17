@@ -2975,23 +2975,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _handle_transcripts_list(self) -> None:
         """List the IDE transcript files for the current repo - the JSONL
         files Claude Code (the VSCode/Cursor extension) writes for every
-        session in ``~/.claude/projects/<slug>/<session_id>.jsonl``."""
+        session in ``~/.claude/projects/<slug>/<session_id>.jsonl``.
+
+        Each entry carries a ``task`` preview (first real user message) so
+        the Resume-session picker can show a meaningful label, not just the
+        session UUID."""
         tdir = _transcripts_dir_for_cwd(ROOT)
         if tdir is None:
             self._json(200, {"transcripts": [], "note": "no ~/.claude/projects directory for this repo"})
             return
         files = sorted(tdir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        # Cap task-preview reads so very large project histories don't slow
+        # down the picker. Older entries still appear in the list, just
+        # without a task preview.
+        TASK_PREVIEW_LIMIT = 60
         items = []
-        for p in files:
+        for idx, p in enumerate(files):
             try:
                 st = p.stat()
             except OSError:
                 continue
+            task = _lookup_session_task(p.stem) if idx < TASK_PREVIEW_LIMIT else None
             items.append({
                 "session_id": p.stem,
                 "size_bytes": st.st_size,
                 "modified": _dt.datetime.fromtimestamp(st.st_mtime, _dt.timezone.utc).isoformat(timespec="seconds"),
                 "path": str(p.relative_to(tdir.parent)),
+                "task": task,
             })
         self._json(200, {"transcripts": items, "dir": str(tdir)})
 
