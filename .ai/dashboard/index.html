@@ -434,11 +434,13 @@
       </section>
 
       <section class="block">
-        <h2>Per-phase tuning</h2>
+        <h2>Per-phase fallback</h2>
         <p class="settings-hint">
-          <code>reasoning_effort</code> only applies when the phase tool is <code>codex</code>; defaults to <code>medium</code>.
-          <code>timeout_seconds</code> overrides the default (1800s for execute, 600s for others); leave empty to use the default.
+          Fallback values written to <code>.ai/models.yaml</code>. Used when auto-select is off, or when the planner has no auto-select match for a phase.
+          <code>reasoning_effort</code> maps to <code>claude --effort</code> (low/medium/high/xhigh/<strong>max</strong>) and to <code>codex --config model_reasoning_effort</code> (low/medium/high/xhigh — no <code>max</code>).
+          <code>timeout_seconds</code> overrides the default (1800s for execute, 600s for others); empty = default.
         </p>
+        <div id="phases-auto-warning" class="settings-env-warning" role="status"></div>
         <div id="phases-table"><div class="settings-skeleton">loading…</div></div>
         <div class="form-actions">
           <span class="form-msg" id="phases-msg" aria-live="polite"></span>

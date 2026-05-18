@@ -5,7 +5,9 @@
 (function () {
   var ALL_PHASES = ["plan", "execute", "review", "rescue", "maintenance", "bootstrap"];
   var AS_PHASES_AVAILABLE = ["execute", "review", "rescue"];
-  var REASONING_LEVELS = ["", "xhigh", "high", "medium", "low"];
+  // Union of claude (low/medium/high/xhigh/max) and codex (low/medium/high/xhigh).
+  // `max` applies only to claude; the codex dispatcher rejects it.
+  var REASONING_LEVELS = ["", "low", "medium", "high", "xhigh", "max"];
 
   var loadedOnce = false;
 
@@ -139,29 +141,63 @@
     try {
       await withBusy(btn, function () { return postJson("/api/settings/auto_select", body); });
       setMsg("as-msg", "Saved to .ai/models.yaml", "good");
+      // The per-phase fallback section depends on auto-select state, refresh it.
+      loadAllSettings();
     } catch (e) {
       setMsg("as-msg", e.message || "save failed", "bad");
     }
   }
 
   // ---------- Per-phase tuning ----------
-  function renderPhasesTable(phases) {
+  function renderPhasesTable(phases, autoSelect) {
     phases = phases || {};
+    autoSelect = autoSelect || {};
+    var autoOn = !!autoSelect.enabled;
+    var autoPhases = autoOn ? (autoSelect.phases || []) : [];
+
+    // Banner above the table when auto-select is on.
+    var warn = $q("#phases-auto-warning");
+    if (warn) {
+      if (autoOn) {
+        warn.textContent = "Auto-select is ON for phases: " + autoPhases.join(", ")
+          + ". The planner picks tool / model / reasoning_effort per task for these phases. The values below are the fallback used only when auto-select has no match.";
+        warn.classList.add("is-active");
+      } else {
+        warn.classList.remove("is-active");
+        warn.textContent = "";
+      }
+    }
+
     var rows = ALL_PHASES.map(function (ph) {
       var p = phases[ph] || {};
+      var tool = (p.tool || "").toLowerCase();
+      var isCodex = tool === "codex";
+      var isAuto = autoOn && autoPhases.indexOf(ph) >= 0;
       var current = p.reasoning_effort || "";
       var options = REASONING_LEVELS.map(function (r) {
+        // `max` is claude-only; hide it from the dropdown for codex phases.
+        if (r === "max" && isCodex) return "";
         var sel = current === r ? " selected" : "";
         var label = r || "(default)";
         return '<option value="' + r + '"' + sel + '>' + label + '</option>';
       }).join("");
       var to = p.timeout_seconds || "";
+      var reasoningTitle = isCodex
+        ? "codex --config model_reasoning_effort (low/medium/high/xhigh)"
+        : "claude --effort (low/medium/high/xhigh/max)";
+      var reasoningCell = '<select class="ph-reasoning" title="' + reasoningTitle + '">' + options + '</select>';
+      var toolPill = '<span class="ph-tool-pill ph-tool-' + (tool || "unknown") + '">' + (p.tool || "?") + '</span>';
+      var effectiveCell = isAuto
+        ? '<span class="ph-eff ph-eff-auto" title="The planner picks this per task at runtime via auto-select">auto · per task</span>'
+        : '<span class="ph-eff ph-eff-yaml" title="The orchestrator reads this row directly from models.yaml">from fallback ↑</span>';
+      var rowClass = isAuto ? "ph-row is-auto" : "ph-row";
       return ''
-        + '<tr data-phase="' + ph + '">'
-        + '  <td class="ph-name">' + ph + '</td>'
-        + '  <td class="ph-meta">' + (p.tool || "?") + ' / ' + (p.model || "?") + '</td>'
-        + '  <td><select class="ph-reasoning">' + options + '</select></td>'
+        + '<tr class="' + rowClass + '" data-phase="' + ph + '">'
+        + '  <td class="ph-name">' + ph + (isAuto ? ' <span class="ph-auto-pill" title="auto-select active">AUTO</span>' : '') + '</td>'
+        + '  <td>' + toolPill + ' <span class="ph-meta">' + (p.model || "?") + '</span></td>'
+        + '  <td>' + reasoningCell + '</td>'
         + '  <td><input type="number" class="ph-timeout" min="30" max="7200" value="' + to + '" placeholder="(default)" /></td>'
+        + '  <td>' + effectiveCell + '</td>'
         + '  <td><button class="btn secondary ph-save" type="button">Save</button></td>'
         + '</tr>';
     }).join("");
@@ -169,7 +205,7 @@
       + '<table class="phases-table">'
       + '  <thead><tr>'
       + '    <th>Phase</th><th>Tool / model</th><th>Reasoning effort</th>'
-      + '    <th>Timeout seconds</th><th></th>'
+      + '    <th>Timeout</th><th>Effective at runtime</th><th></th>'
       + '  </tr></thead>'
       + '  <tbody>' + rows + '</tbody>'
       + '</table>';
@@ -182,11 +218,9 @@
 
   async function savePhaseRow(tr, btn) {
     var ph = tr.dataset.phase;
-    var body = {
-      phase: ph,
-      reasoning_effort: tr.querySelector(".ph-reasoning").value,
-      timeout_seconds:  tr.querySelector(".ph-timeout").value,
-    };
+    var body = { phase: ph, timeout_seconds: tr.querySelector(".ph-timeout").value };
+    var rEl = tr.querySelector(".ph-reasoning");
+    if (rEl) body.reasoning_effort = rEl.value;
     setMsg("phases-msg", "");
     try {
       await withBusy(btn, function () { return postJson("/api/models/phase", body); });
@@ -298,7 +332,7 @@
       var data = await getJson("/api/settings");
       fillImprover(data.improver || {});
       fillAutoSelect(data.auto_select || {});
-      renderPhasesTable(data.phases || {});
+      renderPhasesTable(data.phases || {}, data.auto_select || {});
       setMsg("settings-meta", "Loaded " + new Date().toLocaleTimeString(), "good");
       loadedOnce = true;
     } catch (e) {

@@ -90,21 +90,49 @@ Wrap each dispatcher command with a timeout. On POSIX shells: `timeout <N>s <cmd
 
 > "Warning: Phase `<phase>` is set to inline but session model (`<session.model>`) differs from phase model (`<phase.model>`). Running in session model."
 
-**Modes: agent / dispatcher.** Wrap every subprocess call with `timeout <T>s` where `<T>` is `<phase>.timeout_seconds` from `.ai/models.yaml`, defaulting to 600s for plan/review/maintenance/rescue/bootstrap and 1800s for execute. After dispatching, `rm -f /tmp/phase-<phase>-prompt.md`.
+### Mode: agent (in-process)
 
-- **Target = `claude`** (used by `agent` mode, and by `dispatcher` when `<phase>.tool == claude`):
+The controller delegates via the Claude Code Task tool — an in-process subagent that shares the controller's sandbox but runs in its own context window. No subprocess, no temp file, no `timeout` wrapper, no `rm`.
+
+Dispatch: call the Task tool with `subagent_type="general-purpose"`, `model=<family>` where `<family>` is the `sonnet | opus | haiku` prefix of `<phase.model>` (intra-family version differences collapse — e.g. `claude-sonnet-4-6` and `claude-sonnet-4-5-20241022` both resolve to `sonnet`). Exact-version routing requires `mode: dispatcher`. Pass the full assembled prompt as the `prompt` parameter.
+
+The Task tool returns the phase output directly. Apply the same exit/escalation handling as for subprocess modes (escalation block → structured failure; empty output → silent failure).
+
+### Mode: dispatcher (subprocess)
+
+Wrap every subprocess call with `timeout <T>s` where `<T>` is `<phase>.timeout_seconds` from `.ai/models.yaml`, defaulting to 600s for plan/review/maintenance/rescue/bootstrap and 1800s for execute. After dispatching, `rm -f /tmp/phase-<phase>-prompt.md`.
+
+- **Target = `claude`** (`dispatcher` when `<phase>.tool == claude`):
   ```bash
-  timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | claude -p --bare --exclude-dynamic-system-prompt-sections "Execute the attached <phase> phase exactly. Return only the phase result. If you cannot proceed, emit the Escalation output format and exit non-zero." --model <phase.model> 2>/dev/null'
+  timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | claude -p --bare --exclude-dynamic-system-prompt-sections "Execute the attached <phase> phase exactly. Return only the phase result. If you cannot proceed, emit the Escalation output format and exit non-zero." --model <phase.model> [--effort <phase.reasoning_effort>] 2>/dev/null'
   ```
-  `--bare` skips CLAUDE.md auto-discovery, hooks, plugin sync, auto-memory, keychain — the phase only sees the prompt we pipe. `--exclude-dynamic-system-prompt-sections` moves per-machine cwd/env/git/memory out of the system prompt into the first user message; the stable prefix hits the Anthropic prompt cache (5-min TTL) on repeat calls.
+  `--bare` skips CLAUDE.md auto-discovery, hooks, plugin sync, auto-memory, keychain — the phase only sees the prompt we pipe. `--exclude-dynamic-system-prompt-sections` moves per-machine cwd/env/git/memory out of the system prompt into the first user message; the stable prefix hits the Anthropic prompt cache (5-min TTL) on repeat calls. `<phase.reasoning_effort>` ∈ {`low`, `medium`, `high`, `xhigh`, `max`} from `.ai/models.yaml`; omit the flag entirely when the field is absent (claude default applies).
 
 - **Target = `codex`** (`dispatcher` mode when `<phase>.tool == codex`):
   ```bash
   timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | codex exec --skip-git-repo-check -m <phase.model> --config model_reasoning_effort="<phase.reasoning_effort>" -C <absolute project path> 2>/dev/null'
   ```
-  `<phase.reasoning_effort>` ∈ {`xhigh`, `high`, `medium`, `low`} from `.ai/models.yaml`; default `medium` if absent. The `execute` phase additionally appends `--dangerously-bypass-approvals-and-sandbox` — without it, sandbox approval prompts stall the subprocess silently. Other phases run read-only.
+  `<phase.reasoning_effort>` ∈ {`xhigh`, `high`, `medium`, `low`} from `.ai/models.yaml`; default `medium` if absent. Codex does NOT accept `max` — only claude does. The `execute` phase additionally appends `--dangerously-bypass-approvals-and-sandbox` — without it, sandbox approval prompts stall the subprocess silently. Other phases run read-only.
 
 Subprocess exit handling lives in the dispatch error table below (exit 0, non-zero ± `## Escalation`, exit 124 timeout, empty-output exit 0).
+
+## Cache-stable prompt layout
+
+When assembling a dispatched-phase prompt, order the sections so that content shared across sequential phases of the same task forms a byte-identical prefix, maximizing Anthropic prompt-cache hits (5-min TTL).
+
+**Stable prefix** (same across phases of one task — order matters):
+
+1. Phase skill body (from discovery path)
+2. Packet schema (from `.ai/packets/`)
+3. `project.yaml` header fields
+
+**Volatile suffix** (changes per phase or per dispatch):
+
+4. Task / current objective
+5. Memory slice (filtered by planner tags)
+6. Prior-phase artifacts (Handoff output, reviewer findings, etc.)
+
+Sequential phases of the same task MUST emit a byte-identical prefix; volatile content goes at the end.
 
 ## Resume rule
 

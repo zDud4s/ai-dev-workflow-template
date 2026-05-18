@@ -2208,6 +2208,52 @@
       font-size: 11px;
     }
     section.block .phases-table input[type="number"] { width: 90px; }
+    section.block .phases-table .ph-na {
+      color: var(--text-faint);
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-style: italic;
+    }
+    section.block .phases-table .ph-tool-pill {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-strong);
+      font-family: var(--ff-mono);
+      font-size: 9px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    section.block .phases-table .ph-tool-claude { color: var(--accent); border-color: var(--accent-soft); }
+    section.block .phases-table .ph-tool-codex  { color: var(--magenta); border-color: var(--magenta-bg); }
+    section.block .phases-table .ph-auto-pill {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-family: var(--ff-mono);
+      font-size: 8px;
+      letter-spacing: 0.2em;
+      font-weight: 700;
+      color: var(--warn);
+      background: var(--warn-bg);
+      border: 1px solid var(--warn);
+      vertical-align: middle;
+    }
+    section.block .phases-table .ph-eff {
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+    }
+    section.block .phases-table .ph-eff-auto { color: var(--warn); }
+    section.block .phases-table .ph-eff-yaml { color: var(--text-faint); }
+    section.block .phases-table tr.ph-row.is-auto td:not(:last-child) { opacity: 0.55; }
+    section.block .phases-table tr.ph-row.is-auto td:last-child { opacity: 1; }
     section.block .as-phases {
       display: flex;
       flex-wrap: wrap;

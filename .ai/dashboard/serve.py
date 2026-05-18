@@ -3399,12 +3399,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     }
 
     def _handle_settings_get(self) -> None:
-        improver_cfg = _load_improver_config()
+        # Read the improver block straight from YAML so saved values survive
+        # the AI_WORKFLOW_DISABLE_IMPROVER env override (which only affects
+        # _load_improver_config's runtime view). Fall back to defaults
+        # field-by-field when YAML is missing or has no entry.
+        models_path = ROOT / ".ai" / "models.yaml"
+        imp_raw = _read_yaml_field(models_path, "improver")
+
+        def _imp_get(key, default):
+            v = imp_raw.get(key)
+            if v is None or v == "":
+                return default
+            return v
+
+        improver_enabled = (imp_raw.get("enabled") or
+                            ("true" if _IMPROVER_DEFAULTS.get("enabled") else "false")).lower() == "true"
         improver_disabled_by_env = str(
             os.environ.get("AI_WORKFLOW_DISABLE_IMPROVER", "")
         ).strip().lower() in {"1", "true", "yes", "on"}
 
-        models_path = ROOT / ".ai" / "models.yaml"
         auto_raw = _read_yaml_field(models_path, "auto_select")
         auto_enabled = (auto_raw.get("enabled") or "false").lower() == "true"
         auto_token_budget = auto_raw.get("token_budget") or "medium"
@@ -3427,11 +3440,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         self._json(200, {
             "improver": {
-                "enabled":                bool(improver_cfg.get("enabled")),
-                "small_change_max_lines": improver_cfg.get("small_change_max_lines"),
-                "min_interval_seconds":   improver_cfg.get("min_interval_seconds"),
-                "timeout_seconds":        improver_cfg.get("timeout_seconds"),
-                "revert_after_n_uses":    improver_cfg.get("revert_after_n_uses"),
+                "enabled":                improver_enabled,
+                "small_change_max_lines": _imp_get("small_change_max_lines", _IMPROVER_DEFAULTS["small_change_max_lines"]),
+                "min_interval_seconds":   _imp_get("min_interval_seconds",   _IMPROVER_DEFAULTS["min_interval_seconds"]),
+                "timeout_seconds":        _imp_get("timeout_seconds",        _IMPROVER_DEFAULTS["timeout_seconds"]),
+                "revert_after_n_uses":    _imp_get("revert_after_n_uses",    _IMPROVER_DEFAULTS["revert_after_n_uses"]),
                 "disabled_by_env":        improver_disabled_by_env,
             },
             "auto_select": {
@@ -4404,7 +4417,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     _PHASES = {"session", "plan", "execute", "review", "rescue", "maintenance", "bootstrap"}
     _TOOLS = {"claude", "codex"}
     _PHASE_MODES = {"inline", "agent", "dispatcher"}
-    _REASONING = {"xhigh", "high", "medium", "low"}
+    # Claude `--effort` accepts {low, medium, high, xhigh, max}; codex
+    # `model_reasoning_effort` accepts {low, medium, high, xhigh}. We accept
+    # the union here and let the dispatcher omit/translate per tool.
+    _REASONING = {"xhigh", "high", "medium", "low", "max"}
 
     def _handle_phase_update(self, body: dict) -> None:
         phase = (body.get("phase") or "").strip()
