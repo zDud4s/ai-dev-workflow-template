@@ -2225,11 +2225,11 @@
       cursor: pointer;
     }
     section.block .as-phases input[type="checkbox"] { accent-color: var(--accent); }
-    section.block .settings-toolbar {
+    #view-settings .settings-toolbar {
       display: flex;
       align-items: center;
       gap: var(--s-3);
-      margin-bottom: var(--s-4);
+      margin: calc(-1 * var(--s-3)) 0 var(--s-5);
     }
     section.block .settings-skeleton {
       color: var(--text-faint);
