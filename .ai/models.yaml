@@ -14,10 +14,10 @@
 
 auto_select:
   enabled: false                  # false = current behaviour; true = planner picks
-  token_budget: medium            # low | medium | high
+  token_budget: high              # low | medium | high
   phases: [execute, review, rescue]
-  # scope: project                # PR 1 default; per_task activated in a future PR
-  # adaptive: false               # activated in PR 3 (see spec Phase 2)
+  # scope: project                # null/absent = all phases; else list of phase names to apply auto-selection to
+  adaptive: false                 # When true, planner scores against .ai/metrics.jsonl
 
 dispatch_mode: auto    # auto | manual
 
@@ -30,8 +30,8 @@ plan:
   model: claude-opus-4-7
 
 execute:
-  tool: codex
-  model: gpt-5.5
+  tool: claude
+  model: claude-sonnet-4-6
   # timeout_seconds: 1800
 
 review:
