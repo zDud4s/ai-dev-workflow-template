@@ -2574,7 +2574,7 @@ def _lookup_session_task(session_id: str) -> str | None:
     return None
 
 
-def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 5) -> dict:
+def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 3) -> dict:
     """Aggregate METRICS_FILE into per-(phase, size, risk, budget) rankings.
 
     Mirrors the planner's adaptive scorer from
@@ -2616,16 +2616,24 @@ def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 5) -> d
     group. Candidates with fewer than `min_samples` records are dropped; if a
     group ends up empty it is omitted.
     """
+    empty = {
+        "samples": 0,
+        "min_samples": min_samples,
+        "groups": [],
+        "dropped_candidates": 0,
+        "last_record_ts": None,
+    }
     if not METRICS_FILE.exists():
-        return {"samples": 0, "groups": []}
+        return empty
     try:
         raw_lines = METRICS_FILE.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return {"samples": 0, "groups": []}
+        return empty
     tail = raw_lines[-max_records:] if len(raw_lines) > max_records else raw_lines
 
     groups: dict[tuple, dict[tuple, list[dict]]] = {}
     sample_count = 0
+    last_ts: str | None = None
     for line in tail:
         line = line.strip()
         if not line:
@@ -2638,6 +2646,9 @@ def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 5) -> d
         if not phase:
             continue
         sample_count += 1
+        ts = rec.get("ts")
+        if isinstance(ts, str) and (last_ts is None or ts > last_ts):
+            last_ts = ts
         group_key = (
             phase,
             rec.get("size"),
@@ -2652,11 +2663,13 @@ def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 5) -> d
         groups.setdefault(group_key, {}).setdefault(cand_key, []).append(rec)
 
     out_groups: list[dict] = []
+    dropped = 0
     for gkey, cands in groups.items():
         scored: list[dict] = []
         for ckey, records in cands.items():
             n = len(records)
             if n < min_samples:
+                dropped += 1
                 continue
             successes = sum(
                 1
@@ -2698,7 +2711,13 @@ def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 5) -> d
         })
 
     out_groups.sort(key=lambda g: (g["key"]["phase"], g["key"]["size"] or "", g["key"]["risk"] or "", g["key"]["budget"] or ""))
-    return {"samples": sample_count, "groups": out_groups}
+    return {
+        "samples": sample_count,
+        "min_samples": min_samples,
+        "groups": out_groups,
+        "dropped_candidates": dropped,
+        "last_record_ts": last_ts,
+    }
 
 
 def _load_timeline_runs(max_events: int = 500) -> list[dict]:
@@ -2844,7 +2863,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_timeline()
             return
         if parsed.path == "/api/auto-select":
-            self._handle_auto_select()
+            self._handle_auto_select(parsed)
             return
         if parsed.path == "/api/git/check":
             self._handle_git_check()
@@ -3247,10 +3266,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         grouped per session_id. Powers the Timeline view."""
         self._json(200, {"runs": _load_timeline_runs()})
 
-    def _handle_auto_select(self) -> None:
+    def _handle_auto_select(self, parsed) -> None:
         """Auto-select scorer ranking — aggregated from .ai/metrics.jsonl.
-        Powers the Auto-select view."""
-        self._json(200, _load_auto_select_ranking())
+        Powers the Auto-select view. Accepts `?min_samples=N` (clamp 1..50,
+        default 3); invalid values fall back to the default."""
+        raw = urllib.parse.parse_qs(parsed.query or "").get("min_samples", [None])[0]
+        try:
+            min_samples = max(1, min(50, int(raw)))
+        except (TypeError, ValueError):
+            min_samples = 3
+        self._json(200, _load_auto_select_ranking(min_samples=min_samples))
 
     # ----- settings (git update) helpers -----
 

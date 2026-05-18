@@ -398,12 +398,16 @@
         <h2>Auto-select rankings</h2>
         <div class="toolbar">
           <button class="refresh" onclick="loadAutoSelect()">reload</button>
+          <label style="font-size:12px;color:var(--fg-dim);display:inline-flex;align-items:center;gap:6px;margin-left:8px">
+            min samples
+            <input type="number" id="auto-select-min-samples" min="1" max="50" step="1" value="3" style="width:56px" />
+          </label>
           <span class="meta" id="auto-select-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
         </div>
         <div class="tl-hint">
           Ranking per <code>(phase, size, risk, budget)</code> tuple, computed from
           <code>.ai/metrics.jsonl</code> (the orchestrator appends one line per dispatched phase).
-          Candidates with <strong>fewer than 5 samples</strong> are excluded; groups with no
+          Candidates with <strong>fewer than <span id="auto-select-threshold-label">3</span> samples</strong> are excluded; groups with no
           qualifying candidates are omitted. The planner's adaptive scorer ranks with the
           same formula: <code>0.6·success_rate + 0.2·(1-norm_duration) + 0.2·budget_align</code>.
           When the planner falls back to the static table (cold-start or guard rail), the line in
