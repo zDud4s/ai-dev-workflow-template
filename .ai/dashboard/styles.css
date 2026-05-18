@@ -2104,6 +2104,151 @@
     .form-msg.ok  { color: var(--good); }
     .form-msg.err { color: var(--bad); }
 
+    /* ---------------- Settings tab ----------------
+       The Settings tab edits .ai/models.yaml live. Sections share a
+       two-column grid (label / control), a discreet hint row, and a
+       footer row with the Save button + status message. */
+    section.block .settings-grid {
+      display: grid;
+      grid-template-columns: 220px minmax(160px, 1fr);
+      gap: var(--s-2) var(--s-4);
+      align-items: center;
+      max-width: 640px;
+    }
+    section.block .settings-grid label {
+      font-family: var(--ff-mono);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    section.block .settings-grid input[type="number"],
+    section.block .settings-grid select,
+    section.block .settings-grid input[type="text"] {
+      width: 140px;
+      padding: 6px 8px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--ff-mono);
+      font-size: 12px;
+      border-radius: 0;
+    }
+    section.block .settings-grid input:focus,
+    section.block .settings-grid select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+    section.block .settings-grid input[disabled],
+    section.block .settings-grid select[disabled] {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    section.block .settings-hint {
+      color: var(--text-dim);
+      font-size: 13px;
+      margin: 0 0 var(--s-3);
+      line-height: 1.5;
+    }
+    section.block .settings-env-warning {
+      display: none;
+      margin: 0 0 var(--s-3);
+      padding: 8px 12px;
+      border-left: 2px solid var(--warn);
+      background: var(--warn-bg);
+      color: var(--warn);
+      font-family: var(--ff-mono);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+    section.block .settings-env-warning.is-active { display: block; }
+    section.block .phases-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    section.block .phases-table thead th {
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+      font-weight: 500;
+    }
+    section.block .phases-table tbody td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-soft);
+      vertical-align: middle;
+    }
+    section.block .phases-table tbody tr:last-child td { border-bottom: 0; }
+    section.block .phases-table .ph-name {
+      font-family: var(--ff-mono);
+      font-weight: 600;
+      color: var(--accent-hi);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font-size: 11px;
+    }
+    section.block .phases-table .ph-meta {
+      color: var(--text-dim);
+      font-family: var(--ff-mono);
+      font-size: 11px;
+    }
+    section.block .phases-table select,
+    section.block .phases-table input[type="number"] {
+      padding: 4px 6px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--ff-mono);
+      font-size: 11px;
+    }
+    section.block .phases-table input[type="number"] { width: 90px; }
+    section.block .as-phases {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--s-3);
+    }
+    section.block .as-phases label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--ff-mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      cursor: pointer;
+    }
+    section.block .as-phases input[type="checkbox"] { accent-color: var(--accent); }
+    section.block .settings-toolbar {
+      display: flex;
+      align-items: center;
+      gap: var(--s-3);
+      margin-bottom: var(--s-4);
+    }
+    section.block .settings-skeleton {
+      color: var(--text-faint);
+      font-family: var(--ff-mono);
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+    section.block .git-log {
+      font-family: var(--ff-mono);
+      font-size: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-inset);
+      padding: 8px 10px;
+      max-height: 220px;
+      overflow: auto;
+    }
+    section.block .git-log .sha { color: var(--accent-hi); }
+
     /* ---------------- Run-tab form layout ----------------
        The Run tab needs a predictable grid rather than the default
        flex-wrap soup, so labels, controls and helper text settle on

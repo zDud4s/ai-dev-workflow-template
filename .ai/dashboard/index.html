@@ -42,6 +42,8 @@
     <button data-view="run">Run <span class="count" id="count-jobs">·</span></button>
     <button data-view="terminals">Terminals <span class="count" id="count-terminals">·</span></button>
     <button data-view="timeline">Timeline <span class="count" id="count-timeline">·</span></button>
+    <div class="section-label">settings</div>
+    <button data-view="settings">Settings</button>
   </nav>
 
   <main>
@@ -355,12 +357,99 @@
         <div id="timeline-chart"></div>
       </section>
     </section>
+
+    <section class="view" id="view-settings">
+      <div class="settings-toolbar">
+        <button class="btn secondary" id="btn-settings-reload">Reload from disk</button>
+        <span class="form-msg" id="settings-meta" aria-live="polite"></span>
+      </div>
+
+      <section class="block">
+        <h2>Auto-improver</h2>
+        <p class="settings-hint">
+          Reads/writes the <code>improver:</code> block in <code>.ai/models.yaml</code>.
+          Controls the background skill-improvement loop.
+        </p>
+        <div id="improver-env-warning" class="settings-env-warning" role="status"></div>
+        <div class="settings-grid">
+          <label for="imp-enabled">Enabled</label>
+          <input type="checkbox" id="imp-enabled" />
+          <label for="imp-small-change">small_change_max_lines</label>
+          <input type="number" id="imp-small-change" min="1" max="200" />
+          <label for="imp-min-interval">min_interval_seconds</label>
+          <input type="number" id="imp-min-interval" min="0" max="86400" />
+          <label for="imp-timeout">timeout_seconds</label>
+          <input type="number" id="imp-timeout" min="10" max="3600" />
+          <label for="imp-revert">revert_after_n_uses</label>
+          <input type="number" id="imp-revert" min="1" max="1000" />
+        </div>
+        <div class="form-actions">
+          <button class="btn" id="btn-imp-save">Save improver</button>
+          <span class="form-msg" id="imp-msg" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Auto-select</h2>
+        <p class="settings-hint">
+          Reads/writes the <code>auto_select:</code> block. When enabled, the planner picks tool/model per phase based on the task.
+        </p>
+        <div class="settings-grid">
+          <label for="as-enabled">Enabled</label>
+          <input type="checkbox" id="as-enabled" />
+          <label for="as-budget">token_budget</label>
+          <select id="as-budget">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+          <label>Phases</label>
+          <div id="as-phases" class="as-phases"></div>
+        </div>
+        <div class="form-actions">
+          <button class="btn" id="btn-as-save">Save auto-select</button>
+          <span class="form-msg" id="as-msg" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Per-phase tuning</h2>
+        <p class="settings-hint">
+          <code>reasoning_effort</code> only applies when the phase tool is <code>codex</code>; defaults to <code>medium</code>.
+          <code>timeout_seconds</code> overrides the default (1800s for execute, 600s for others); leave empty to use the default.
+        </p>
+        <div id="phases-table"><div class="settings-skeleton">loading…</div></div>
+        <div class="form-actions">
+          <span class="form-msg" id="phases-msg" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Repository updates</h2>
+        <p class="settings-hint">
+          Checks for new commits on the remote and applies them via <code>git pull --ff-only</code>.
+        </p>
+        <div class="form-actions" style="margin-top:0">
+          <button class="btn" id="btn-git-check">Check for updates</button>
+          <button class="btn secondary" id="btn-git-pull" disabled>Apply update</button>
+        </div>
+        <div id="git-status" class="status-panel" aria-live="polite" style="margin-top:var(--s-3);padding:var(--s-3);border:1px solid var(--border);background:var(--bg-inset);color:var(--text-dim);font-size:13px">
+          Click <strong>Check for updates</strong> to query the remote.
+        </div>
+        <div id="git-log-wrap" style="margin-top:var(--s-3);display:none">
+          <div class="form-msg" style="margin-bottom:var(--s-2)">Pending commits — newest first · max 20</div>
+          <div id="git-log" class="git-log"></div>
+        </div>
+        <pre id="git-output" style="margin-top:var(--s-2);padding:var(--s-2);background:var(--bg-inset);border:1px solid var(--border);font-family:var(--ff-mono);font-size:12px;white-space:pre-wrap;display:none;max-height:300px;overflow:auto;color:var(--text-dim)"></pre>
+      </section>
+    </section>
   </main>
 
   <script src="app/core.js"></script>
   <script src="app/skills.js"></script>
   <script src="app/jobs.js"></script>
   <script src="app/terminals.js"></script>
+  <script src="app/settings.js"></script>
   <script src="app/main.js"></script>
 </body>
 </html>

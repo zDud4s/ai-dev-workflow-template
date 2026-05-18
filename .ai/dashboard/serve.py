@@ -46,6 +46,7 @@ from pathlib import Path
 
 PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
 ROOT = Path(__file__).resolve().parents[2]  # repo root
+_SERVER_STARTED_AT = time.time()
 JOBS_DIR = ROOT / ".ai" / "dashboard" / "jobs"
 # Append-only ledger of job snapshots — every status transition adds one
 # JSON line so the dashboard can rebuild the JOBS dict after a server
@@ -2711,6 +2712,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/timeline":
             self._handle_timeline()
             return
+        if parsed.path == "/api/git/check":
+            self._handle_git_check()
+            return
+        if parsed.path == "/api/git/log":
+            self._handle_git_log()
+            return
+        if parsed.path == "/api/system/info":
+            self._handle_system_info()
+            return
+        if parsed.path == "/api/settings":
+            self._handle_settings_get()
+            return
         m = re.fullmatch(r"/api/transcripts/([0-9a-fA-F-]+)/stream", parsed.path)
         if m:
             self._handle_transcript_stream(m.group(1))
@@ -2773,6 +2786,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_phase_update(body)
         elif parsed.path == "/api/jobs":
             self._handle_jobs_create(body)
+        elif parsed.path == "/api/git/pull":
+            self._handle_git_pull()
+        elif parsed.path == "/api/settings/improver":
+            self._handle_improver_update(body)
+        elif parsed.path == "/api/settings/auto_select":
+            self._handle_auto_select_update(body)
         else:
             m = re.fullmatch(r"/api/jobs/([0-9a-f-]+)/cancel", parsed.path)
             if m:
@@ -2797,6 +2816,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(404, {"error": "unknown endpoint", "path": parsed.path})
 
     # ----- helpers -----
+    def end_headers(self) -> None:  # noqa: N802 (stdlib signature)
+        # Prevent stale HTML/CSS/JS after dashboard upgrades. The dashboard is
+        # served on localhost so cache invalidation cost is negligible, and
+        # otherwise a Ctrl+F5 is required after every change.
+        self.send_header("Cache-Control", "no-store, must-revalidate")
+        super().end_headers()
+
     def _read_json_body(self) -> dict | None:
         length = int(self.headers.get("Content-Length") or "0")
         if length <= 0:
@@ -3086,6 +3112,283 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """Pipeline Gantt data — phase_dispatch events from .ai/events.jsonl
         grouped per session_id. Powers the Timeline view."""
         self._json(200, {"runs": _load_timeline_runs()})
+
+    # ----- settings (git update) helpers -----
+
+    def _run_git(self, args: list[str], timeout: int = 30) -> tuple[int, str, str]:
+        try:
+            proc = subprocess.run(
+                ["git", *args],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired:
+            return -1, "", f"git {' '.join(args)} timed out after {timeout}s"
+        except FileNotFoundError:
+            return -2, "", "git executable not found on PATH"
+
+    def _handle_git_check(self) -> None:
+        rc, out, err = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+        if rc != 0:
+            self._json(200, {
+                "error": "not_a_git_repo",
+                "message": (err or out or "git rev-parse failed").strip(),
+            })
+            return
+        branch = out.strip()
+
+        rc_f, out_f, err_f = self._run_git(["fetch", "--quiet"])
+        if rc_f != 0:
+            self._json(200, {
+                "branch": branch,
+                "error": "fetch_failed",
+                "message": (err_f or out_f or "git fetch returned non-zero").strip(),
+            })
+            return
+
+        rc_u, out_u, err_u = self._run_git(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
+        )
+        if rc_u != 0:
+            self._json(200, {
+                "branch": branch,
+                "error": "no_upstream",
+                "message": (err_u or "branch has no upstream configured").strip(),
+            })
+            return
+        upstream = out_u.strip()
+
+        rc_c, out_c, _err_c = self._run_git(
+            ["rev-list", "--left-right", "--count", "HEAD...@{u}"]
+        )
+        ahead, behind = 0, 0
+        if rc_c == 0:
+            parts = out_c.strip().split()
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                ahead, behind = int(parts[0]), int(parts[1])
+
+        if behind > 0:
+            message = f"{behind} new commit(s) on {upstream}."
+        elif ahead > 0:
+            message = f"Branch is {ahead} commit(s) ahead of {upstream}."
+        else:
+            message = "Branch is up to date with upstream."
+
+        self._json(200, {
+            "branch": branch,
+            "upstream": upstream,
+            "ahead": ahead,
+            "behind": behind,
+            "has_updates": behind > 0,
+            "message": message,
+        })
+
+    def _handle_git_pull(self) -> None:
+        rc, out, err = self._run_git(["pull", "--ff-only"], timeout=60)
+        output = (out + (("\n" + err) if err else "")).strip()
+        if rc == 0:
+            self._json(200, {
+                "success": True,
+                "output": output,
+                "message": "Update applied successfully.",
+            })
+        else:
+            self._json(200, {
+                "success": False,
+                "output": output,
+                "message": "Could not apply update (pull failed).",
+            })
+
+    def _handle_system_info(self) -> None:
+        try:
+            improver_enabled = bool(_load_improver_config().get("enabled"))
+        except Exception:
+            improver_enabled = False
+        try:
+            host, port = self.server.server_address[0], self.server.server_address[1]
+        except Exception:
+            host, port = "127.0.0.1", PORT
+        self._json(200, {
+            "host": host,
+            "port": port,
+            "configured_port": PORT,
+            "repo_root": str(ROOT),
+            "python_version": "%d.%d.%d" % sys.version_info[:3],
+            "platform": sys.platform,
+            "pid": os.getpid(),
+            "uptime_seconds": int(time.time() - _SERVER_STARTED_AT),
+            "auto_improver_enabled": improver_enabled,
+            "events_file": str(EVENTS_FILE),
+            "jobs_dir": str(JOBS_DIR),
+        })
+
+    def _handle_git_log(self) -> None:
+        """Pending commits between local HEAD and upstream (what `git pull` would apply)."""
+        rc, out, _err = self._run_git(
+            ["log", "HEAD..@{u}", "--oneline", "--no-decorate", "-n", "20"]
+        )
+        if rc != 0:
+            self._json(200, {"commits": [], "error": "could not list pending commits"})
+            return
+        commits = []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(" ", 1)
+            commits.append({
+                "sha": parts[0],
+                "subject": parts[1] if len(parts) > 1 else "",
+            })
+        self._json(200, {"commits": commits})
+
+    # ----- workflow settings (improver / auto_select / per-phase tuning) -----
+
+    _AUTO_SELECT_BUDGETS = {"low", "medium", "high"}
+    _IMPROVER_INT_FIELDS = ("small_change_max_lines", "min_interval_seconds",
+                            "timeout_seconds", "revert_after_n_uses")
+    _IMPROVER_BOUNDS = {
+        "small_change_max_lines": (1, 200),
+        "min_interval_seconds":   (0, 86400),
+        "timeout_seconds":        (10, 3600),
+        "revert_after_n_uses":    (1, 1000),
+    }
+
+    def _handle_settings_get(self) -> None:
+        improver_cfg = _load_improver_config()
+        improver_disabled_by_env = str(
+            os.environ.get("AI_WORKFLOW_DISABLE_IMPROVER", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+
+        models_path = ROOT / ".ai" / "models.yaml"
+        auto_raw = _read_yaml_field(models_path, "auto_select")
+        auto_enabled = (auto_raw.get("enabled") or "false").lower() == "true"
+        auto_token_budget = auto_raw.get("token_budget") or "medium"
+        phases_raw = auto_raw.get("phases") or ""
+        phases_list = [
+            p.strip().strip('"\'') for p in phases_raw.strip("[]").split(",") if p.strip()
+        ]
+
+        phase_names = ("plan", "execute", "review", "rescue", "maintenance", "bootstrap")
+        phases_out = {}
+        for ph in phase_names:
+            block = _read_yaml_field(models_path, ph)
+            phases_out[ph] = {
+                "tool":             block.get("tool", ""),
+                "model":            block.get("model", ""),
+                "mode":             block.get("mode", ""),
+                "reasoning_effort": block.get("reasoning_effort", ""),
+                "timeout_seconds":  block.get("timeout_seconds", ""),
+            }
+
+        self._json(200, {
+            "improver": {
+                "enabled":                bool(improver_cfg.get("enabled")),
+                "small_change_max_lines": improver_cfg.get("small_change_max_lines"),
+                "min_interval_seconds":   improver_cfg.get("min_interval_seconds"),
+                "timeout_seconds":        improver_cfg.get("timeout_seconds"),
+                "revert_after_n_uses":    improver_cfg.get("revert_after_n_uses"),
+                "disabled_by_env":        improver_disabled_by_env,
+            },
+            "auto_select": {
+                "enabled":      auto_enabled,
+                "token_budget": auto_token_budget,
+                "phases":       phases_list,
+            },
+            "phases": phases_out,
+        })
+
+    def _handle_improver_update(self, body: dict) -> None:
+        updates: dict[str, str | None] = {}
+        if "enabled" in body:
+            val = body.get("enabled")
+            updates["enabled"] = "true" if val in (True, "true", "True", 1, "1") else "false"
+        for f in self._IMPROVER_INT_FIELDS:
+            if f in body:
+                raw = body.get(f)
+                if raw == "" or raw is None:
+                    updates[f] = None
+                    continue
+                try:
+                    n = int(raw)
+                except (TypeError, ValueError):
+                    self._json(400, {"error": f"{f} must be an integer or empty"})
+                    return
+                lo, hi = self._IMPROVER_BOUNDS[f]
+                if n < lo or n > hi:
+                    self._json(400, {"error": f"{f} must be in [{lo}, {hi}]"})
+                    return
+                updates[f] = str(n)
+        if not updates:
+            self._json(400, {"error": "no updatable fields (enabled, small_change_max_lines, "
+                                       "min_interval_seconds, timeout_seconds, revert_after_n_uses)"})
+            return
+        path = ROOT / ".ai" / "models.yaml"
+        if not path.exists():
+            self._json(404, {"error": "models.yaml not found"})
+            return
+        try:
+            new_text = _patch_or_create_block(
+                path.read_text(encoding="utf-8"),
+                "improver",
+                updates,
+                creator_template="improver:\n  enabled: true\n",
+            )
+        except ValueError as e:
+            self._json(500, {"error": str(e)})
+            return
+        _write_text_lf(path, new_text)
+        self._json(200, {"ok": True, "updated": updates})
+
+    def _handle_auto_select_update(self, body: dict) -> None:
+        updates: dict[str, str | None] = {}
+        if "enabled" in body:
+            val = body.get("enabled")
+            updates["enabled"] = "true" if val in (True, "true", "True", 1, "1") else "false"
+        if "token_budget" in body:
+            tb = (body.get("token_budget") or "").strip().lower()
+            if tb not in self._AUTO_SELECT_BUDGETS:
+                self._json(400, {"error": f"token_budget must be one of {sorted(self._AUTO_SELECT_BUDGETS)}"})
+                return
+            updates["token_budget"] = tb
+        if "phases" in body:
+            phases = body.get("phases")
+            if not isinstance(phases, list):
+                self._json(400, {"error": "phases must be a list of phase names"})
+                return
+            allowed = {"plan", "execute", "review", "rescue", "maintenance", "bootstrap"}
+            cleaned = []
+            for p in phases:
+                if not isinstance(p, str) or p not in allowed:
+                    self._json(400, {"error": f"phases must contain only {sorted(allowed)}"})
+                    return
+                if p not in cleaned:
+                    cleaned.append(p)
+            updates["phases"] = "[" + ", ".join(cleaned) + "]"
+        if not updates:
+            self._json(400, {"error": "no updatable fields (enabled, token_budget, phases)"})
+            return
+        path = ROOT / ".ai" / "models.yaml"
+        if not path.exists():
+            self._json(404, {"error": "models.yaml not found"})
+            return
+        try:
+            new_text = _patch_or_create_block(
+                path.read_text(encoding="utf-8"),
+                "auto_select",
+                updates,
+                creator_template="auto_select:\n  enabled: false\n  token_budget: medium\n  phases: [execute, review, rescue]\n",
+            )
+        except ValueError as e:
+            self._json(500, {"error": str(e)})
+            return
+        _write_text_lf(path, new_text)
+        self._json(200, {"ok": True, "updated": updates})
 
     # ----- composer helpers (skills, files) -----
 
@@ -3995,9 +4298,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json(400, {"error": f"reasoning_effort must be one of {sorted(self._REASONING)} or empty"})
                 return
             updates["reasoning_effort"] = re_eff or None
+        if "timeout_seconds" in body:
+            raw = body.get("timeout_seconds")
+            if raw == "" or raw is None:
+                updates["timeout_seconds"] = None
+            else:
+                try:
+                    ts = int(raw)
+                except (TypeError, ValueError):
+                    self._json(400, {"error": "timeout_seconds must be an integer (30-7200) or empty"})
+                    return
+                if ts < 30 or ts > 7200:
+                    self._json(400, {"error": "timeout_seconds must be in [30, 7200]"})
+                    return
+                updates["timeout_seconds"] = str(ts)
 
         if not updates:
-            self._json(400, {"error": "no updatable fields provided (tool, model, mode, reasoning_effort)"})
+            self._json(400, {"error": "no updatable fields provided (tool, model, mode, reasoning_effort, timeout_seconds)"})
             return
 
         path = ROOT / ".ai" / "models.yaml"
@@ -4011,6 +4328,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         _write_text_lf(path, new_text)
         self._json(200, {"ok": True, "phase": phase, "updated": updates})
+
+
+def _patch_or_create_block(text: str, name: str, updates: dict[str, str | None],
+                           creator_template: str = "") -> str:
+    """Same as _patch_phase_block but appends a fresh block if the header is missing.
+
+    creator_template is the initial YAML to insert (e.g. ``improver:\\n  enabled: true\\n``).
+    """
+    try:
+        return _patch_phase_block(text, name, updates)
+    except ValueError:
+        if not creator_template:
+            creator_template = f"{name}:\n"
+        seed = text.rstrip("\n") + "\n\n" + creator_template
+        if not seed.endswith("\n"):
+            seed += "\n"
+        return _patch_phase_block(seed, name, updates)
 
 
 def _patch_phase_block(text: str, phase: str, updates: dict[str, str | None]) -> str:
