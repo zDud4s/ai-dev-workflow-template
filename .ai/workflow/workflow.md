@@ -10,10 +10,7 @@
 
 ## Roles
 
-Role assignments are configured in `.ai/models.yaml`.
-Default: plan=claude/sonnet-4-6, execute=codex/o4-mini, review=claude/opus-4-6
-
-The orchestrator is a controller only. It must dispatch each phase through the tool and model configured in `.ai/models.yaml` and must not substitute the current session model for plan, review, rescue, maintenance, or bootstrap.
+Role assignments live in `.ai/models.yaml`. The orchestrator is a controller only — it dispatches each phase through the configured tool/model and never substitutes its own model for a configured phase.
 
 ## Dispatch
 
@@ -36,12 +33,8 @@ Filled packets flow ephemerally between phases via stdin/temp files (see `dispat
 ## Rules
 
 1. If `project_name` in `.ai/project.yaml` is `unknown`, run bootstrap first.
-2. Preserve existing repository instructions.
-3. Do not rewrite the workflow core during bootstrap.
-4. Do not implement product changes during bootstrap.
-5. Use `.ai/project.yaml`, `.ai/memory.md`, and `.ai/decisions.md` as the mutable project layer.
-6. Executor must fill the Handoff section of the execution packet before declaring done. `Validation evidence` is mandatory — one block per validation command with exit code and output tail. Self-reported success without evidence is not acceptable.
-7. Prefer the smallest correct change.
-8. Do not broaden scope silently.
-9. A phase only counts as correctly executed if it was launched through the configured tool/model for that phase.
-10. Review is gated by two independent signals: **Risk level** (planner computes from `boundaries.*`) and **Size**. Review runs when Risk level is `elevated` OR Size is `medium`/`large`. Size alone never bypasses risk.
+2. Bootstrap may NOT rewrite the workflow core nor implement product changes; preserve existing repository instructions.
+3. Executor must fill the Handoff section before declaring done. `Validation evidence` is mandatory — one block per validation command (exit code + output tail). Self-reported success without evidence is not acceptable.
+4. Prefer the smallest correct change; do not broaden scope silently.
+5. A phase only counts as correctly executed if launched through the tool/model configured in `.ai/models.yaml`.
+6. Review runs when Risk level is `elevated` OR Size is `medium`/`large`. Size alone never bypasses risk.

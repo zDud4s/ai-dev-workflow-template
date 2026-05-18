@@ -93,14 +93,14 @@ Wrap each dispatcher command with a timeout. On POSIX shells: `timeout <N>s <cmd
 **Mode: agent** (same tool, different model):
 
 ```bash
-timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | claude -p "Execute the attached <phase> phase exactly. Return only the phase result. If you cannot proceed, emit the Escalation output format and exit non-zero." --model <phase.model> 2>/dev/null'
+timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | claude -p --bare --exclude-dynamic-system-prompt-sections "Execute the attached <phase> phase exactly. Return only the phase result. If you cannot proceed, emit the Escalation output format and exit non-zero." --model <phase.model> 2>/dev/null'
 ```
 
 **Mode: dispatcher** (different tool):
 
 - If `<phase>.tool` is `claude`:
   ```bash
-  timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | claude -p "Execute the attached <phase> phase exactly. Return only the phase result. If you cannot proceed, emit the Escalation output format and exit non-zero." --model <phase.model> 2>/dev/null'
+  timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | claude -p --bare --exclude-dynamic-system-prompt-sections "Execute the attached <phase> phase exactly. Return only the phase result. If you cannot proceed, emit the Escalation output format and exit non-zero." --model <phase.model> 2>/dev/null'
   ```
 - If `<phase>.tool` is `codex`:
   ```bash
@@ -116,6 +116,8 @@ timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | claude -p "Execute the at
 `<T>` comes from `<phase>.timeout_seconds` in `.ai/models.yaml`, falling back to the per-phase defaults (600s for plan/review/maintenance/rescue/bootstrap; 1800s for execute).
 
 The `execute` phase specifically adds `--dangerously-bypass-approvals-and-sandbox` when dispatching to codex — without it, sandbox approval prompts can stall the subprocess silently. All other phases run without write access (read-only operations should not trigger approval prompts; if they do on your platform, set the appropriate read-only bypass for that tool).
+
+**Cache-friendly flags for claude.** Both `agent` and `dispatcher` modes use `--bare` (skips CLAUDE.md auto-discovery, hooks, plugin sync, auto-memory, keychain — the phase only sees the prompt we pipe) and `--exclude-dynamic-system-prompt-sections` (moves per-machine cwd/env/git/memory paths out of the system prompt into the first user message, so the system-prompt prefix is stable across calls and hits the Anthropic prompt cache, 5-min TTL). On repeat calls within the cache window (reviewer iterations, multi-chunk runs), this turns the system-prompt portion into a cheap cache read.
 
 After dispatching, clean up the temp file (`rm -f /tmp/phase-<phase>-prompt.md`).
 

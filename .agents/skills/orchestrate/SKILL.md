@@ -87,9 +87,13 @@ When you build a delegated prompt for any phase, include ONLY:
 - the user task / current objective
 - the relevant packet schema from `.ai/packets/`
 - `project.yaml`
-- the relevant slice of `memory.md`
+- the relevant slice of `memory.md` (see "Memory slice" below)
 
 Do NOT include: `dispatch.md`, this skill, or any other phase skill. The dispatch contract is yours alone; dispatched phases only need their own skill plus the schema they will fill.
+
+### Memory slice
+
+After Phase 1, parse the planner's `Memory tags: [tag1, tag2, ...]` line. For Phases 2-4 dispatched prompts, inject only `memory.md` entries whose topic tag matches the list — e.g. `grep -E '^\- [0-9-]+ \[(tag1|tag2|tag3)\]' .ai/memory.md`. Empty list (`Memory tags: []`) or missing line = inject full `memory.md` (fallback). Always include the file header + format docstring so the dispatched phase still understands the entry format.
 
 ## Pipeline error table
 

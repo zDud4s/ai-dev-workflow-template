@@ -15,13 +15,11 @@ For any development task, follow the `orchestrate` skill:
 Both paths resolve to the same pipeline contract; only the discovery path differs.
 
 Execution rules:
-1. Prefer the smallest correct change.
-2. Do not broaden scope silently.
-3. Touch only relevant files unless blocked.
-4. If blocked, stop and report the blocker.
-5. Fill the Handoff section in the execution packet before declaring done.
-6. After implementation, report: summary, files changed, validation, risks, assumptions.
-7. Never execute delete or mass-removal commands (rm -rf, rmdir, del, Remove-Item, git clean, etc.). List any required deletions in the Handoff `Pending deletions` field — the orchestrator executes them after review.
-8. Never commit changes. Do not run git commit, git push, or any command that records or publishes history. Committing is the orchestrator's responsibility after review.
+1. Prefer the smallest correct change; touch only relevant files; do not broaden scope silently.
+2. If blocked, stop and report the blocker.
+3. Fill the Handoff section before declaring done.
+4. After implementation, report: summary, files changed, validation, risks, assumptions.
+5. Never execute delete or mass-removal commands (rm -rf, rmdir, del, Remove-Item, git clean). List required deletions in Handoff `Pending deletions` — the orchestrator executes them after review.
+6. Never commit/push history; the orchestrator owns that after review.
 
 # <<< AI WORKFLOW MANAGED BLOCK <<<
