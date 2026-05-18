@@ -33,7 +33,7 @@ If planner output is missing `Size`, missing `Risk level`, or emits `TRIVIAL:` w
 
 ### Auto-select handoff (when `auto_select.enabled: true`)
 
-If `.ai/models.yaml` has `auto_select.enabled: true`, after receiving the planner output: locate the `## Selected models` block. Missing -> STOP `invalid planner output: Selected models block missing`. Malformed (does not match the format in the planner skill's "## Auto-select output block") -> STOP `invalid planner output: Selected models block malformed: <phase or "header">`. Parse each line into `(phase, tool, model, reasoning_effort?, reason)`; header followed by zero lines = "no match", fall back to `models.yaml` for every downstream phase. For each parsed phase, verify the tool is locally available (same check as `models.yaml`'s "tool unavailable" row); if not, STOP `auto-selected tool unavailable: <tool> for phase <phase>; fix via .ai/models.yaml fallback or install the tool` — do NOT silently fall back. Record `auto_overrides = { phase: (tool, model, effort, reason) }` for Phases 2-4. If `auto_select.enabled` is `false` or absent, set `auto_overrides = {}` and proceed as today.
+If `auto_select.enabled: true`, after receiving the planner output: locate the `## Selected models` block. Missing or malformed → STOP per the auto-select rows in dispatch.md's error table. Parse each line into `(phase, tool, model, reasoning_effort?, reason)`; header followed by zero lines = "no match", fall back to `models.yaml` for every downstream phase. Verify each parsed tool is locally available; if not, STOP `auto-selected tool unavailable: <tool> for phase <phase>` — do NOT silently fall back. Record `auto_overrides = { phase: (tool, model, effort, reason) }` for Phases 2-4. If `auto_select.enabled` is `false` or absent, set `auto_overrides = {}`.
 
 ## Phase 2 - Execute
 
@@ -41,11 +41,9 @@ If `auto_overrides["execute"]` is set, use its `(tool, model, reasoning_effort)`
 
 ### Hard rule: no in-context execution
 
-The orchestrator does not make code changes itself unless the `execute` phase resolves to `inline` per dispatch routing rules.
+The orchestrator does not make code changes itself unless `execute` resolves to `inline` per dispatch routing. Never Edit/Write a patch produced by a dispatched executor, never extract a diff from its output and apply it, never offer "let me apply it myself" — if you catch yourself doing any of these, STOP.
 
-If the executor fails (timeout, non-zero exit, environment/permission block), your only allowed responses are: report the exact error; suggest `.ai/models.yaml` changes; suggest fixing executor environment/configuration; dispatch rescue (using `auto_overrides["rescue"]` if set, otherwise `rescue.tool`/`rescue.model` from `.ai/models.yaml`); STOP and wait for user direction.
-
-You must NOT: use Edit/Write to apply a patch produced by the executor, extract a diff from executor output and apply it, offer "let me apply it myself", or frame in-context execution as the pragmatic path. If you catch yourself doing any of these, STOP.
+If the executor fails (timeout, non-zero exit, environment/permission block), only allowed responses: report the exact error; suggest `.ai/models.yaml` or executor-environment fixes; dispatch rescue (`auto_overrides["rescue"]` if set, else `rescue.tool`/`rescue.model` from `.ai/models.yaml`); STOP and wait for user direction.
 
 ### Handoff check
 
@@ -75,10 +73,9 @@ If accepted without changes, surface unresolved findings under `Risks` with "Rev
 2. **Memory updates.** Collect executor/reviewer updates; dispatch maintenance with `consolidate: true` if updates exceed `.ai/project.yaml` threshold or contradict `.ai/memory.md`.
 3. **Report to user:** Summary, Files changed, Validation, Risks, Memory updates applied, and Phase execution log. Per-phase log line columns: `tool`, `model`, `source=auto|config` (`auto` when the value came from the planner's `## Selected models` block, `config` when from `.ai/models.yaml`), and when `source=auto`, the `reason` from the planner. `configured`, `resolved`, and `command` columns are unchanged.
 
-Example:
+Examples:
 `plan tool=claude model=claude-sonnet-4-6 source=config configured=auto resolved=inline command=inline`
 `execute tool=codex model=gpt-5.4 source=auto reason="small/low/medium-budget" configured=auto resolved=dispatcher command=codex exec ...`
-`review tool=claude model=claude-opus-4-6 source=auto reason="medium/low/medium-budget" configured=auto resolved=agent command=claude -p ...`
 
 ## Dispatched-phase prompt contents
 
