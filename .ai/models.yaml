@@ -12,6 +12,13 @@
 #   reasoning_effort: xhigh|high|medium|low   # codex only; default medium when absent
 # Default timeouts: 1800 for execute; 600 for plan/review/rescue/maintenance/bootstrap.
 
+auto_select:
+  enabled: false                  # false = current behaviour; true = planner picks
+  token_budget: medium            # low | medium | high
+  phases: [execute, review, rescue]
+  # scope: project                # PR 1 default; per_task activated in a future PR
+  # adaptive: false               # activated in PR 3 (see spec Phase 2)
+
 dispatch_mode: auto    # auto | manual
 
 session:
