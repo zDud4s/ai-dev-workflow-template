@@ -31,15 +31,19 @@ Risk level controls review. Trust the planner's `Risk level` + `Risk matches`; r
 
 If planner output is missing `Size`, missing `Risk level`, or emits `TRIVIAL:` with `Risk level: elevated`, STOP and report invalid planner output.
 
+### Auto-select handoff (when `auto_select.enabled: true`)
+
+If `.ai/models.yaml` has `auto_select.enabled: true`, after receiving the planner output: locate the `## Selected models` block. Missing -> STOP `invalid planner output: Selected models block missing`. Malformed (does not match the format in the planner skill's "## Auto-select output block") -> STOP `invalid planner output: Selected models block malformed: <phase or "header">`. Parse each line into `(phase, tool, model, reasoning_effort?, reason)`; header followed by zero lines = "no match", fall back to `models.yaml` for every downstream phase. For each parsed phase, verify the tool is locally available (same check as `models.yaml`'s "tool unavailable" row); if not, STOP `auto-selected tool unavailable: <tool> for phase <phase>; fix via .ai/models.yaml fallback or install the tool` — do NOT silently fall back. Record `auto_overrides = { phase: (tool, model, effort, reason) }` for Phases 2-4. If `auto_select.enabled` is `false` or absent, set `auto_overrides = {}` and proceed as today.
+
 ## Phase 2 - Execute
 
-Read `execute.tool` and `execute.model` from `.ai/models.yaml`. Dispatch the execution packet (or trivial instruction) through the configured tool. Tool-specific invocation details live in the skill named after `<execute.tool>` (discovery path); read that skill alongside this one when dispatching.
+If `auto_overrides["execute"]` is set, use its `(tool, model, reasoning_effort)`. Otherwise read `execute.tool`, `execute.model`, and `execute.reasoning_effort` from `.ai/models.yaml`. Dispatch the execution packet (or trivial instruction) through the resolved tool. Tool-specific invocation details live in the skill named after `<execute.tool>` (discovery path); read that skill alongside this one when dispatching.
 
 ### Hard rule: no in-context execution
 
 The orchestrator does not make code changes itself unless the `execute` phase resolves to `inline` per dispatch routing rules.
 
-If the executor fails (timeout, non-zero exit, environment/permission block), your only allowed responses are: report the exact error; suggest `.ai/models.yaml` changes; suggest fixing executor environment/configuration; dispatch rescue; STOP and wait for user direction.
+If the executor fails (timeout, non-zero exit, environment/permission block), your only allowed responses are: report the exact error; suggest `.ai/models.yaml` changes; suggest fixing executor environment/configuration; dispatch rescue (using `auto_overrides["rescue"]` if set, otherwise `rescue.tool`/`rescue.model` from `.ai/models.yaml`); STOP and wait for user direction.
 
 You must NOT: use Edit/Write to apply a patch produced by the executor, extract a diff from executor output and apply it, offer "let me apply it myself", or frame in-context execution as the pragmatic path. If you catch yourself doing any of these, STOP.
 
@@ -57,7 +61,7 @@ After the resume: incomplete Handoff or non-zero validation -> dispatch rescue, 
 
 Run if the review gate from Phase 1 says so; otherwise skip.
 
-Read `review.tool` and `review.model` from `.ai/models.yaml`. Build a reviewer prompt combining the `reviewer` skill (discovery path), the execution packet objective, the executor's filled Handoff, and `.ai/packets/review.md`. Dispatch through the configured tool/model.
+If `auto_overrides["review"]` is set, use its `(tool, model)`. Otherwise read `review.tool` and `review.model` from `.ai/models.yaml`. Build a reviewer prompt combining the `reviewer` skill (discovery path), the execution packet objective, the executor's filled Handoff, and `.ai/packets/review.md`. Dispatch through the resolved tool/model.
 
 Verdict handling: `approve` -> Phase 4; `request-changes` -> show findings and ask send back / accept / stop; `escalate` -> STOP and report full findings + Handoff.
 
@@ -69,12 +73,12 @@ If accepted without changes, surface unresolved findings under `Risks` with "Rev
 
 1. **Pending deletions.** Ask for confirmation before any deletion; report declined deletions as unresolved.
 2. **Memory updates.** Collect executor/reviewer updates; dispatch maintenance with `consolidate: true` if updates exceed `.ai/project.yaml` threshold or contradict `.ai/memory.md`.
-3. **Report to user:** Summary, Files changed, Validation, Risks, Memory updates applied, and Phase execution log.
+3. **Report to user:** Summary, Files changed, Validation, Risks, Memory updates applied, and Phase execution log. Per-phase log line columns: `tool`, `model`, `source=auto|config` (`auto` when the value came from the planner's `## Selected models` block, `config` when from `.ai/models.yaml`), and when `source=auto`, the `reason` from the planner. `configured`, `resolved`, and `command` columns are unchanged.
 
 Example:
-`plan tool=claude model=claude-sonnet-4-6 configured=auto resolved=inline command=inline`
-`execute tool=codex model=gpt-5.3-codex configured=auto resolved=dispatcher command=codex exec ...`
-`review tool=claude model=claude-opus-4-6 configured=auto resolved=agent command=claude -p ...`
+`plan tool=claude model=claude-sonnet-4-6 source=config configured=auto resolved=inline command=inline`
+`execute tool=codex model=gpt-5.4 source=auto reason="small/low/medium-budget" configured=auto resolved=dispatcher command=codex exec ...`
+`review tool=claude model=claude-opus-4-6 source=auto reason="medium/low/medium-budget" configured=auto resolved=agent command=claude -p ...`
 
 ## Dispatched-phase prompt contents
 

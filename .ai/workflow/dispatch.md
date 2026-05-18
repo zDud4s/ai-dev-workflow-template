@@ -148,3 +148,6 @@ Errors raised by the dispatch mechanism itself, before any phase logic runs. Pip
 | Non-zero exit with `## Escalation` block | Structured escalation. Surface the four fields to the user verbatim; do not retry the phase blindly. |
 | Non-zero exit without `## Escalation` block | Treat as crash / sandbox / tooling failure. Follow the per-phase error policy. |
 | Subprocess produced empty output and exit 0 | Treat as silent failure. Report to user and stop — do not assume success. |
+| `auto_select.enabled: true` but `## Selected models` block missing in planner output | STOP — "invalid planner output: Selected models block missing" |
+| `auto_select.enabled: true` but `## Selected models` block malformed | STOP — "invalid planner output: Selected models block malformed: <phase or 'header'>" |
+| Planner-selected tool not locally available | STOP — "auto-selected tool unavailable: <tool> for phase <phase>; fix via .ai/models.yaml fallback or install the tool". Never silently fall back to `models.yaml`. |
