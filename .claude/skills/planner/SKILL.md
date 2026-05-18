@@ -71,5 +71,44 @@ If you need more, decompose into multiple packets instead of writing longer.
 - Execution packet(s) — using the schema from `.ai/packets/execute.md`
 - Escalation trigger
 - Memory candidates — operational facts worth persisting to `.ai/memory.md`
+- **Selected models** — append this block ONLY when `.ai/models.yaml` has `auto_select.enabled: true`. See "## Auto-select output block" below for the exact format. If `auto_select.enabled` is absent or `false`, omit the block entirely.
 
 When filling the execution packet `Validation.Commands`, prefer commands whose output makes pass/fail unambiguous (exit code + a recognisable success line). The executor must paste evidence for each one.
+
+## Auto-select output block
+
+When `.ai/models.yaml` has `auto_select.enabled: true`, append the following block as the final element of your output (after `Memory candidates`):
+
+```
+## Selected models
+execute: tool=<tool>  model=<model>  [reasoning_effort=<effort>]  reason="<≤120 chars>"
+review:  tool=<tool>  model=<model>  [reasoning_effort=<effort>]  reason="<≤120 chars>"
+rescue:  tool=<tool>  model=<model>  [reasoning_effort=<effort>]  reason="<≤120 chars>"
+```
+
+### How to fill each line
+
+1. Compute `effective_budget` from `auto_select.token_budget`:
+   - if `Risk level: elevated` OR `Size: large`, bump one level up (`low → medium`, `medium → high`, `high` stays);
+   - otherwise use the configured value verbatim.
+2. For each phase listed in `auto_select.phases` (default `[execute, review, rescue]`), look up the tuple `(phase, Size, Risk level, effective_budget)` in `.ai/workflow/auto-models.md`. Rows evaluate in order, first match wins; `*` matches any value.
+3. If a row matches, emit one line for that phase using the row's `(tool, model, effort)`.
+   - When `effort` is `n/a` (claude rows), omit the `reasoning_effort=<…>` field — do NOT emit `reasoning_effort=n/a`.
+4. If no row matches, omit the line for that phase entirely (do NOT emit a blank or placeholder line).
+5. The `reason` field is a short free-text explanation, double-quoted, max 120 characters, no embedded `"`. Example: `reason="small/low/medium-budget"`.
+
+### Format rules (orchestrator parses with a regex — be strict)
+
+- Block header exactly `## Selected models` on its own line.
+- One line per phase that matched a row. Phase name lowercase, colon-terminated, left-aligned.
+- Field order: `tool=<value>`, `model=<value>`, optional `reasoning_effort=<value>`, then `reason="<text>"`. `reason` is always last.
+- Whitespace between fields: one or more spaces.
+- `reasoning_effort` allowed values: `low | medium | high | xhigh`.
+- No trailing whitespace, no blank lines inside the block.
+
+### When to skip the block
+
+- `auto_select` key absent from `models.yaml` → omit block.
+- `auto_select.enabled: false` → omit block.
+- `Size: trivial` → omit block (you stopped after emitting `TRIVIAL:`; no downstream phases will run).
+- No phase matched any row → still emit the `## Selected models` header followed by zero lines (this signals "I evaluated and matched nothing"; the orchestrator falls back for every phase).
