@@ -87,7 +87,7 @@ Append-only memory accumulates duplicates, contradictions, and stale facts. Run 
    - If one is dated and the other undated → keep the dated one, drop the undated.
    - If both dated → keep the newer; surface the conflict in the maintenance output.
    - If both undated → surface as a conflict needing human resolution; do NOT silently pick.
-5. **Drop obsolete.** Entries whose subject (file path, command, module, dependency) no longer exists in the repo are removed. Note each drop in the output.
+5. **Archive obsolete.** Entries whose subject (file path, command, module, dependency) no longer exists in the repo, OR which are point-in-time snapshots whose claim is no longer time-relevant, are MOVED to .ai/memory-archive.md (append with " (archived: <today> <reason>)" suffix) — NOT deleted. Note each move in the output.
 6. **Re-sort.** Group by topic alphabetically, then by date within each topic.
 7. **Cap.** If the result still exceeds 150 lines, prefer trimming the oldest entries within each topic, never the conflict markers.
 
@@ -99,10 +99,13 @@ After consolidation, report:
 - `Deduplicated` (count + a few examples)
 - `Merged` (count)
 - `Dropped as obsolete` (each line + reason)
+- `Archived: <count> → memory-archive.md`
 - `Conflicts surfaced` (each pair, marked for user decision)
 - `Final size` (lines)
 - `Compaction ratio` (lines_before / lines_after, to 2 decimals)
 - `Threshold update` (old → new, see "Adaptive threshold" below)
+
+The archive is human-inspection-only; no phase loads it by default.
 
 Do NOT silently rewrite the user's facts. Every removal or merge must appear in the output above.
 

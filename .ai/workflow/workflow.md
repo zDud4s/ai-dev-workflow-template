@@ -28,6 +28,7 @@ The repo has three layers. Knowing which one a file belongs to tells you whether
 | **Workflow core** | `.ai/workflow/*.md`, `.claude/skills/*/SKILL.md`, `install.sh`, scripts | Read-only during normal task runs. Only changes when evolving the workflow itself. |
 | **Packet schemas** | `.ai/packets/*.md` | **Read-only templates.** Phases READ them to learn the format and EMIT filled copies in their own output (or to temp files for dispatch). NEVER edit these files during a normal task. |
 | **Project state** | `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md` | Mutable per task. The `maintenance` phase appends to memory; bootstrap and human edits update the rest. |
+| **Project state — historical** | `.ai/memory-archive.md` | Append-only by `maintenance` consolidation pass; never read by phases. Human reference. |
 | **Task instances** | `.ai/plans/<date>-<slug>.md`, `.ai/specs/<date>-<slug>.md` | Optional persistent copies of filled plans/specs for medium/large tasks. New files only — never overwrite existing dated files. |
 
 Filled packets flow ephemerally between phases via stdin/temp files (see `dispatch.md`). They are NOT written back into `.ai/packets/`. If you ever find yourself running `Edit` or `Write` against `.ai/packets/*.md` during a task, STOP — that's a workflow violation.

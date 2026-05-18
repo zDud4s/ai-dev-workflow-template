@@ -19,7 +19,7 @@ Adapt the workflow scaffold to the current repository without implementing produ
    - CLAUDE.md (only project-specific sections if needed)
    - `.ai/project.yaml` — ensure the `memory_tuning` block exists with defaults (`consolidation_threshold_lines: 150`, `floor: 50`, `ceiling: 300`, `last_ratios: []`, `last_consolidated_at: ""`). Leave existing values intact if the block is already populated.
    - `.ai/memory.md`
-   - `.gitignore` — **only if `.gitignore` already exists at the project root.** Append the managed block below idempotently (skip if the start marker is already present). Never create a new `.gitignore`; if the project doesn't have one, leave it alone. Read the file first to check for the marker; use `Edit` (or append via `Write` after reading) — do not blindly overwrite.
+   - `.gitignore` — **only if `.gitignore` already exists at the project root.** Append the managed block below idempotently (skip if the start marker is already present). Never create a new `.gitignore`; if the project doesn't have one, leave it alone. Use `Read` to check for the marker first; use `Edit` (or append via `Write` after reading) — do not blindly overwrite.
 
      ```
      # >>> AI WORKFLOW INSTALL >>>
