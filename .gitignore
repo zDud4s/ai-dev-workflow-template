@@ -5,6 +5,7 @@ Thumbs.db
 # Local notes or temporary outputs
 .ai/local/
 .ai/events.jsonl
+.ai/metrics.jsonl
 .ai/dashboard/jobs/
 .ai/dashboard/jobs.jsonl
 

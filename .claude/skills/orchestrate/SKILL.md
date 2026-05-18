@@ -95,6 +95,20 @@ Do NOT include: `dispatch.md`, this skill, or any other phase skill. The dispatc
 
 After Phase 1, parse the planner's `Memory tags: [tag1, tag2, ...]` line. For Phases 2-4 dispatched prompts, inject only `memory.md` entries whose topic tag matches the list — e.g. `grep -E '^\- [0-9-]+ \[(tag1|tag2|tag3)\]' .ai/memory.md`. Empty list (`Memory tags: []`) or missing line = inject full `memory.md` (fallback). Always include the file header + format docstring so the dispatched phase still understands the entry format.
 
+## Metrics logging
+
+After every dispatched phase completes (regardless of `auto_select.enabled`), append one JSON line to `.ai/metrics.jsonl`. Gitignored, append-only, observability — never abort the pipeline if writing the line fails. Source data for the adaptive scorer (PR 3).
+
+Schema (one JSON object per line, compact, no pretty-print):
+
+```
+{"ts":"<ISO 8601 UTC, Z suffix>","task_slug":"<slug>","phase":"<plan|execute|review|rescue|maintenance>","tool":"<tool>","model":"<model>","reasoning_effort":"<low|medium|high|xhigh|null>","size":"<trivial|small|medium|large|null>","risk":"<low|elevated|null>","budget":"<low|medium|high|null>","exit_code":<int>,"duration_ms":<int>,"handoff_complete":<bool|null>,"review_verdict":"<approve|request-changes|escalate|null>","retries":<int>,"tokens_in":<int|null>,"tokens_out":<int|null>}
+```
+
+Field rules: `ts` captured at subprocess return (or inline completion); `task_slug` lowercased+hyphenated from the user's task, same across all phases; `tool`/`model`/`reasoning_effort` are post-`auto_overrides` values; `size`/`risk`/`budget` `null` for `plan` (before triage); `exit_code` `0` on inline success; `duration_ms` wall-clock from dispatch start; `handoff_complete` only for `execute`, `null` elsewhere; `review_verdict` only for `review`, `null` elsewhere; `retries` = recovery resumes + review send-back iterations; `tokens_in`/`tokens_out` `null` if the tool does not print them.
+
+Append exactly one line per dispatched phase, never overwrite or reorder. Create the file on first append.
+
 ## Pipeline error table
 
 Dispatch-layer errors (missing config, tool unavailable, unrecognized values, session-block issues) are in `.ai/workflow/dispatch.md`. The rows below are pipeline-specific.
