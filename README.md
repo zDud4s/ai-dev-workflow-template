@@ -71,7 +71,7 @@ The orchestrator must dispatch each phase through the configured tool and model.
 
 ## Model configuration
 
-Model assignments live in `.ai/models.yaml`. Each phase has a `tool` (`claude` or `codex`) and a `model` field. Optional per-phase fields: `mode` (`inline` | `agent` | `dispatcher`), `timeout_seconds`, and (codex only) `reasoning_effort`.
+Model assignments live in `.ai/models.yaml`. Each phase has a `tool` (`claude` or `codex`) and a `model` field. Optional per-phase fields: `mode` (`inline` | `agent` | `dispatcher`), `timeout_seconds`, and `reasoning_effort` (claude accepts `{low, medium, high, xhigh, max}` via `--effort`; codex accepts `{low, medium, high, xhigh}` via `--config model_reasoning_effort`; `max` is claude-only).
 
 ```yaml
 dispatch_mode: auto    # auto | manual
