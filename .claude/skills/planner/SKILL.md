@@ -37,18 +37,13 @@ State both `Size` and `Risk level` at the top of your output.
 
 ## Rules
 
-1. Identify the smallest scope that satisfies the task.
-2. Limit relevant files aggressively — max 10 paths. If >10, decompose.
-3. Prefer one execution packet over many unless the task truly requires decomposition.
-4. If architecture is unclear, do not improvise a broad fix. Trigger escalation.
-5. Use `.ai/project.yaml`, `.ai/memory.md`, and `.ai/decisions.md` as the factual base.
-6. State assumptions explicitly.
-7. Produce packets that an executor can follow without needing the full conversation.
-8. Include actual code snippets in the execution packet's File Context section — the executor should not need to re-read entire files.
-9. Fill every field in the packet schemas from `.ai/packets/`. Do not skip fields.
-10. **`.ai/packets/*.md` are read-only templates.** Read them to learn the format, then emit your filled copy in your response output — never use Edit/Write against the template files. Optional: for medium/large tasks, you MAY write a new file at `.ai/plans/<YYYY-MM-DD>-<slug>.md` for persistence (new file only, never overwrite an existing dated plan).
-11. **Plan the tests, don't postpone them.** For each acceptance criterion, name a concrete test (path + case) under `Tests to add`. Required when Risk level is `elevated` OR Size is `medium`/`large`. Allowed to be `none` for trivial / low-risk small changes — but only if you write a one-line reason (e.g. "config-only change, manual smoke test covers it"). The execution packet's `Validation.Commands` must run the configured test runner whenever `Tests to add` is non-empty.
-12. **Plan and execute packets must agree on tests.** The execution packet's `## Tests / To add:` MUST be byte-identical to the plan packet's `Tests to add:`. If during execution-packet drafting you realise tests are needed after writing `none` in the plan, go back and amend the plan packet — never emit a plan that says `none` alongside an execute packet that lists tests, or vice versa. Both fields are the same decision, expressed twice for the reviewer to cross-check.
+1. Smallest scope first; max 10 relevant paths — decompose if more. Prefer one packet over many.
+2. Unclear architecture → escalate, do not improvise broad fixes.
+3. Factual base: `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md`. State assumptions explicitly.
+4. Produce self-contained packets (executor needs no prior conversation context). Fill every schema field from `.ai/packets/`; include actual code snippets in File Context so the executor doesn't re-read whole files.
+5. **`.ai/packets/*.md` are read-only templates.** Read for format; emit filled copies in output. Never Edit/Write the templates. Medium/large MAY persist a new `.ai/plans/<YYYY-MM-DD>-<slug>.md` (new file only, never overwrite).
+6. **Plan tests, don't postpone.** Each acceptance criterion → one test (path + case) under `Tests to add`. Required for `Risk level: elevated` OR Size `medium`/`large`. Trivial/low-risk small may use `none` + one-line reason. Execution packet's `Validation.Commands` must run the test runner when `Tests to add` is non-empty.
+7. **Plan and execute packets must agree on tests.** Execute packet's `## Tests / To add:` MUST be byte-identical to plan's `Tests to add:`. If drafting execute reveals new tests are needed, amend the plan — never emit mismatched test sections.
 
 ## Token budget
 
