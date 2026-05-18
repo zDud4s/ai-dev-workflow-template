@@ -37,7 +37,7 @@ If `auto_select.enabled: true`, after receiving the planner output: locate the `
 
 ## Phase 2 - Execute
 
-If `auto_overrides["execute"]` is set, use its `(tool, model, reasoning_effort)`. Otherwise read `execute.tool`, `execute.model`, and `execute.reasoning_effort` from `.ai/models.yaml`. Dispatch the execution packet (or trivial instruction) through the resolved tool. Tool-specific invocation details live in the skill named after `<execute.tool>` (discovery path); read that skill alongside this one when dispatching.
+If `auto_overrides["execute"]` is set, use its `(tool, model, reasoning_effort)`. Otherwise read `execute.tool`, `execute.model`, and `execute.reasoning_effort` from `.ai/models.yaml`. Dispatch the execution packet (or trivial instruction) through the resolved tool. Tool-specific invocation details live in the skill named after `<execute.tool>` (discovery path); read that skill alongside this one when dispatching. When dispatch routing resolves to `agent`, the controller delegates via the Claude Code Task tool (in-process subagent) instead of a subprocess; see dispatch.md.
 
 ### Hard rule: no in-context execution
 
@@ -81,9 +81,9 @@ Examples:
 
 When you build a delegated prompt for any phase, include ONLY:
 - the phase skill body (from discovery path)
-- the user task / current objective
 - the relevant packet schema from `.ai/packets/`
 - `project.yaml`
+- the user task / current objective
 - the relevant slice of `memory.md` (see "Memory slice" below)
 
 Do NOT include: `dispatch.md`, this skill, or any other phase skill. The dispatch contract is yours alone; dispatched phases only need their own skill plus the schema they will fill.
