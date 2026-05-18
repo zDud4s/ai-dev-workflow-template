@@ -13,7 +13,7 @@
 # Default timeouts: 1800 for execute; 600 for plan/review/rescue/maintenance/bootstrap.
 
 auto_select:
-  enabled: false                  # false = current behaviour; true = planner picks
+  enabled: true                  # false = current behaviour; true = planner picks
   token_budget: high              # low | medium | high
   phases: [execute, review, rescue]
   # scope: project                # null/absent = all phases; else list of phase names to apply auto-selection to

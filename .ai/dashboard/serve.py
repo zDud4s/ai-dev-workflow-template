@@ -57,6 +57,10 @@ JOBS_PERSIST_FILE = ROOT / ".ai" / "dashboard" / "jobs.jsonl"
 # PostToolUse hook). The /api/timeline endpoint aggregates phase_dispatch
 # events from this file. Tests override it via monkeypatch.
 EVENTS_FILE = ROOT / ".ai" / "events.jsonl"
+# Append-only metrics stream written by the orchestrate skill, one line per
+# dispatched phase. Powers the /api/auto-select ranking. See the orchestrate
+# skill "## Metrics logging" section for the schema.
+METRICS_FILE = ROOT / ".ai" / "metrics.jsonl"
 # Append-only ledger of per-(skill, job) invocations. The auto skill-improver
 # (Phase 2+) reads this to decide which skills need adapting. One line per
 # unique skill invoked in a job; the entry-skill of orchestrate/plan jobs is
@@ -2570,6 +2574,133 @@ def _lookup_session_task(session_id: str) -> str | None:
     return None
 
 
+def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 5) -> dict:
+    """Aggregate METRICS_FILE into per-(phase, size, risk, budget) rankings.
+
+    Mirrors the planner's adaptive scorer from
+    `.claude/skills/planner/SKILL.md` "Adaptive scoring" so the dashboard
+    surfaces the same information the scorer would see.
+
+    Schema returned::
+
+        {
+          "samples": <int>,         # total records considered (post-tail)
+          "groups": [
+            {
+              "key": {
+                "phase": "execute" | ...,
+                "size":  "small" | ... | null,
+                "risk":  "low" | "elevated" | null,
+                "budget": "low" | "medium" | "high" | null
+              },
+              "candidates": [
+                {
+                  "tool": "<str>",
+                  "model": "<str>",
+                  "reasoning_effort": "<str|null>",
+                  "samples": <int>,
+                  "success_rate": <float 0..1>,
+                  "mean_duration_ms": <int>,
+                  "score": <float 0..1>     # 0.6 sr + 0.2 (1-norm_dur) + 0.2 budget_align(1)
+                },
+                ... up to top 3 ...
+              ]
+            },
+            ...
+          ]
+        }
+
+    `success_rate` counts records where `exit_code == 0` AND
+    `handoff_complete` is `True` or `None` AND `review_verdict` is `approve`,
+    `null`, or absent. `mean_duration_ms` averages `duration_ms` across the
+    group. Candidates with fewer than `min_samples` records are dropped; if a
+    group ends up empty it is omitted.
+    """
+    if not METRICS_FILE.exists():
+        return {"samples": 0, "groups": []}
+    try:
+        raw_lines = METRICS_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {"samples": 0, "groups": []}
+    tail = raw_lines[-max_records:] if len(raw_lines) > max_records else raw_lines
+
+    groups: dict[tuple, dict[tuple, list[dict]]] = {}
+    sample_count = 0
+    for line in tail:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        phase = rec.get("phase")
+        if not phase:
+            continue
+        sample_count += 1
+        group_key = (
+            phase,
+            rec.get("size"),
+            rec.get("risk"),
+            rec.get("budget"),
+        )
+        cand_key = (
+            rec.get("tool") or "unknown",
+            rec.get("model") or "unknown",
+            rec.get("reasoning_effort"),
+        )
+        groups.setdefault(group_key, {}).setdefault(cand_key, []).append(rec)
+
+    out_groups: list[dict] = []
+    for gkey, cands in groups.items():
+        scored: list[dict] = []
+        for ckey, records in cands.items():
+            n = len(records)
+            if n < min_samples:
+                continue
+            successes = sum(
+                1
+                for r in records
+                if r.get("exit_code") == 0
+                and r.get("handoff_complete") in (True, None)
+                and r.get("review_verdict") in (None, "approve")
+            )
+            sr = successes / n
+            durations = [r.get("duration_ms") for r in records if isinstance(r.get("duration_ms"), int)]
+            mean_dur = int(sum(durations) / len(durations)) if durations else 0
+            scored.append({
+                "tool": ckey[0],
+                "model": ckey[1],
+                "reasoning_effort": ckey[2],
+                "samples": n,
+                "success_rate": round(sr, 3),
+                "mean_duration_ms": mean_dur,
+            })
+        if not scored:
+            continue
+        # Normalize duration across this group to compute score, then keep top 3.
+        durs = [c["mean_duration_ms"] for c in scored]
+        dmin, dmax = min(durs), max(durs)
+        spread = (dmax - dmin) or 1
+        for c in scored:
+            norm_dur = (c["mean_duration_ms"] - dmin) / spread
+            # budget_alignment baseline = 1 (controller already filtered by budget)
+            c["score"] = round(0.6 * c["success_rate"] + 0.2 * (1 - norm_dur) + 0.2, 3)
+        scored.sort(key=lambda c: c["score"], reverse=True)
+        out_groups.append({
+            "key": {
+                "phase": gkey[0],
+                "size": gkey[1],
+                "risk": gkey[2],
+                "budget": gkey[3],
+            },
+            "candidates": scored[:3],
+        })
+
+    out_groups.sort(key=lambda g: (g["key"]["phase"], g["key"]["size"] or "", g["key"]["risk"] or "", g["key"]["budget"] or ""))
+    return {"samples": sample_count, "groups": out_groups}
+
+
 def _load_timeline_runs(max_events: int = 500) -> list[dict]:
     """Aggregate `phase_dispatch` events from EVENTS_FILE into per-session runs.
 
@@ -2711,6 +2842,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/timeline":
             self._handle_timeline()
+            return
+        if parsed.path == "/api/auto-select":
+            self._handle_auto_select()
             return
         if parsed.path == "/api/git/check":
             self._handle_git_check()
@@ -3112,6 +3246,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """Pipeline Gantt data — phase_dispatch events from .ai/events.jsonl
         grouped per session_id. Powers the Timeline view."""
         self._json(200, {"runs": _load_timeline_runs()})
+
+    def _handle_auto_select(self) -> None:
+        """Auto-select scorer ranking — aggregated from .ai/metrics.jsonl.
+        Powers the Auto-select view."""
+        self._json(200, _load_auto_select_ranking())
 
     # ----- settings (git update) helpers -----
 

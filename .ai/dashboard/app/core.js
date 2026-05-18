@@ -17,6 +17,7 @@
         if (btn.dataset.view === "run" || btn.dataset.view === "terminals") loadJobs();
         if (btn.dataset.view === "terminals") termRefreshTranscriptPicker();
         if (btn.dataset.view === "timeline") loadTimeline();
+        if (btn.dataset.view === "auto-select" && typeof loadAutoSelect === "function") loadAutoSelect();
       });
     });
 

@@ -42,6 +42,7 @@
     <button data-view="run">Run <span class="count" id="count-jobs">·</span></button>
     <button data-view="terminals">Terminals <span class="count" id="count-terminals">·</span></button>
     <button data-view="timeline">Timeline <span class="count" id="count-timeline">·</span></button>
+    <button data-view="auto-select">Auto-select <span class="count" id="count-auto-select">·</span></button>
     <div class="section-label">settings</div>
     <button data-view="settings">Settings</button>
   </nav>
@@ -358,6 +359,26 @@
       </section>
     </section>
 
+    <section class="view" id="view-auto-select">
+      <section class="block">
+        <h2>Auto-select rankings</h2>
+        <div class="toolbar">
+          <button class="refresh" onclick="loadAutoSelect()">reload</button>
+          <span class="meta" id="auto-select-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
+        </div>
+        <div class="tl-hint">
+          Ranking per <code>(phase, size, risk, budget)</code> tuple, computed from
+          <code>.ai/metrics.jsonl</code> (the orchestrator appends one line per dispatched phase).
+          Candidates with <strong>fewer than 5 samples</strong> are excluded; groups with no
+          qualifying candidates are omitted. The planner's adaptive scorer ranks with the
+          same formula: <code>0.6·success_rate + 0.2·(1-norm_duration) + 0.2·budget_align</code>.
+          When the planner falls back to the static table (cold-start or guard rail), the line in
+          <code>## Selected models</code> annotates <code>reason="static: …"</code>.
+        </div>
+        <div id="auto-select-rankings"></div>
+      </section>
+    </section>
+
     <section class="view" id="view-settings">
       <div class="settings-toolbar">
         <button class="btn secondary" id="btn-settings-reload">Reload from disk</button>
@@ -450,6 +471,7 @@
   <script src="app/jobs.js"></script>
   <script src="app/terminals.js"></script>
   <script src="app/settings.js"></script>
+  <script src="app/auto-select.js"></script>
   <script src="app/main.js"></script>
 </body>
 </html>
