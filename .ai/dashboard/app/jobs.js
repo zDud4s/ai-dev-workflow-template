@@ -6,6 +6,8 @@
       if (!confirm("Clear .ai/events.jsonl ? This deletes the file.")) return;
       try {
         await postJson("/api/events/clear", {});
+        _eventsCache = [];
+        if (_eventsState && _eventsState.expanded) _eventsState.expanded.clear();
         await loadEvents();
       } catch (e) {
         $("#events-meta").textContent = "clear failed: " + e.message;
@@ -50,13 +52,25 @@
         $("#count-jobs").textContent = jobs.length;
         const el = $("#jobs-list");
         if (!jobs.length) {
-          el.innerHTML = `<div class="empty">No jobs yet</div>`;
+          el.innerHTML = `<div class="empty"><strong>No jobs yet.</strong><br><span class="empty-sub">Pick <em>Chat</em> for an interactive Claude/Codex session, or <em>Workflow</em> to run plan/orchestrate in the background.</span></div>`;
         } else {
           el.innerHTML = jobs.map((j) => {
             const taskPreview = (j.task || "").replace(/\s+/g, " ");
+            const tool = j.tool || (j.kind === "chat-codex" ? "codex" : "claude");
+            const ts = j.created_at ? relativeTime(j.created_at) : "";
+            let dur = "";
+            if (j.status === "running" && j.started_at) {
+              dur = tlFormatDuration(Date.now() - Date.parse(j.started_at));
+            } else if (j.ended_at && j.started_at) {
+              dur = tlFormatDuration(Date.parse(j.ended_at) - Date.parse(j.started_at));
+            }
+            const metaParts = [];
+            if (ts) metaParts.push(`<span>${escape(ts)}</span>`);
+            if (dur) metaParts.push(`<span>${escape(dur)}</span>`);
             return `<div class="list-item" data-id="${escape(j.id)}">
-              <div>${statusPill(j.status)} <span style="color:var(--fg-dim);font-size:11px">${escape((j.kind || "").toUpperCase())}</span></div>
+              <div class="job-row-head">${statusPill(j.status)} ${pillTool(tool)} <span class="job-row-kind">${escape((j.kind || "").toUpperCase())}</span></div>
               <div class="sub" style="margin-top:4px;white-space:normal">${escape(taskPreview.slice(0, 80))}${taskPreview.length > 80 ? "…" : ""}</div>
+              ${metaParts.length ? `<div class="job-row-meta">${metaParts.join(" · ")}</div>` : ""}
             </div>`;
           }).join("");
           el.querySelectorAll(".list-item").forEach((li) => {
@@ -105,17 +119,21 @@
         }
         const j = await r.json();
         const cancelable = j.status === "running" || j.status === "queued";
+        const timeParts = [];
+        if (j.created_at) timeParts.push(`<span class="job-time-k">created</span> ${escape(j.created_at)}`);
+        if (j.started_at) timeParts.push(`<span class="job-time-k">started</span> ${escape(j.started_at)}`);
+        if (j.ended_at)   timeParts.push(`<span class="job-time-k">ended</span> ${escape(j.ended_at)}`);
         $("#jobs-doc").innerHTML = `
-          <div class="job-meta">
-            <div class="k">id</div>      <div class="v">${escape(j.id)}</div>
-            <div class="k">kind</div>    <div class="v">${escape(j.kind)}</div>
-            <div class="k">status</div>  <div class="v">${statusPill(j.status)} ${j.exit_code != null ? `exit ${j.exit_code}` : ""}</div>
-            <div class="k">created</div> <div class="v">${escape(j.created_at || "—")}</div>
-            <div class="k">started</div> <div class="v">${escape(j.started_at || "—")}</div>
-            <div class="k">ended</div>   <div class="v">${escape(j.ended_at || "—")}</div>
-            <div class="k">command</div> <div class="v">${escape(j.command || "—")}</div>
-            <div class="k">task</div>    <div class="v">${escape(j.task || "—")}</div>
+          <div class="job-head">
+            <div class="job-status">${statusPill(j.status)} ${j.exit_code != null ? `<span class="job-exit">exit ${j.exit_code}</span>` : ""} <span class="job-row-kind">${escape((j.kind || "").toUpperCase())}</span></div>
+            <h3 class="job-task">${escape(j.task || "(no task)")}</h3>
+            <div class="job-times">${timeParts.join(" · ") || "—"}</div>
           </div>
+          <details class="job-cmd">
+            <summary>command</summary>
+            <code class="mono">${escape(j.command || "—")}</code>
+          </details>
+          <div class="job-id-row"><span class="job-time-k">id</span> <span class="mono">${escape(j.id)}</span></div>
           <div style="margin-bottom:6px;font-size:11px;color:var(--fg-dim);text-transform:uppercase;letter-spacing:0.5px">log (last 400 lines)</div>
           <pre class="log" id="job-log">${escape(j.log_tail || "(no output yet)")}</pre>
           <div class="form-actions" style="margin-top:10px">
@@ -238,11 +256,61 @@
       } catch (_) { /* ignore */ }
     }
 
+    // ----- Run-mode UI helpers -----
+    function updateRunHint() {
+      const hint = document.getElementById("run-hint");
+      if (!hint) return;
+      const kind = document.getElementById("run-kind")?.value || "chat";
+      const map = {
+        "chat":        "Opens an interactive Claude terminal panel — you can chat back and forth.",
+        "chat-codex":  "Opens an interactive Codex panel — one-turn task, no follow-up.",
+        "orchestrate": "Runs the orchestrate skill in the background: plan → execute → review. The subprocess cannot prompt — it must emit <code>## Escalation</code> if blocked.",
+        "plan":        "Runs the planner skill in the background. Produces an execution packet but does not implement.",
+      };
+      hint.innerHTML = map[kind] || map["chat"];
+    }
+
+    function applyRunMode(mode) {
+      mode = mode || "chat";
+      const sel = document.getElementById("run-kind");
+      if (!sel) return;
+      let firstVisible = null;
+      Array.from(sel.options).forEach((opt) => {
+        const optMode = opt.dataset.mode || "chat";
+        opt.hidden = optMode !== mode;
+        if (!opt.hidden && firstVisible == null) firstVisible = opt;
+      });
+      const cur = sel.options[sel.selectedIndex];
+      if ((!cur || cur.hidden) && firstVisible) sel.value = firstVisible.value;
+      const form = document.querySelector("#view-run .run-form");
+      if (form) form.classList.toggle("is-workflow", mode === "workflow");
+      document.querySelectorAll(".run-mode-tab").forEach((b) => {
+        const active = b.dataset.runMode === mode;
+        b.classList.toggle("active", active);
+        b.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      updateRunHint();
+      if (typeof loadSessions === "function") loadSessions();
+    }
+
+    function applyResumeState() {
+      const resume = document.getElementById("run-resume")?.value || "";
+      const wrap = document.getElementById("run-checks-wrap");
+      if (wrap) wrap.classList.toggle("has-resume", !!resume);
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
-      $("#run-kind")?.addEventListener("change", loadSessions);
+      $("#run-kind")?.addEventListener("change", () => { loadSessions(); updateRunHint(); });
+      document.querySelectorAll(".run-mode-tab").forEach((btn) => {
+        btn.addEventListener("click", () => applyRunMode(btn.dataset.runMode));
+      });
+      $("#run-resume")?.addEventListener("change", applyResumeState);
+      applyRunMode("chat");
+      applyResumeState();
     });
 
     async function cancelJob(jobId) {
+      if (!confirm("Cancel job " + jobId.slice(0, 8) + "? This sends SIGTERM to the subprocess.")) return;
       try {
         await postJson("/api/jobs/" + jobId + "/cancel", {});
         setMsg("#job-action-msg", "ok", "cancellation requested", 4000);
@@ -273,6 +341,11 @@
       return mr ? `${h}h ${mr}m` : `${h}h`;
     }
 
+    function _tlBannerHtml(sid) {
+      if (!sid) return "";
+      return `<div class="tl-filter-banner">Filtered to session <code>${escape(sid.slice(0, 8))}</code> · <button id="tl-clear-filter" type="button">clear</button></div>`;
+    }
+
     async function loadTimeline() {
       const meta = $("#timeline-meta");
       const chart = $("#timeline-chart");
@@ -280,15 +353,20 @@
         const r = await fetch("/api/timeline", { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();
-        const runs = data.runs || [];
+        let runs = data.runs || [];
         $("#count-timeline").textContent = runs.length;
+        const filterSid = window._timelineSessionFilter || null;
+        const bannerHtml = _tlBannerHtml(filterSid);
+        if (filterSid) runs = runs.filter((r) => r.session_id === filterSid);
         if (!runs.length) {
-          chart.innerHTML = `<div class="tl-empty">No pipeline runs yet. Dispatch a phase via <em>Run</em> or invoke the orchestrate skill — the <code>PostToolUse</code> hook logs subprocess dispatches to <code>.ai/events.jsonl</code> automatically. Inline phases (orchestrator running a phase in its own session) are not captured.</div>`;
-          meta.textContent = "0 runs";
+          chart.innerHTML = bannerHtml + (filterSid
+            ? `<div class="tl-empty">No runs match session <code>${escape(filterSid.slice(0, 8))}</code>. Clear the filter to see all runs.</div>`
+            : `<div class="tl-empty">No pipeline runs yet. Dispatch a phase via <em>Run</em> or invoke the orchestrate skill — the <code>PostToolUse</code> hook logs subprocess dispatches to <code>.ai/events.jsonl</code> automatically. Inline phases (orchestrator running a phase in its own session) are not captured.</div>`);
+          meta.textContent = filterSid ? "0 runs (filtered)" : "0 runs";
           return;
         }
-        meta.textContent = `${runs.length} session${runs.length === 1 ? "" : "s"}`;
-        chart.innerHTML = runs.map((run) => {
+        meta.textContent = `${runs.length} session${runs.length === 1 ? "" : "s"}${filterSid ? " (filtered)" : ""}`;
+        chart.innerHTML = bannerHtml + runs.map((run) => {
           const start = Date.parse(run.started_at) || 0;
           const end = Date.parse(run.ended_at) || start;
           // Pad span so the last phase has a visible bar even when its duration is 0.
@@ -337,15 +415,159 @@
       }
     }
 
+    // ----- Events state -----
+    var _eventsCache = [];
+    var _eventsState = { phase: "", exit: "", search: "", range: "24h", group: false, expanded: null };
+    if (typeof _eventsState.expanded === "object" || _eventsState.expanded === null) {
+      _eventsState.expanded = new Set();
+    }
+
+    function _evRangeMs(range) {
+      if (range === "24h") return 24 * 3600 * 1000;
+      if (range === "7d") return 7 * 24 * 3600 * 1000;
+      return Infinity;
+    }
+
+    function _evMatchesFilters(e) {
+      if (_eventsState.phase && e.phase !== _eventsState.phase) return false;
+      if (_eventsState.exit === "ok" && e.exit_code !== 0) return false;
+      if (_eventsState.exit === "fail" && (e.exit_code === 0 || e.exit_code == null)) return false;
+      if (_eventsState.search) {
+        const needle = _eventsState.search.toLowerCase();
+        if (!String(e.command_preview || "").toLowerCase().includes(needle)) return false;
+      }
+      const span = _evRangeMs(_eventsState.range);
+      if (span !== Infinity) {
+        const t = Date.parse(e.ts);
+        if (isNaN(t) || (Date.now() - t) > span) return false;
+      }
+      return true;
+    }
+
+    function _evExitPill(code) {
+      if (code === 0) return `<span class="pill good">${code}</span>`;
+      if (code == null) return `<span class="pill">—</span>`;
+      return `<span class="pill bad">${code}</span>`;
+    }
+
+    function _evFormatStats(filtered) {
+      const total = filtered.length;
+      const failed = filtered.filter((e) => e.exit_code != null && e.exit_code !== 0).length;
+      const durations = filtered.map((e) => e.duration_ms).filter((d) => typeof d === "number" && d >= 0);
+      const avgMs = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
+      const failRate = total ? Math.round((failed / total) * 100) : 0;
+      const avgTxt = avgMs == null ? "—" : tlFormatDuration(Math.round(avgMs));
+      return `
+        <span><strong>${total}</strong> event${total === 1 ? "" : "s"}</span>
+        <span><strong class="${failed ? "stat-bad" : ""}">${failed}</strong> failed${total ? ` (${failRate}%)` : ""}</span>
+        <span>avg duration <strong>${escape(avgTxt)}</strong></span>
+      `;
+    }
+
+    function _evRenderGrouped(filtered) {
+      const groups = new Map();
+      for (const e of filtered) {
+        const sid = e.session_id || "unknown";
+        if (!groups.has(sid)) groups.set(sid, []);
+        groups.get(sid).push(e);
+      }
+      const rows = Array.from(groups.entries()).map(([sid, evs]) => {
+        evs.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+        const first = evs[0];
+        const last = evs[evs.length - 1];
+        const spanMs = Math.max(0, Date.parse(last.ts) - Date.parse(first.ts));
+        const lastExit = last.exit_code;
+        const phases = Array.from(new Set(evs.map((e) => e.phase || "?"))).join(", ");
+        const sidShort = sid.slice(0, 8);
+        const tsRel = first.ts ? relativeTime(first.ts) : "";
+        return `<tr data-sid="${escape(sid)}">
+          <td class="ts" title="${escape(first.ts)}">${escape(tsRel)}<div class="ts-abs">${escape(new Date(first.ts).toLocaleTimeString())}</div></td>
+          <td class="mono"><a class="link-mini" data-sid="${escape(sid)}" data-action="view-timeline">${escape(sidShort)}</a></td>
+          <td><span class="pill">${evs.length}</span> <span class="ev-phases">${escape(phases)}</span></td>
+          <td>${escape(tlFormatDuration(spanMs))}</td>
+          <td>${_evExitPill(lastExit)}</td>
+        </tr>`;
+      }).join("");
+      return `<table class="events-table events-grouped">
+        <thead><tr><th>First seen</th><th>Session</th><th>Phases</th><th>Span</th><th>Last exit</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    function _evRenderFlat(filtered) {
+      const rows = filtered.map((e, idx) => {
+        const isBad = e.exit_code != null && e.exit_code !== 0;
+        const ts = e.ts || "";
+        const tsRel = ts ? relativeTime(ts) : "—";
+        const tsAbs = ts ? new Date(ts).toLocaleTimeString() : "—";
+        const expandKey = `${ts}|${idx}`;
+        const isOpen = _eventsState.expanded.has(expandKey);
+        const sid = e.session_id || "";
+        const sidShort = sid ? sid.slice(0, 8) : "—";
+        const tlLink = sid
+          ? `<a class="link-mini" data-sid="${escape(sid)}" data-action="view-timeline" title="filter timeline to this session">${escape(sidShort)} ↗</a>`
+          : `<span class="ev-sid-dim">—</span>`;
+        const main = `<tr class="ev-row ${isBad ? "bad-row" : ""}${isOpen ? " is-open" : ""}" data-expand-key="${escape(expandKey)}">
+          <td class="ts" title="${escape(ts)}">${escape(tsRel)}<div class="ts-abs">${escape(tsAbs)}</div></td>
+          <td><span class="pill">${escape(e.phase || "?")}</span></td>
+          <td>${pillTool(e.tool)}</td>
+          <td class="mono">${escape(e.model || "—")}</td>
+          <td>${_evExitPill(e.exit_code)}</td>
+          <td class="cmd" title="${escape(e.command_preview || "")}">${escape(e.command_preview || "")}</td>
+          <td class="ev-sid">${tlLink}</td>
+        </tr>`;
+        const expanded = isOpen
+          ? `<tr class="ev-expand"><td colspan="7"><pre>${escape(JSON.stringify(e, null, 2))}</pre></td></tr>`
+          : "";
+        return main + expanded;
+      }).join("");
+      return `<table class="events-table">
+        <thead><tr><th>When</th><th>Phase</th><th>Tool</th><th>Model</th><th>Exit</th><th>Command</th><th>Session</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    function renderEvents() {
+      const meta = $("#events-meta");
+      const body = $("#events-body");
+      const stats = $("#events-stats");
+      if (!body || !stats) return;
+      const filtered = _eventsCache.filter(_evMatchesFilters);
+      stats.innerHTML = _evFormatStats(filtered);
+      if (!filtered.length) {
+        body.innerHTML = `<div class="empty">No events match the current filters.</div>`;
+        if (meta) meta.textContent = `0 / ${_eventsCache.length}`;
+        return;
+      }
+      body.innerHTML = _eventsState.group ? _evRenderGrouped(filtered) : _evRenderFlat(filtered);
+      if (meta) meta.textContent = `${filtered.length} / ${_eventsCache.length} · updated ${new Date().toLocaleTimeString()}`;
+    }
+
+    function _evRefreshPhaseOptions() {
+      const sel = $("#ev-phase");
+      if (!sel) return;
+      const current = sel.value;
+      const phases = Array.from(new Set(_eventsCache.map((e) => e.phase).filter(Boolean))).sort();
+      const opts = [`<option value="">all phases</option>`].concat(
+        phases.map((p) => `<option value="${escape(p)}">${escape(p)}</option>`)
+      );
+      sel.innerHTML = opts.join("");
+      if (current && phases.includes(current)) sel.value = current;
+    }
+
     async function loadEvents() {
       const meta = $("#events-meta");
       const body = $("#events-body");
+      const stats = $("#events-stats");
       try {
         const r = await fetch("/.ai/events.jsonl", { cache: "no-store" });
         if (r.status === 404) {
+          _eventsCache = [];
+          if (stats) stats.innerHTML = "";
           body.innerHTML = `<div class="empty">No events yet.<br><br>The hook is registered in <code>.claude/settings.json</code> and will start logging dispatches on the next Claude Code session that runs workflow phases.</div>`;
           $("#count-events").textContent = "0";
-          meta.textContent = "no events";
+          if (meta) meta.textContent = "no events";
+          _evRefreshPhaseOptions();
           return;
         }
         if (!r.ok) throw new Error("HTTP " + r.status);
@@ -356,32 +578,16 @@
           try { events.push(JSON.parse(line)); } catch (_) {}
         }
         events.reverse();
+        _eventsCache = events;
         $("#count-events").textContent = events.length;
+        _evRefreshPhaseOptions();
         if (!events.length) {
+          if (stats) stats.innerHTML = "";
           body.innerHTML = `<div class="empty">No events yet.</div>`;
-          meta.textContent = "0 events";
+          if (meta) meta.textContent = "0 events";
           return;
         }
-        const rows = events.map((e) => {
-          const exitPill = e.exit_code === 0
-            ? `<span class="pill good">${e.exit_code}</span>`
-            : e.exit_code == null
-              ? `<span class="pill">—</span>`
-              : `<span class="pill bad">${e.exit_code}</span>`;
-          return `<tr>
-            <td class="ts" title="${escape(e.ts)}">${escape(relativeTime(e.ts))}</td>
-            <td><span class="pill">${escape(e.phase || "?")}</span></td>
-            <td>${pillTool(e.tool)}</td>
-            <td class="mono">${escape(e.model || "—")}</td>
-            <td>${exitPill}</td>
-            <td class="cmd" title="${escape(e.command_preview || "")}">${escape(e.command_preview || "")}</td>
-          </tr>`;
-        }).join("");
-        body.innerHTML = `<table class="events-table">
-          <thead><tr><th>When</th><th>Phase</th><th>Tool</th><th>Model</th><th>Exit</th><th>Command</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>`;
-        meta.textContent = `${events.length} event${events.length === 1 ? "" : "s"} · updated ${new Date().toLocaleTimeString()}`;
+        renderEvents();
       } catch (err) {
         body.innerHTML = `<div class="err">${escape(err.message)}</div>`;
       }
@@ -389,12 +595,76 @@
 
     var _eventsTimer = null;
     document.addEventListener("change", (e) => {
-      if (e.target && e.target.id === "events-autorefresh") {
+      if (!e.target) return;
+      if (e.target.id === "events-autorefresh") {
         if (_eventsTimer) { clearInterval(_eventsTimer); _eventsTimer = null; }
         if (e.target.checked) {
           loadEvents();
           _eventsTimer = setInterval(loadEvents, 5000);
         }
+      } else if (e.target.id === "ev-phase") {
+        _eventsState.phase = e.target.value; renderEvents();
+      } else if (e.target.id === "ev-exit") {
+        _eventsState.exit = e.target.value; renderEvents();
+      } else if (e.target.id === "ev-range") {
+        _eventsState.range = e.target.value; renderEvents();
+      } else if (e.target.id === "ev-group") {
+        _eventsState.group = !!e.target.checked; renderEvents();
+      }
+    });
+    document.addEventListener("input", (e) => {
+      if (e.target && e.target.id === "ev-search") {
+        _eventsState.search = e.target.value || "";
+        renderEvents();
+      }
+    });
+    document.addEventListener("click", (e) => {
+      const t = e.target;
+      if (!t) return;
+      if (t.id === "ev-reload") { loadEvents(); return; }
+      if (t.id === "ev-clear") { clearEvents(); return; }
+      if (t.id === "tl-clear-filter") {
+        window._timelineSessionFilter = null;
+        loadTimeline();
+        return;
+      }
+      if (t.classList && t.classList.contains("link-mini") && t.dataset.action === "view-timeline") {
+        e.preventDefault();
+        window._timelineSessionFilter = t.dataset.sid || null;
+        const navBtn = document.querySelector('nav button[data-view="timeline"]');
+        if (navBtn) navBtn.click();
+        return;
+      }
+      // Row click → toggle expand (only inside flat events table, not on links)
+      const row = t.closest && t.closest(".ev-row");
+      if (row && !t.closest("a")) {
+        const key = row.dataset.expandKey;
+        if (!key) return;
+        if (_eventsState.expanded.has(key)) _eventsState.expanded.delete(key);
+        else _eventsState.expanded.add(key);
+        renderEvents();
       }
     });
 
+
+    // ----- Cross-cutting: pause polling when tab hidden (packet C) -----
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        if (_jobsTimer) { clearTimeout(_jobsTimer); _jobsTimer = null; }
+        if (_eventsTimer) { clearInterval(_eventsTimer); _eventsTimer = null; }
+        return;
+      }
+      const runActive = document.getElementById("view-run")?.classList.contains("active");
+      const termsActive = document.getElementById("view-terminals")?.classList.contains("active");
+      const evActive = document.getElementById("view-events")?.classList.contains("active");
+      const tlActive = document.getElementById("view-timeline")?.classList.contains("active");
+      if (runActive || termsActive) loadJobs();
+      if (evActive) {
+        loadEvents();
+        const cb = document.getElementById("events-autorefresh");
+        if (cb && cb.checked && !_eventsTimer) {
+          _eventsTimer = setInterval(loadEvents, 5000);
+        }
+      }
+      if (tlActive && typeof loadTimeline === "function") loadTimeline();
+    });

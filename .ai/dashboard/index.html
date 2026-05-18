@@ -238,29 +238,23 @@
       <div class="form-card run-form">
         <h3>Trigger a workflow run</h3>
 
+        <div class="run-mode-tabs" role="tablist" aria-label="Run mode">
+          <button type="button" class="run-mode-tab active" data-run-mode="chat" role="tab" aria-selected="true">
+            Chat <span class="run-mode-sub">interactive session</span>
+          </button>
+          <button type="button" class="run-mode-tab" data-run-mode="workflow" role="tab" aria-selected="false">
+            Workflow <span class="run-mode-sub">background plan / orchestrate</span>
+          </button>
+        </div>
+
         <div class="form-row run-form-controls">
           <div class="field">
             <label for="run-kind">Kind</label>
             <select id="run-kind">
-              <option value="chat">Chat — Claude (interactive)</option>
-              <option value="chat-codex">Chat — Codex (one-turn)</option>
-              <option value="orchestrate">Full orchestrate (plan → execute → review)</option>
-              <option value="plan">Plan only (planner skill)</option>
-            </select>
-          </div>
-          <div class="field" id="run-resume-field">
-            <label for="run-resume">Resume session <span class="field-opt">optional</span></label>
-            <select id="run-resume">
-              <option value="">— new session —</option>
-            </select>
-          </div>
-          <div class="field" id="run-permission-field">
-            <label for="run-permission">Permission mode</label>
-            <select id="run-permission">
-              <option value="">Bypass all (default)</option>
-              <option value="acceptEdits">Accept edits only</option>
-              <option value="plan">Plan only (read-only)</option>
-              <option value="default">Default (will prompt)</option>
+              <option value="chat" data-mode="chat">Chat — Claude (interactive)</option>
+              <option value="chat-codex" data-mode="chat">Chat — Codex (one-turn)</option>
+              <option value="orchestrate" data-mode="workflow">Full orchestrate (plan → execute → review)</option>
+              <option value="plan" data-mode="workflow">Plan only (planner skill)</option>
             </select>
           </div>
         </div>
@@ -272,32 +266,53 @@
           </div>
         </div>
 
-        <div class="form-row run-form-options">
-          <div class="field" id="run-tags-field">
-            <label for="run-tags">Tags <span class="field-opt">comma-separated, optional</span></label>
-            <input id="run-tags" type="text" placeholder="work, auth, experiment" />
+        <details class="run-advanced">
+          <summary>Advanced</summary>
+          <div class="form-row run-form-controls">
+            <div class="field" id="run-resume-field">
+              <label for="run-resume">Resume session <span class="field-opt">optional</span></label>
+              <select id="run-resume">
+                <option value="">— new session —</option>
+              </select>
+            </div>
+            <div class="field" id="run-permission-field">
+              <label for="run-permission">Permission mode</label>
+              <select id="run-permission">
+                <option value="">Bypass all (default)</option>
+                <option value="acceptEdits">Accept edits only</option>
+                <option value="plan">Plan only (read-only)</option>
+                <option value="default">Default (will prompt)</option>
+              </select>
+            </div>
           </div>
-          <div class="form-checks">
-            <label class="form-check">
-              <input id="run-fork" type="checkbox" />
-              <span class="check-box" aria-hidden="true"></span>
-              <span class="check-label">Fork instead of continuing</span>
-            </label>
-            <label class="form-check">
-              <input id="run-compare" type="checkbox" />
-              <span class="check-box" aria-hidden="true"></span>
-              <span class="check-label">Also send to Codex <span class="check-label-dim">(compare)</span></span>
-            </label>
+          <div class="form-row run-form-options">
+            <div class="field" id="run-tags-field">
+              <label for="run-tags">Tags <span class="field-opt">comma-separated, optional</span></label>
+              <input id="run-tags" type="text" placeholder="work, auth, experiment" />
+            </div>
+            <div class="form-checks" id="run-checks-wrap">
+              <label class="form-check" id="run-fork-wrap">
+                <input id="run-fork" type="checkbox" />
+                <span class="check-box" aria-hidden="true"></span>
+                <span class="check-label">Fork instead of continuing</span>
+              </label>
+              <label class="form-check" id="run-compare-wrap">
+                <input id="run-compare" type="checkbox" />
+                <span class="check-box" aria-hidden="true"></span>
+                <span class="check-label">Also send to Codex <span class="check-label-dim">(compare)</span></span>
+              </label>
+            </div>
           </div>
-        </div>
+        </details>
+
+        <p class="form-hint" id="run-hint">
+          Opens an interactive Claude terminal panel — you can chat back and forth.
+        </p>
 
         <div class="form-actions">
           <button class="btn" id="run-submit">Start</button>
           <span class="form-msg" id="run-msg"></span>
         </div>
-        <p class="form-hint">
-          Runs <code>claude -p</code> with the configured session model in the background. The subprocess cannot ask you questions — it must escalate via the escalation block instead.
-        </p>
       </div>
 
       <div class="split">
@@ -324,11 +339,30 @@
     </section>
 
     <section class="view" id="view-events">
-      <div class="toolbar">
-        <label><input type="checkbox" id="events-autorefresh" /> auto-refresh (5s)</label>
-        <button class="refresh" onclick="loadEvents()">reload</button>
-        <button class="refresh" onclick="clearEvents()" style="color:var(--bad);border-color:var(--bad)">clear log</button>
-        <span class="meta" id="events-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
+      <div class="events-stats" id="events-stats"></div>
+      <div class="events-filters">
+        <select id="ev-phase" aria-label="Filter by phase">
+          <option value="">all phases</option>
+        </select>
+        <select id="ev-exit" aria-label="Filter by exit">
+          <option value="">all exits</option>
+          <option value="ok">✓ ok</option>
+          <option value="fail">✗ fail</option>
+        </select>
+        <input id="ev-search" type="search" placeholder="search command…" aria-label="Search command preview" />
+        <select id="ev-range" aria-label="Time range">
+          <option value="24h">last 24h</option>
+          <option value="7d">last 7d</option>
+          <option value="all">all time</option>
+        </select>
+        <label class="ev-check"><input type="checkbox" id="ev-group" /> group by session</label>
+        <label class="ev-check"><input type="checkbox" id="events-autorefresh" /> auto-refresh (5s)</label>
+        <button class="refresh" id="ev-reload">reload</button>
+        <details class="events-more">
+          <summary>More ▾</summary>
+          <button class="refresh danger-link" id="ev-clear" type="button">clear log</button>
+        </details>
+        <span class="meta" id="events-meta"></span>
       </div>
       <div id="events-body"></div>
     </section>
