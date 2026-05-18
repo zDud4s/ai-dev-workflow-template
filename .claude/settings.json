@@ -1,4 +1,14 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(python .ai/dashboard/serve.py)",
+      "Bash(python .ai/dashboard/serve.py *)",
+      "Bash(curl http://localhost:*)",
+      "Bash(curl http://127.0.0.1:*)",
+      "Bash(codex exec * --dangerously-bypass-approvals-and-sandbox *)",
+      "Bash(timeout * sh -c *codex exec*--dangerously-bypass-approvals-and-sandbox*)"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {
