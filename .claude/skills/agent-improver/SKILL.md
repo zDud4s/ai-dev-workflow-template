@@ -1,14 +1,14 @@
 ---
 name: agent-improver
-description: Audit and improve agent files (`.claude/agents/*.md`). Use when the user asks to check, audit, review, score, or improve agents, mentions "agent maintenance" or "agent quality", wonders which agents are missing or duplicated, wants to tighten tool allowlists, or wants to know if their agent descriptions trigger reliably. Scans project + user agents, scores against a quality rubric, outputs a report, then applies targeted edits after approval. Optionally suggests new agents to create and delegates creation to the `agent-creator` agent.
-tools: Read, Glob, Grep, Bash, Edit, Agent
+description: Audit and improve agent files (`.claude/agents/*.md`). Use when the user asks to check, audit, review, score, or improve agents, mentions "agent maintenance" or "agent quality", wonders which agents are missing or duplicated, wants to tighten tool allowlists, or wants to know if their agent descriptions trigger reliably. Scans project + user agents, scores against a quality rubric, outputs a report, then applies targeted edits after approval. Optionally suggests new agents to create and delegates creation to the project `agent-creator` skill.
+tools: Read, Glob, Grep, Bash, Edit
 ---
 
 # Agent Improver
 
-Audit and improve agent files (`.claude/agents/*.md`) across project and user scopes. Scan all agents, score editable ones against a quality rubric, output a report, then apply targeted edits after the user approves. Optionally suggest new agents to fill gaps and delegate creation to the `agent-creator` agent.
+Audit and improve agent files (`.claude/agents/*.md`) across project and user scopes. Scan all agents, score editable ones against a quality rubric, output a report, then apply targeted edits after the user approves. Optionally suggest new agents to fill gaps and delegate creation to the project `agent-creator` skill.
 
-> **Tool rationale (least-privilege check this skill applies to itself):** `Read`/`Glob`/`Grep` for discovery and inspection; `Edit` for targeted updates (never `Write`); `Bash` only for `git log` inside Suggest-new-agents mode; `Agent` only for delegating to `agent-creator` when the user approves a new-agent suggestion. Both `Bash` and `Agent` are loaded upfront because the frontmatter is static, but they are only exercised on the opt-in path.
+> **Tool rationale (least-privilege check this skill applies to itself):** `Read`/`Glob`/`Grep` for discovery and inspection; `Edit` for targeted updates (never `Write`); `Bash` only for `git log` inside Suggest-new-agents mode. New-agent creation is delegated to the project `agent-creator` skill via the Skill tool (always available — no allowlist entry needed).
 
 ## When this skill writes
 
