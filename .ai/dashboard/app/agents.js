@@ -84,7 +84,9 @@
           .filter(([, s]) => s)
           .map(([, s]) => card(s.label, s)),
       ].join("");
-      $("#agents-summary").innerHTML = html;
+      const summary = $("#agents-summary");
+      summary.innerHTML = html;
+      delete summary.dataset.skeletoned;
     }
 
     function renderAgentsFilters() {
@@ -120,28 +122,33 @@
       });
       $("#agents-meta").textContent = `${filtered.length} of ${_agentsState.all.length} shown`;
       const grid = $("#agents-grid");
+      delete grid.dataset.skeletoned;
       if (!filtered.length) {
-        if (!_agentsState.all.length) {
-          grid.innerHTML = `<div class="empty">
-            No agents installed yet. Use the <code>agent-creator</code> skill to add the first one to
-            <code>.claude/agents/</code>, or browse plugin agents above by switching the filter.
-          </div>`;
-        } else {
-          grid.innerHTML = `<div class="empty">No agents match the current filter.</div>`;
-        }
+        const msg = _agentsState.all.length
+          ? "No agents match the current filter."
+          : "No agents in this project yet. Use the agent-creator skill to add one.";
+        grid.innerHTML = `<div class="empty">${escape(msg)}</div>`;
         return;
       }
       grid.innerHTML = filtered.map((a) => {
         const sourcePill = `<span class="pill" title="${escape(a.path)}">${escape(a.source_label || a.source)}</span>`;
         const modelPill = a.model ? `<span class="metric-pill">${escape(a.model)}</span>` : "";
         const dupPill = a.duplicate ? `<span class="metric-pill warn" title="another agent shares this name in a different scope">duplicate name</span>` : "";
-        const toolsRow = a.tools ? `<div class="tools-row" title="${escape(a.tools)}">tools: ${escape(a.tools)}</div>` : "";
+        const toolsRow = a.tools
+          ? `<div class="metrics-row" title="${escape(a.tools)}">${
+              a.tools.split(/\s*,\s*/)
+                .filter(Boolean)
+                .slice(0, 6)
+                .map((t) => `<span class="metric-pill">${escape(t)}</span>`)
+                .join("")
+            }</div>`
+          : "";
         return `<div class="card skill-card agent-card" data-source="${escape(a.source)}" data-name="${escape(a.name)}" data-path="${escape(a.path)}" title="Click for details">
           <h3>${escape(a.name)} ${modelPill} ${dupPill}</h3>
           <div class="desc">${escape(a.description || "—")}</div>
           ${toolsRow}
           <div class="path">${escape(a.path)}</div>
-          <div class="meta-row">${sourcePill}<span class="agent-card-readmore">Read more →</span></div>
+          <div class="meta-row">${sourcePill}<span class="agent-card-readmore">Read more</span></div>
         </div>`;
       }).join("");
       grid.querySelectorAll(".skill-card[data-name]").forEach((card) => {

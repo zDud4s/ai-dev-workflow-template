@@ -1929,13 +1929,16 @@
     }
 
     /* Agent card: uniform sizing with line-clamped description.
-       Full text lives in the detail modal. */
+       Full text lives in the detail modal.
+       NO `overflow: hidden` here — that would clip the HUD beacon
+       (.card::after) which sits intentionally outside the clip-path
+       edge. The clip-path on .card already constrains the visible
+       area; the .desc line-clamp handles text overflow internally. */
     .agent-card {
       min-height: 220px;
       max-height: 220px;
       display: flex;
       flex-direction: column;
-      overflow: hidden;
     }
     .agent-card h3 {
       flex: 0 0 auto;
@@ -1956,16 +1959,10 @@
       text-overflow: ellipsis;
       min-height: 0;
     }
-    .agent-card .tools-row {
+    .agent-card .metrics-row {
       flex: 0 0 auto;
-      font-family: var(--ff-mono);
-      font-size: 10px;
-      color: var(--text-faint);
-      letter-spacing: 0.04em;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
       max-width: 100%;
+      overflow: hidden;
     }
     .agent-card .path {
       flex: 0 0 auto;
@@ -1981,18 +1978,19 @@
     .agent-card-readmore {
       margin-left: auto;
       color: var(--accent);
-      text-transform: none;
-      letter-spacing: 0;
+      font-family: var(--ff-mono);
       font-size: 10px;
+      letter-spacing: 0.18em;
       opacity: 0;
-      transition: opacity 150ms ease-out;
+      transition: opacity var(--dur-quick) var(--easing);
     }
     .skill-grid .agent-card:hover .agent-card-readmore {
       opacity: 1;
     }
 
     /* Skeleton placeholders — shown before data lands so the page
-       structure is visible immediately and content swap is smooth. */
+       structure is visible immediately and content swap is smooth.
+       Zero radius to match the HUD geometric language. */
     @keyframes skeleton-shimmer {
       0%   { background-position: 200% 0; }
       100% { background-position: -200% 0; }
@@ -2005,8 +2003,9 @@
         var(--surf-2) 100%
       );
       background-size: 200% 100%;
-      animation: skeleton-shimmer 1.6s ease-in-out infinite;
-      border-radius: 2px;
+      /* 1.8s cadence is intentionally slower than the state-change
+         motion tokens — this is idle telemetry, not a transition. */
+      animation: skeleton-shimmer 1.8s var(--ease-out-quart) infinite;
       display: block;
     }
     @media (prefers-reduced-motion: reduce) {
@@ -2018,8 +2017,8 @@
       pointer-events: none;
     }
     .skeleton-summary-card .skeleton-title  { width: 55%; height: 12px; }
-    .skeleton-summary-card .skeleton-big    { width: 28%; height: 26px; margin-top: 4px; }
-    .skeleton-summary-card .skeleton-sub    { width: 80%; height: 10px; margin-top: 4px; }
+    .skeleton-summary-card .skeleton-big    { width: 28%; height: 26px; margin-top: var(--s-1); }
+    .skeleton-summary-card .skeleton-sub    { width: 80%; height: 10px; margin-top: var(--s-1); }
     .skeleton-agent-card .skeleton-h        { width: 45%; height: 14px; }
     .skeleton-agent-card .skeleton-desc-1   { width: 95%; height: 10px; }
     .skeleton-agent-card .skeleton-desc-2   { width: 82%; height: 10px; }
