@@ -176,7 +176,7 @@ Process:
    |---|---|---|---|
    | `<name>` | "..." | ... | high / medium / low |
 
-4. If the user approves any suggestion, **dispatch the existing `agent-creator` agent via the `Agent` tool** with a brief spec (name, purpose, trigger phrasings, tools, scope).
+4. If the user approves any suggestion, **invoke the project `agent-creator` skill via the Skill tool** with a brief spec (name, purpose, trigger phrasings, tools, scope).
 
 **This skill never writes new agent files itself.** Creation is `agent-creator`'s job.
 
@@ -184,6 +184,6 @@ Process:
 
 | Sibling | What it does | When to use it instead |
 |---|---|---|
-| `agent-creator` | Creates new agents from a spec | When the user explicitly wants to create, not audit |
+| `agent-creator` project skill | Creates new agents from a spec | When the user explicitly wants to create, not audit |
 | `claude-md-improver` | Audits `CLAUDE.md` files | When the user mentions CLAUDE.md, not agents |
 | `skill-creator` / `skill-reviewer` | Skills, not agents | When the artifact in question is a skill |

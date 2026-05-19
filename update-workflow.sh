@@ -67,6 +67,7 @@ mkdir -p "$TARGET_DIR/.claude/skills/rescue"
 mkdir -p "$TARGET_DIR/.claude/skills/codex"
 mkdir -p "$TARGET_DIR/.claude/skills/orchestrate"
 mkdir -p "$TARGET_DIR/.claude/skills/agent-improver/references"
+mkdir -p "$TARGET_DIR/.claude/skills/agent-creator/references"
 mkdir -p "$TARGET_DIR/.agents/skills/bootstrap"
 mkdir -p "$TARGET_DIR/.agents/skills/planner"
 mkdir -p "$TARGET_DIR/.agents/skills/reviewer"
@@ -109,6 +110,11 @@ copy_if_different "$SCRIPT_DIR/.claude/skills/orchestrate/SKILL.md" "$TARGET_DIR
 copy_if_different "$SCRIPT_DIR/.claude/skills/agent-improver/SKILL.md" "$TARGET_DIR/.claude/skills/agent-improver/SKILL.md"
 copy_if_different "$SCRIPT_DIR/.claude/skills/agent-improver/references/quality-criteria.md" "$TARGET_DIR/.claude/skills/agent-improver/references/quality-criteria.md"
 copy_if_different "$SCRIPT_DIR/.claude/skills/agent-improver/references/agent-template.md" "$TARGET_DIR/.claude/skills/agent-improver/references/agent-template.md"
+
+# Claude-only `agent-creator` skill (creates .claude/agents/*.md after approval).
+# Has a bundled reference template alongside SKILL.md.
+copy_if_different "$SCRIPT_DIR/.claude/skills/agent-creator/SKILL.md" "$TARGET_DIR/.claude/skills/agent-creator/SKILL.md"
+copy_if_different "$SCRIPT_DIR/.claude/skills/agent-creator/references/agent-template.md" "$TARGET_DIR/.claude/skills/agent-creator/references/agent-template.md"
 
 # Codex-only `claude` skill (no Claude counterpart) — source under .agents/skills/.
 copy_if_different "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agents/skills/claude/SKILL.md"
