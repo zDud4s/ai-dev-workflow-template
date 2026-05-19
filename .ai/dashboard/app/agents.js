@@ -5,7 +5,41 @@
 
     var _agentsState = { all: [], sources: {}, filter: "all", query: "" };
 
+    // Pre-render skeleton placeholders so the page does not snap from
+    // empty to fully-populated. The skeleton shapes match the real
+    // card layout so there is no layout shift when data lands.
+    function renderAgentsSkeletons() {
+      const summary = $("#agents-summary");
+      if (summary && !summary.dataset.skeletoned) {
+        const labels = ["Total agents", "Project", "User (global)", "Plugin (market)", "Plugin (cache)"];
+        summary.innerHTML = labels.map(() => `
+          <div class="card skeleton-summary-card">
+            <span class="skeleton skeleton-title"></span>
+            <span class="skeleton skeleton-big"></span>
+            <span class="skeleton skeleton-sub"></span>
+          </div>
+        `).join("");
+        summary.dataset.skeletoned = "1";
+      }
+      const grid = $("#agents-grid");
+      if (grid && !grid.dataset.skeletoned) {
+        grid.innerHTML = Array.from({ length: 6 }).map(() => `
+          <div class="card skill-card agent-card skeleton-agent-card">
+            <span class="skeleton skeleton-h"></span>
+            <span class="skeleton skeleton-desc-1"></span>
+            <span class="skeleton skeleton-desc-2"></span>
+            <span class="skeleton skeleton-desc-3"></span>
+            <span class="skeleton skeleton-tools"></span>
+            <span class="skeleton skeleton-path"></span>
+            <span class="skeleton skeleton-meta"></span>
+          </div>
+        `).join("");
+        grid.dataset.skeletoned = "1";
+      }
+    }
+
     async function loadAgents() {
+      renderAgentsSkeletons();
       try {
         const r = await fetch("/api/agents/all", { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);

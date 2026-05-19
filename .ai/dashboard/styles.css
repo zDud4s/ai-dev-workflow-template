@@ -1991,6 +1991,43 @@
       opacity: 1;
     }
 
+    /* Skeleton placeholders — shown before data lands so the page
+       structure is visible immediately and content swap is smooth. */
+    @keyframes skeleton-shimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    .skeleton {
+      background: linear-gradient(
+        90deg,
+        var(--surf-2) 0%,
+        var(--surf-3) 50%,
+        var(--surf-2) 100%
+      );
+      background-size: 200% 100%;
+      animation: skeleton-shimmer 1.6s ease-in-out infinite;
+      border-radius: 2px;
+      display: block;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .skeleton { animation: none; background: var(--surf-3); }
+    }
+    .skeleton-summary-card,
+    .skeleton-agent-card {
+      cursor: default;
+      pointer-events: none;
+    }
+    .skeleton-summary-card .skeleton-title  { width: 55%; height: 12px; }
+    .skeleton-summary-card .skeleton-big    { width: 28%; height: 26px; margin-top: 4px; }
+    .skeleton-summary-card .skeleton-sub    { width: 80%; height: 10px; margin-top: 4px; }
+    .skeleton-agent-card .skeleton-h        { width: 45%; height: 14px; }
+    .skeleton-agent-card .skeleton-desc-1   { width: 95%; height: 10px; }
+    .skeleton-agent-card .skeleton-desc-2   { width: 82%; height: 10px; }
+    .skeleton-agent-card .skeleton-desc-3   { width: 60%; height: 10px; }
+    .skeleton-agent-card .skeleton-tools    { width: 50%; height: 9px; }
+    .skeleton-agent-card .skeleton-path     { width: 75%; height: 9px; }
+    .skeleton-agent-card .skeleton-meta     { width: 35%; height: 10px; margin-top: auto; }
+
     /* Skill detail modal body */
     .skill-detail-body {
       flex: 1 1 auto;
@@ -2502,46 +2539,6 @@
       opacity: 0.45;
       cursor: not-allowed;
     }
-    /* Cyber-checkbox for the bare ENABLED toggles that sit as direct grid
-       items. Mirrors the .form-check .check-box glyph elsewhere so the
-       Settings view doesn't fall back to the OS-native red square. The `>`
-       keeps the nested as-phases checkboxes on their own accent-color rule. */
-    section.block .settings-grid > input[type="checkbox"] {
-      appearance: none;
-      -webkit-appearance: none;
-      width: 14px;
-      height: 14px;
-      margin: 0;
-      padding: 0;
-      background: var(--panel-inset);
-      border: 1px solid var(--border-strong);
-      position: relative;
-      cursor: pointer;
-      justify-self: start;
-      clip-path: polygon(0 0, calc(100% - 4px) 0, 100% 4px, 100% 100%, 0 100%);
-      transition: border-color 140ms var(--easing),
-                  background-color 140ms var(--easing),
-                  box-shadow 140ms var(--easing);
-    }
-    section.block .settings-grid > input[type="checkbox"]:hover {
-      border-color: var(--accent);
-    }
-    section.block .settings-grid > input[type="checkbox"]:focus-visible {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: var(--accent-glow-soft);
-    }
-    section.block .settings-grid > input[type="checkbox"]:checked {
-      background: var(--accent);
-      border-color: var(--accent);
-    }
-    section.block .settings-grid > input[type="checkbox"]:checked::after {
-      content: "";
-      position: absolute;
-      inset: 2px;
-      background: var(--on-accent);
-      clip-path: polygon(14% 47%, 38% 71%, 86% 14%, 100% 27%, 39% 95%, 0 60%);
-    }
     section.block .settings-hint {
       color: var(--text-dim);
       font-size: 13px;
@@ -2667,7 +2664,10 @@
       color: var(--text-dim);
       cursor: pointer;
     }
-    section.block .as-phases input[type="checkbox"] { accent-color: var(--accent); }
+    section.block .settings-grid input[type="checkbox"] {
+      accent-color: var(--accent);
+      justify-self: start;
+    }
     #view-settings .settings-toolbar {
       display: flex;
       align-items: center;
