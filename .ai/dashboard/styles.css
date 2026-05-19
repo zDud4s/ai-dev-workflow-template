@@ -1010,8 +1010,8 @@
     /* ---------------- Terminals (multi-pane HUD) ---------------- */
     .terms-toolbar {
       display: flex;
-      gap: var(--s-3);
-      align-items: center;
+      gap: var(--s-2);
+      align-items: end;
       margin-bottom: var(--s-4);
       flex-wrap: wrap;
       padding: var(--s-3) var(--s-4);
@@ -1022,15 +1022,58 @@
       flex: 1 1 280px;
       max-width: 480px;
     }
+    /* Status-bar list layout: each pane is a row. Collapsed rows are
+       one-line status indicators; expanded rows reveal the full
+       body + composer. Replaces the old 2-col grid. */
     .terms-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
-      gap: var(--s-4);
+      display: flex;
+      flex-direction: column;
+      gap: var(--s-2);
       align-items: stretch;
     }
+    /* Float panes that want attention (waiting for input, or in the
+       dead+resumable state) to the top of the status-bar list so the
+       operator can scan from the top down. Uses flex `order` so we
+       don't have to mutate DOM order on every state change. */
+    .terms-grid > .term-pane { order: 1; }
+    .terms-grid > .term-pane.is-waiting,
+    .terms-grid > .term-pane.needs-action { order: 0; }
+    .terms-grid.layout-split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); }
+    .terms-grid.layout-split > .term-pane { order: 0; }
+    .terms-grid.layout-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: var(--s-3); }
+    .terms-grid.layout-grid > .term-pane { order: 0; }
+    /* Segmented layout selector — three icon buttons sharing a single
+       outer border. Height tuned to sit on the same baseline as .btn. */
+    .term-layout-group { display: inline-flex; gap: 0; border: 1px solid var(--border-soft); background: var(--surf-1); height: 38px; }
+    .term-layout-group .layout-btn { all: unset; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 100%; color: var(--text-dim); border-right: 1px solid var(--border-soft); transition: color 140ms var(--easing), background-color 140ms var(--easing); }
+    .term-layout-group .layout-btn:last-child { border-right: 0; }
+    .term-layout-group .layout-btn:hover { color: var(--accent); background: var(--panel-inset); }
+    .term-layout-group .layout-btn.active { color: var(--on-accent); background: var(--accent); }
+    .term-layout-group .layout-btn svg { display: block; fill: currentColor; }
+    /* Standalone icon buttons (open-all / collapse-all / close-finished /
+       auto-open). Same height as .btn so the whole toolbar lines up. */
+    .term-icon-btn { all: unset; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 38px; color: var(--text-dim); border: 1px solid var(--border-soft); background: var(--surf-1); transition: color 140ms var(--easing), border-color 140ms var(--easing), background-color 140ms var(--easing); box-sizing: border-box; }
+    .term-icon-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--panel-inset); }
+    .term-icon-btn.active { color: var(--on-accent); background: var(--accent); border-color: transparent; }
+    .term-icon-btn svg { display: block; }
+    /* Auto-open eye toggles which SVG shows based on .active. */
+    #term-autoopen-toggle .ico-eye-off { display: none; }
+    #term-autoopen-toggle:not(.active) .ico-eye-open { display: none; }
+    #term-autoopen-toggle:not(.active) .ico-eye-off { display: block; }
+    /* Slight extra gap before the layout group and the auto-open toggle
+       so the toolbar reads as three clusters: action icons / layout /
+       behavior. The toolbar's base flex gap handles the rest. */
+    .terms-toolbar .term-layout-group { margin-left: var(--s-3); }
+    .terms-toolbar #term-close-all { margin-left: var(--s-3); }
+    .term-icon-btn.danger:hover { color: var(--bad); border-color: var(--bad); }
+    /* setMsg now routes to the global #toast-root (top-center of the
+       viewport) so the inline .form-msg spans no longer receive text and
+       cannot affect toolbar layout. The element stays in the DOM in case
+       some caller still writes to it directly — hide it explicitly. */
+    .terms-toolbar > .form-msg { display: none; }
     /* Density modes (toggled via body class .density-compact). */
-    body.density-compact .terms-grid { gap: var(--s-2); }
-    body.density-compact .term-pane { min-height: 280px; max-height: 60vh; }
+    body.density-compact .terms-grid { gap: 4px; }
+    body.density-compact .term-pane:not(.collapsed) { min-height: 280px; max-height: 60vh; }
     body.density-compact .term-head { padding: 4px 8px; }
     body.density-compact .term-body { padding: 6px 10px; font-size: 12px; }
     body.density-compact .term-body.chat { gap: 6px; }
@@ -1042,24 +1085,78 @@
       border-radius: 0;
       display: flex;
       flex-direction: column;
-      min-height: 360px;
-      max-height: 70vh;
       overflow: hidden;
       transition: border-color 160ms var(--easing), box-shadow 160ms var(--easing);
       position: relative;
       container-type: inline-size;
       container-name: term-pane;
     }
+    /* Only expanded panes claim vertical space. */
+    .term-pane:not(.collapsed) {
+      min-height: 360px;
+      max-height: 70vh;
+    }
     .term-pane.focus {
       border-color: var(--accent);
       box-shadow: var(--accent-glow-soft);
     }
     .term-pane.dead  { border-color: var(--border-soft); opacity: 0.75; }
-    /* Pinned/maximised pane: takes the full grid width and a tall viewport. */
-    .term-pane.pinned {
-      grid-column: 1 / -1;
+    /* Pinned/maximised pane: tall viewport (no grid math needed in flex). */
+    .term-pane.pinned:not(.collapsed) {
       max-height: 85vh;
       min-height: 480px;
+    }
+    /* Collapsed pane = status-bar row. Hide body/search/composer; head only. */
+    .term-pane.collapsed > .term-search,
+    .term-pane.collapsed > .term-body,
+    .term-pane.collapsed > .attach-tray,
+    .term-pane.collapsed > .term-foot {
+      display: none !important;
+    }
+    .term-pane.collapsed .term-head { cursor: pointer; border-bottom: 0; }
+    .term-pane.collapsed .term-head:hover { background: var(--surf-2); }
+    /* Pane in collapsed state with new activity since the operator last
+       looked. Subtle pulse on the left edge so it stands out in the list. */
+    .term-pane.collapsed.has-update {
+      border-left: 2px solid var(--accent);
+    }
+    .term-pane.collapsed.needs-action {
+      border-left: 2px solid var(--warn);
+      animation: term-needs-action 1800ms ease-in-out infinite;
+    }
+    @keyframes term-needs-action {
+      0%, 100% { box-shadow: inset 2px 0 0 0 var(--warn); }
+      50%      { box-shadow: inset 2px 0 0 0 transparent; }
+    }
+    /* Current-activity chip in the head row: "thinking…", "tool: Edit", etc. */
+    .term-head .activity {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--bg-inset);
+      color: var(--text-dim);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      letter-spacing: 0.04em;
+      border: 1px dashed var(--border-soft);
+      white-space: nowrap;
+      flex: 0 0 auto;
+      justify-content: center;
+      width: 130px;
+      box-sizing: border-box;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .term-head .activity.busy { color: var(--accent); border-color: var(--accent); border-style: solid; }
+    .term-head .activity.waiting { color: var(--warn); border-color: transparent; background: var(--warn-bg); }
+    .term-head .activity.ready { color: var(--good); border-color: transparent; background: var(--ok-bg); }
+    .term-head .activity.ended { color: var(--bad); border-color: transparent; background: var(--bad-bg); }
+    /* Suppress the activity chip on narrow panes (collapsed pane stays
+       readable on phones — task + actions + pill are the priority). */
+    @container term-pane (max-width: 420px) {
+      .term-head .activity { display: none; }
     }
     .term-pane .pin-btn.active { color: var(--accent); }
     /* In-pane search bar */
@@ -1169,6 +1266,15 @@
       border: 1px solid var(--border-soft);
       background: var(--surf-1);
       transition: color 140ms var(--easing), border-color 140ms var(--easing), background-color 140ms var(--easing);
+      /* Fixed width + centered text so swapping EXPAND <-> COLLAPSE
+         (or any label change) doesn't push neighbouring buttons. Same
+         min-width applied to every action so the column lines up
+         across all pane rows. */
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 64px;
+      box-sizing: border-box;
     }
     .term-head .actions button:hover {
       color: var(--accent);
@@ -2215,6 +2321,82 @@
       from { opacity: 0; transform: translateY(-2px); }
       to   { opacity: 1; transform: none; }
     }
+
+    /* ---------------- Global toast stack ----------------
+       Centered horizontally in the upper third of the viewport. position
+       is fixed so toasts never affect any view's layout. Multiple toasts
+       (different channels) stack downward with a small gap; same-channel
+       calls reuse the element. Height is content-driven — never taller
+       than the text needs. */
+    #toast-root {
+      position: fixed;
+      top: 10vh;
+      /* Center over the main content area, not the viewport — the 272px
+         sidebar would otherwise push the toast off-centre. Offset right
+         by half the sidebar width. Stays correct on any viewport size. */
+      left: calc(50% + 136px);
+      transform: translateX(-50%);
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--s-2);
+      pointer-events: none;
+      max-width: min(560px, calc(100vw - 272px - 64px));
+      width: max-content;
+    }
+    #toast-root:empty { display: none; }
+    .toast {
+      pointer-events: auto;
+      display: inline-flex;
+      align-items: flex-start;
+      gap: 10px;
+      /* Brand-gradient outline (cyan -> violet -> magenta, same as the
+         header underline at line ~200). Two layered backgrounds: the
+         solid surf-3 fills the padding-box and the gradient shows
+         through the 1px border via border-box clipping. Gives a real
+         gradient border that respects border-radius. */
+      background:
+        linear-gradient(var(--surf-3), var(--surf-3)) padding-box,
+        linear-gradient(90deg, var(--accent), var(--violet), var(--magenta)) border-box;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      padding: 10px 16px 10px 12px;
+      font-family: var(--ff-body);
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0;
+      text-transform: none;
+      line-height: 1.4;
+      color: var(--text);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+      max-width: 100%;
+      white-space: normal;
+      word-break: break-word;
+      opacity: 0;
+      transform: translateY(-10px);
+      transition: opacity 200ms var(--easing), transform 200ms var(--easing);
+    }
+    .toast.in  { opacity: 1; transform: translateY(0); }
+    .toast.out { opacity: 0; transform: translateY(-10px); }
+    /* Info icon sits on the left, vertically aligned with the first line
+       of text. The icon inherits the toast's `color` so severity tints
+       both border and icon. */
+    .toast-ico {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 1px;
+      color: var(--accent);
+    }
+    .toast-ico svg { display: block; }
+    .toast-text { flex: 1 1 auto; min-width: 0; }
+    /* The info icon is always the platform's cyan/teal accent — outline
+       gradient + icon colour stay consistent across every severity for a
+       calm, uniform notification language. */
 
     /* ---------------- Settings tab ----------------
        The Settings tab edits .ai/models.yaml live. Sections share a

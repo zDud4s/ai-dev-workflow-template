@@ -5,6 +5,109 @@
     // Each entry: { jobId, source, pane, body, input, sendBtn, status, task }
     var TERMS = new Map();
 
+    // ----- status-bar helpers -----
+    // Each pane opens collapsed (one-line status row). The body+composer
+    // only render when the operator expands it explicitly OR when input is
+    // required (e.g. a dead chat pane that can be resumed). The "activity"
+    // chip tracks what the pane is doing right now so the operator can scan
+    // the list without expanding every pane.
+
+    function termSetActivity(t, label, cls) {
+      if (!t || !t.pane) return;
+      const el = t.pane.querySelector(".term-head .activity");
+      if (!el) return;
+      const prevCls = t._activityCls || "";
+      el.textContent = label || "";
+      el.classList.remove("busy", "waiting", "ready", "ended");
+      if (cls) el.classList.add(cls);
+      t._activityCls = cls || "";
+      // Surface "waiting" at the pane level so CSS can float these rows
+      // to the top of the status-bar list — the operator can scan from
+      // the top and see what needs their attention first.
+      t.pane.classList.toggle("is-waiting", cls === "waiting");
+      // If the pane is collapsed and we're showing fresh activity, mark
+      // it so the row gets an accent edge until the operator opens it.
+      if (t.pane.classList.contains("collapsed") && cls === "busy") {
+        t.pane.classList.add("has-update");
+      }
+      // Auto-expand on the transition INTO waiting — that's the cue the
+      // operator's turn has come up. Fires once per transition (not on
+      // every redraw), so manually re-collapsing during a long idle is
+      // sticky until the pane goes busy again.
+      if (cls === "waiting" && prevCls !== "waiting"
+          && t.pane.classList.contains("collapsed")) {
+        termSetCollapsed(t, false);
+      }
+    }
+
+    function termSetCollapsed(t, collapsed) {
+      if (!t || !t.pane) return;
+      t.pane.classList.toggle("collapsed", !!collapsed);
+      const btn = t.pane.querySelector(".expand-btn");
+      if (btn) btn.textContent = collapsed ? "expand" : "collapse";
+      if (!collapsed) {
+        // Operator opened the pane — clear the "new activity" indicator
+        // and pulse so the row isn't shouting anymore.
+        t.pane.classList.remove("has-update", "needs-action");
+        // Scroll to bottom once expanded so they see the latest output.
+        if (t.body) {
+          requestAnimationFrame(() => {
+            try { t.body.scrollTop = t.body.scrollHeight; } catch (_) {}
+          });
+        }
+        // Bring the pane into view if it's offscreen.
+        try { t.pane.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
+      }
+    }
+
+    function termToggleCollapsed(t) {
+      if (!t || !t.pane) return;
+      termSetCollapsed(t, !t.pane.classList.contains("collapsed"));
+    }
+
+    function termCollapseAll() {
+      for (const t of TERMS.values()) termSetCollapsed(t, true);
+    }
+
+    // ----- layout control -----
+    // "list"  = vertical stack of status rows (collapsed by default).
+    // "split" = exactly 2 columns side-by-side, panes expanded.
+    // "grid"  = auto-fit multi-column grid, panes expanded.
+    // Persisted in localStorage; read at open-time and on every switch.
+    var TERM_LAYOUTS = ["list", "split", "grid"];
+    function termGetLayout() {
+      const v = localStorage.getItem("dash.termLayout");
+      return TERM_LAYOUTS.includes(v) ? v : "list";
+    }
+    function termApplyLayout(mode) {
+      const grid = $("#terms-grid");
+      if (grid) {
+        grid.classList.toggle("layout-split", mode === "split");
+        grid.classList.toggle("layout-grid",  mode === "grid");
+      }
+      // Highlight the active icon button in the layout group.
+      document.querySelectorAll(".term-layout-group .layout-btn").forEach((b) => {
+        b.classList.toggle("active", b.dataset.layout === mode);
+      });
+    }
+    function termSetLayout(mode) {
+      const next = TERM_LAYOUTS.includes(mode) ? mode : "list";
+      localStorage.setItem("dash.termLayout", next);
+      termApplyLayout(next);
+      // Sync existing panes to the new mode's default. List collapses
+      // non-waiting panes; split/grid expand everything (legacy "see
+      // every pane at once" view).
+      for (const t of TERMS.values()) {
+        if (next === "list") {
+          const keepOpen = t.pane.classList.contains("is-waiting")
+                        || t.pane.classList.contains("needs-action");
+          termSetCollapsed(t, !keepOpen);
+        } else {
+          termSetCollapsed(t, false);
+        }
+      }
+    }
+
     async function termRefreshPicker(jobs) {
       const sel = $("#term-picker");
       if (!sel) return;
@@ -86,6 +189,7 @@
       if (t.body.textContent.length > MAX) {
         t.body.textContent = t.body.textContent.slice(-MAX);
       }
+      termSetActivity(t, "streaming…", "busy");
       termAutoScroll(t);
     }
 
@@ -225,6 +329,16 @@
       t.pane.classList.add("dead");
       const status = t.pane.querySelector(".status-pill");
       if (status && label) status.outerHTML = `<span class="pill ${label === "done" ? "done" : "bad"} status-pill">${escape(label)}</span>`;
+      // For chat panes with a known session_id the next operator message
+      // resumes the session — the pane is waiting for input, not just
+      // dead. Surface that as "waiting" (warn chip) so the warn color
+      // means "waiting" everywhere on this page. Other dead panes stay
+      // at "done"/"ended" with their respective ok/bad colors.
+      if (t.kind === "chat" && t.sessionId) {
+        termSetActivity(t, "waiting", "waiting");
+      } else {
+        termSetActivity(t, label || "ended", label === "done" ? "ready" : "ended");
+      }
 
       // For chat panes whose claude subprocess has exited but where the
       // session_id is known, repurpose the composer as a "resume" entry
@@ -233,6 +347,13 @@
       // Without this, the operator has to manually go back to the Run tab,
       // copy the session id, and create a new job. Annoying.
       if (t.kind === "chat" && t.sessionId) {
+        // Auto-expand so the resume composer is reachable without an
+        // extra click — input is required, this is exactly the "specific
+        // case" where the full pane should appear on its own.
+        if (t.pane.classList.contains("collapsed")) {
+          termSetCollapsed(t, false);
+        }
+        t.pane.classList.add("needs-action");
         t.input.disabled = false;
         t.sendBtn.disabled = false;
         t.input.placeholder = "session ended — next message resumes in a fresh job";
@@ -641,6 +762,7 @@
         + `<span class="dot"></span><span class="dot"></span><span class="dot"></span>`
         + `</div>`;
       t.body.appendChild(msg);
+      termSetActivity(t, "thinking…", "busy");
       termAutoScroll(t);
     }
 
@@ -674,9 +796,11 @@
       // Use marked.parse for full markdown rendering with code fences.
       try { textEl.innerHTML = marked.parse(acc); }
       catch (_) { textEl.textContent = acc; }
+      termSetActivity(t, "responding…", "busy");
     }
 
     function termAddToolPill(t, toolUseId, name, input) {
+      termSetActivity(t, "tool: " + (name || "?"), "busy");
       // Some tools deserve inline rich rendering instead of a collapsed pill.
       if (name === "TodoWrite") return termRenderTodoWrite(t, toolUseId, input);
 
@@ -757,8 +881,10 @@
         <div class="term-head">
           <span class="pill ${isCodex ? "codex" : "claude"} status-pill">dispatch</span>
           <span class="task" title="${escape(cmd)}">${escape(label)}</span>
+          <span class="activity" title="current activity in this pane">queued…</span>
           <span class="id">${escape(toolUseId.slice(0, 8))}</span>
           <span class="actions">
+            <button class="expand-btn" title="Show or hide this terminal's output">expand</button>
             <button class="close-btn" title="Close this pane">close</button>
           </span>
         </div>
@@ -769,6 +895,7 @@
         </div>
       `;
       grid.appendChild(pane);
+      if (termGetLayout() === "list") pane.classList.add("collapsed");
       const body = pane.querySelector(".term-body");
       const t = {
         jobId: paneKey,
@@ -789,6 +916,14 @@
       pane.querySelector(".close-btn").addEventListener("click", () => {
         DISPATCH_TRACKERS.delete(toolUseId);
         termClose(paneKey);
+      });
+      pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        termToggleCollapsed(t);
+      });
+      pane.querySelector(".term-head").addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        termToggleCollapsed(t);
       });
       // Render the prompt up-front so the operator sees what's being run.
       const header = document.createElement("div");
@@ -1072,6 +1207,10 @@
       t.body.appendChild(div);
       t.currentAssistant = null;  // next assistant goes in a fresh block
       termRefreshCost(t);          // bring the header pill up to date
+      // Turn finished — the pane is now idle and the operator can take
+      // the next turn. Warn-colored chip makes it easy to scan the list
+      // for "what wants my attention".
+      termSetActivity(t, "waiting", "waiting");
       // Notify the operator if the tab is in the background.
       termNotifyTurnComplete(t, meta);
     }
@@ -1181,22 +1320,27 @@
           t.currentAssistant = null;
           termAppendAssistantText(t, content);
         }
+        // Safety net for streams that emit a complete `assistant` frame
+        // without the closing `result` (e.g. transcript-style records fed
+        // through chat mode). Without this the chip gets stuck reading
+        // "responding…" forever even though the model is idle.
+        termSetActivity(t, "waiting", "waiting");
         return;
       }
 
       if (type === "user" && obj.message) {
         const content = obj.message.content;
         if (typeof content === "string") {
-          // Skip system-reminder-only frames (cluttering, not user-typed).
-          const stripped = content.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
-          if (!stripped) return;
-          termRenderUserMessage(t, stripped);
+          // Strip system/loader wrappers; if nothing real is left, skip.
+          const cleaned = termCleanUserPrompt(content);
+          if (cleaned) termRenderUserMessage(t, cleaned);
         } else if (Array.isArray(content)) {
           for (const blk of content) {
             if (blk.type === "tool_result") {
               termMarkToolResult(t, blk.tool_use_id, !!blk.is_error, blk.content);
             } else if (blk.type === "text" && typeof blk.text === "string") {
-              termRenderUserMessage(t, blk.text);
+              const cleaned = termCleanUserPrompt(blk.text);
+              if (cleaned) termRenderUserMessage(t, cleaned);
             }
           }
         }
@@ -1238,9 +1382,11 @@
         <div class="term-head">
           <span class="pill running status-pill" title="job ${escape(jobId)}">connecting</span>
           <span class="task" title="${escape(meta?.task || "")}">${escape(taskPreview || jobId)}</span>
+          <span class="activity" title="current activity in this pane">connecting…</span>
           <span class="cost-pill" title="aggregated cost / turns / time for this session"></span>
           <span class="id">${escape(jobId.slice(0, 8))}</span>
           <span class="actions">
+            <button class="expand-btn" title="Show or hide this terminal's output">expand</button>
             <button class="stop-btn" title="Interrupt the current generation (keep session alive)">stop</button>
             <button class="search-btn" title="Search in this pane (Ctrl+F)">find</button>
             <button class="pin-btn" title="Maximise / restore this pane">pin</button>
@@ -1292,6 +1438,11 @@
       };
       TERMS.set(jobId, t);
 
+      // Initial state depends on the operator's chosen layout. List mode
+      // opens collapsed (status-bar reading); grid mode opens expanded
+      // (legacy "see every pane at once" view).
+      if (termGetLayout() === "list") pane.classList.add("collapsed");
+
       // Composer wiring (only meaningful for chat panes; harmless otherwise).
       input.addEventListener("input", () => termHandleComposerInput(t));
       input.addEventListener("keydown", (e) => {
@@ -1325,6 +1476,17 @@
       pane.addEventListener("click", () => {
         document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
         pane.classList.add("focus");
+      });
+      // Clicking the head row toggles expand/collapse. Buttons inside the
+      // head call stopPropagation so the toggle doesn't fire when the user
+      // is hitting "stop", "close", etc.
+      pane.querySelector(".term-head").addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        termToggleCollapsed(t);
+      });
+      pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        termToggleCollapsed(t);
       });
       pane.querySelector(".close-btn").addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1392,7 +1554,11 @@
       const es = new EventSource(`/api/jobs/${jobId}/stream`);
       t.source = es;
       const statusPill = pane.querySelector(".status-pill");
-      es.onopen = () => { statusPill.classList.remove("queued"); statusPill.textContent = "live"; };
+      es.onopen = () => {
+        statusPill.classList.remove("queued");
+        statusPill.textContent = "live";
+        termSetActivity(t, "live", "busy");
+      };
       // For chat jobs the SSE stream is one stream-json object per line;
       // buffer partial lines, parse each, and render structured messages.
       // For other kinds the chunk is plain text and goes straight in.
@@ -1472,8 +1638,10 @@
         <div class="term-head">
           <span class="pill claude status-pill">IDE mirror</span>
           <span class="task" title="mirror of Claude Code session ${escape(sessionId)}">IDE chat ${escape(sessionId.slice(0, 8))}…</span>
+          <span class="activity" title="current activity in this pane">mirroring…</span>
           <span class="id">${escape(sessionId.slice(0, 8))}</span>
           <span class="actions">
+            <button class="expand-btn" title="Show or hide this terminal's output">expand</button>
             <button class="close-btn" title="Close this pane">close</button>
           </span>
         </div>
@@ -1498,10 +1666,20 @@
         toolUseEls: new Map(),
       };
       TERMS.set(paneKey, t);
+      // IDE mirror panes follow the same layout setting.
+      if (termGetLayout() === "list") pane.classList.add("collapsed");
       termInitAutoFollow(t);
       pane.querySelector(".close-btn").addEventListener("click", (e) => {
         e.stopPropagation();
         termClose(paneKey);
+      });
+      pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        termToggleCollapsed(t);
+      });
+      pane.querySelector(".term-head").addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        termToggleCollapsed(t);
       });
       pane.addEventListener("click", () => {
         document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
@@ -1558,17 +1736,22 @@
       const es = new EventSource(`/api/transcripts/${sessionId}/stream`);
       t.source = es;
       const statusPill = pane.querySelector(".status-pill");
-      es.onopen = () => { statusPill.textContent = "IDE live"; };
+      es.onopen = () => {
+        statusPill.textContent = "IDE live";
+        termSetActivity(t, "mirroring…", "busy");
+      };
       es.onmessage = (ev) => termHandleTranscriptChunk(t, ev.data + "\n");
       es.addEventListener("end", () => {
         statusPill.textContent = "IDE ended";
         statusPill.classList.add("done");
+        termSetActivity(t, "ended", "ready");
         try { es.close(); } catch (_) {}
       });
       es.onerror = () => {
         if (!t.pane.classList.contains("dead")) {
           statusPill.textContent = "disconnected";
           statusPill.classList.add("warn");
+          termSetActivity(t, "disconnected", "ended");
         }
       };
       termRenderEmptyState();
@@ -1593,13 +1776,39 @@
     // Strip IDE/system wrapper blocks from a user message. If nothing
     // meaningful is left after stripping (i.e. the message was ONLY
     // wrappers), return null so the caller can skip rendering entirely.
+    // Slash-command invocations get collapsed to "/name args" so the
+    // pane shows what the operator typed instead of the whole expansion
+    // envelope (and, for SessionStart hooks, the full skill body the
+    // platform injects via EXTREMELY_IMPORTANT blocks).
     function termCleanUserPrompt(text) {
       if (!text) return null;
       let s = String(text);
       s = s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "");
+      // EXTREMELY_IMPORTANT / EXTREMELY-IMPORTANT blocks are injected by
+      // SessionStart hooks (e.g. the superpowers skill loader) and carry
+      // entire SKILL.md bodies — operator never typed them.
+      s = s.replace(/<EXTREMELY[_-]IMPORTANT>[\s\S]*?<\/EXTREMELY[_-]IMPORTANT>/g, "");
       s = s.replace(/<ide_opened_file>[\s\S]*?<\/ide_opened_file>/g, "");
       s = s.replace(/<ide_selection>[\s\S]*?<\/ide_selection>/g, "");
       s = s.replace(/<task-notification>[\s\S]*?<\/task-notification>/g, "");
+      s = s.replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, "");
+      s = s.replace(/<local-command-stderr>[\s\S]*?<\/local-command-stderr>/g, "");
+      // Slash-command envelope: collapse <command-name>/X</command-name>
+      // + <command-args>Y</command-args> to "/X Y". The platform also wraps
+      // the SKILL.md body in <command-source> / <command-stdout> /
+      // <command-instructions> blocks alongside; drop those too so the
+      // operator sees their command, not the loader output.
+      const nameMatch = s.match(/<command-name>([^<]*)<\/command-name>/);
+      const argsMatch = s.match(/<command-args>([\s\S]*?)<\/command-args>/);
+      if (nameMatch) {
+        const name = (nameMatch[1] || "").trim();
+        const args = (argsMatch ? (argsMatch[1] || "") : "").trim();
+        // Drop EVERY <command-*>...</command-*> block (loader envelope).
+        s = s.replace(/<command-[\w-]+>[\s\S]*?<\/command-[\w-]+>/g, "");
+        const compact = (name + (args ? " " + args : "")).trim();
+        const rest = s.trim();
+        return rest ? `${compact}\n\n${rest}` : (compact || null);
+      }
       s = s.trim();
       return s || null;
     }
@@ -1637,15 +1846,23 @@
         return;
       }
       if (type === "assistant" && obj.message && Array.isArray(obj.message.content)) {
+        let hadText = false;
         for (const blk of obj.message.content) {
           if (blk.type === "text" && typeof blk.text === "string") {
             // Each transcript "assistant" entry is a discrete message - start fresh.
             t.currentAssistant = null;
             termAppendAssistantText(t, blk.text);
+            hadText = true;
           } else if (blk.type === "tool_use") {
             termAddToolPill(t, blk.id, blk.name, blk.input);
           }
         }
+        // Transcripts have no `result` frame to close a turn — a complete
+        // assistant text record IS the turn boundary. Mark the pane
+        // waiting so the chip doesn't get stuck at "responding…" forever
+        // on an idle IDE session. Tool-only records stay busy because
+        // the matching tool_result usually closes the activity shortly.
+        if (hadText) termSetActivity(t, "waiting", "waiting");
         return;
       }
       if (type === "tool_use_result" || type === "tool_result") {
@@ -1677,7 +1894,15 @@
     function termSetAutoOpen(enabled) {
       localStorage.setItem("dash.autoOpenChats", enabled ? "1" : "0");
       const btn = $("#term-autoopen-toggle");
-      if (btn) btn.textContent = enabled ? "auto-open: on" : "auto-open: off";
+      if (!btn) return;
+      btn.classList.toggle("active", !!enabled);
+      btn.setAttribute("aria-pressed", enabled ? "true" : "false");
+      btn.setAttribute(
+        "title",
+        enabled
+          ? "Auto-open new chats: ON (click to disable)"
+          : "Auto-open new chats: OFF (click to enable)",
+      );
     }
     function termAutoOpenActive(jobs) {
       if (!termAutoOpenEnabled()) return;
@@ -1818,6 +2043,16 @@
         termSetAutoOpen(!termAutoOpenEnabled());
       });
       $("#term-close-all")?.addEventListener("click", termCloseAllFinished);
+      $("#term-collapse-all")?.addEventListener("click", termCollapseAll);
+      // Apply the persisted layout to the grid container, then wire the
+      // icon button group — each button carries its target layout in
+      // data-layout and we delegate via the group's click event.
+      termApplyLayout(termGetLayout());
+      document.querySelector(".term-layout-group")?.addEventListener("click", (e) => {
+        const btn = e.target.closest(".layout-btn");
+        if (!btn || !btn.dataset.layout) return;
+        termSetLayout(btn.dataset.layout);
+      });
       // Initial picker fill (single unified source).
       termRefreshTranscriptPicker();
     });

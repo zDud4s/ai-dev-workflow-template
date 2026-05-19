@@ -523,13 +523,79 @@
       return data || {};
     }
 
+    // setMsg now routes ALL status messages through the central toast
+    // stack. The `sel` argument is treated as a channel key so repeated
+    // calls to the same form (e.g. "saving..." -> "saved") replace the
+    // existing toast instead of stacking. Empty text clears the channel.
     function setMsg(sel, kind, text, timeoutMs) {
-      const el = $(sel);
-      el.className = "form-msg " + (kind || "");
-      el.textContent = text || "";
-      if (timeoutMs) {
-        clearTimeout(el._t);
-        el._t = setTimeout(() => { el.textContent = ""; el.className = "form-msg"; }, timeoutMs);
+      showToast(sel, kind || "", text || "", timeoutMs);
+    }
+
+    // ----- Toast stack -----
+    // Each channel holds at most one toast; new calls on the same channel
+    // reuse the element so updates read as one continuous message.
+    // position:fixed at top-center of the viewport so layouts never shift.
+    var TOASTS = new Map();   // channel -> { el, timer }
+
+    function _toastRoot() {
+      let root = document.getElementById("toast-root");
+      if (root) return root;
+      root = document.createElement("div");
+      root.id = "toast-root";
+      root.setAttribute("aria-live", "polite");
+      document.body.appendChild(root);
+      return root;
+    }
+
+    function hideToast(channel) {
+      const entry = TOASTS.get(channel);
+      if (!entry) return;
+      clearTimeout(entry.timer);
+      entry.el.classList.remove("in");
+      entry.el.classList.add("out");
+      setTimeout(() => {
+        if (entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
+        TOASTS.delete(channel);
+      }, 220);
+    }
+
+    function showToast(channel, kind, text, timeoutMs) {
+      if (!text) { hideToast(channel); return; }
+      let entry = TOASTS.get(channel);
+      if (entry) {
+        clearTimeout(entry.timer);
+        entry.el.className = "toast " + (kind || "") + " in";
+        entry.el.querySelector(".toast-text").textContent = text;
+      } else {
+        const root = _toastRoot();
+        const el = document.createElement("div");
+        el.className = "toast " + (kind || "");
+        // Info icon on the left + text on the right. The icon's colour is
+        // driven by the severity class on .toast (see styles.css).
+        el.innerHTML =
+          '<span class="toast-ico" aria-hidden="true">'
+          + '<svg viewBox="0 0 20 20" width="18" height="18">'
+          +   '<circle cx="10" cy="10" r="9" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+          +   '<circle cx="10" cy="5.5" r="1.2" fill="currentColor"/>'
+          +   '<path d="M10 9 V14.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'
+          + '</svg>'
+          + '</span>'
+          + '<span class="toast-text"></span>';
+        el.querySelector(".toast-text").textContent = text;
+        root.appendChild(el);
+        // Two RAFs so the initial styles paint before the .in class
+        // triggers the transition (otherwise it would just snap in).
+        requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("in")));
+        entry = { el, timer: null };
+        TOASTS.set(channel, entry);
+      }
+      // Auto-dismiss. Explicit timeoutMs wins. Otherwise, give errors more
+      // time on screen — operator wants to read those, not just "saved".
+      const dismissAfter = (timeoutMs != null)
+        ? timeoutMs
+        : (kind === "err" ? 6000 : kind === "warn" ? 4500 : 3500);
+      if (dismissAfter > 0) {
+        entry.timer = setTimeout(() => hideToast(channel), dismissAfter);
       }
     }
 
