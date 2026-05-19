@@ -101,13 +101,13 @@
         const sourcePill = `<span class="pill" title="${escape(a.path)}">${escape(a.source_label || a.source)}</span>`;
         const modelPill = a.model ? `<span class="metric-pill">${escape(a.model)}</span>` : "";
         const dupPill = a.duplicate ? `<span class="metric-pill warn" title="another agent shares this name in a different scope">duplicate name</span>` : "";
-        const toolsRow = a.tools ? `<div class="path" style="color:var(--fg-dim);font-size:11px">tools: ${escape(a.tools)}</div>` : "";
-        return `<div class="card skill-card" data-source="${escape(a.source)}" data-name="${escape(a.name)}" data-path="${escape(a.path)}" title="Click for details">
+        const toolsRow = a.tools ? `<div class="tools-row" title="${escape(a.tools)}">tools: ${escape(a.tools)}</div>` : "";
+        return `<div class="card skill-card agent-card" data-source="${escape(a.source)}" data-name="${escape(a.name)}" data-path="${escape(a.path)}" title="Click for details">
           <h3>${escape(a.name)} ${modelPill} ${dupPill}</h3>
           <div class="desc">${escape(a.description || "—")}</div>
           ${toolsRow}
           <div class="path">${escape(a.path)}</div>
-          <div class="meta-row">${sourcePill}</div>
+          <div class="meta-row">${sourcePill}<span class="agent-card-readmore">Read more →</span></div>
         </div>`;
       }).join("");
       grid.querySelectorAll(".skill-card[data-name]").forEach((card) => {
@@ -137,12 +137,20 @@
       $("#agent-detail-meta").innerHTML =
         meta.map((s) => `<span>${s}</span>`).join("") + rationaleHtml;
       try {
-        const r = await fetch("/" + path, { cache: "no-store" });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const text = await r.text();
+        const r = await fetch("/api/agents/content?path=" + encodeURIComponent(path), { cache: "no-store" });
+        if (!r.ok) {
+          const errJson = await r.json().catch(() => ({}));
+          throw new Error(errJson.error || ("HTTP " + r.status));
+        }
+        const data = await r.json();
+        const text = data.content || "";
         const el = $("#agent-detail-content");
         try { el.innerHTML = marked.parse(text); }
         catch (_) { el.textContent = text; }
+        if (data.truncated) {
+          el.insertAdjacentHTML("beforeend",
+            `<div style="margin-top:8px;color:var(--warn)">…content truncated at 256 KB</div>`);
+        }
       } catch (e) {
         $("#agent-detail-content").innerHTML =
           `<div class="err">Failed to load agent file: ${escape(e.message)}</div>`;

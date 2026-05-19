@@ -1928,6 +1928,69 @@
       opacity: 1;
     }
 
+    /* Agent card: uniform sizing with line-clamped description.
+       Full text lives in the detail modal. */
+    .agent-card {
+      min-height: 220px;
+      max-height: 220px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .agent-card h3 {
+      flex: 0 0 auto;
+      display: -webkit-box;
+      -webkit-line-clamp: 1;
+      line-clamp: 1;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      min-width: 0;
+    }
+    .agent-card .desc {
+      flex: 1 1 auto;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-height: 0;
+    }
+    .agent-card .tools-row {
+      flex: 0 0 auto;
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      color: var(--text-faint);
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+    .agent-card .path {
+      flex: 0 0 auto;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+      word-break: normal;
+    }
+    .agent-card .meta-row {
+      flex: 0 0 auto;
+    }
+    .agent-card-readmore {
+      margin-left: auto;
+      color: var(--accent);
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 10px;
+      opacity: 0;
+      transition: opacity 150ms ease-out;
+    }
+    .skill-grid .agent-card:hover .agent-card-readmore {
+      opacity: 1;
+    }
+
     /* Skill detail modal body */
     .skill-detail-body {
       flex: 1 1 auto;
@@ -2438,6 +2501,46 @@
     section.block .settings-grid select[disabled] {
       opacity: 0.45;
       cursor: not-allowed;
+    }
+    /* Cyber-checkbox for the bare ENABLED toggles that sit as direct grid
+       items. Mirrors the .form-check .check-box glyph elsewhere so the
+       Settings view doesn't fall back to the OS-native red square. The `>`
+       keeps the nested as-phases checkboxes on their own accent-color rule. */
+    section.block .settings-grid > input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      padding: 0;
+      background: var(--panel-inset);
+      border: 1px solid var(--border-strong);
+      position: relative;
+      cursor: pointer;
+      justify-self: start;
+      clip-path: polygon(0 0, calc(100% - 4px) 0, 100% 4px, 100% 100%, 0 100%);
+      transition: border-color 140ms var(--easing),
+                  background-color 140ms var(--easing),
+                  box-shadow 140ms var(--easing);
+    }
+    section.block .settings-grid > input[type="checkbox"]:hover {
+      border-color: var(--accent);
+    }
+    section.block .settings-grid > input[type="checkbox"]:focus-visible {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: var(--accent-glow-soft);
+    }
+    section.block .settings-grid > input[type="checkbox"]:checked {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    section.block .settings-grid > input[type="checkbox"]:checked::after {
+      content: "";
+      position: absolute;
+      inset: 2px;
+      background: var(--on-accent);
+      clip-path: polygon(14% 47%, 38% 71%, 86% 14%, 100% 27%, 39% 95%, 0 60%);
     }
     section.block .settings-hint {
       color: var(--text-dim);

@@ -2955,6 +2955,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/agents/all":
             self._handle_agents_all()
             return
+        if parsed.path == "/api/agents/content":
+            self._handle_agent_content(urllib.parse.parse_qs(parsed.query))
+            return
         if parsed.path == "/api/skills/metrics":
             self._handle_skills_metrics(urllib.parse.parse_qs(parsed.query))
             return
@@ -3698,6 +3701,67 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "count": len(entries),
             }
         self._json(200, {"skills": all_skills, "sources": source_meta})
+
+    def _handle_agent_content(self, qs: dict[str, list[str]]) -> None:
+        """Return the raw markdown of an agent file by path.
+
+        Security: the requested path is resolved to an absolute path and
+        verified to live under one of the four catalog roots returned by
+        ``_handle_agents_all``. Anything outside those roots is rejected
+        (403). This is the same trust boundary the catalog itself uses —
+        plugin trees are read-only by design, but `.md` content is safe
+        to surface for inspection."""
+        raw = (qs.get("path") or [""])[0]
+        if not raw:
+            self._json(400, {"error": "missing path"})
+            return
+        home = Path.home()
+        allowed_roots = [
+            ROOT / ".claude" / "agents",
+            home / ".claude" / "agents",
+            home / ".claude" / "plugins" / "marketplaces",
+            home / ".claude" / "plugins" / "cache",
+        ]
+        # Accept repo-relative paths (catalog returns those for project
+        # agents) and absolute paths (catalog returns those for user +
+        # plugin agents).
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = ROOT / candidate
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            self._json(404, {"error": "agent file not found", "path": raw})
+            return
+        if resolved.suffix != ".md":
+            self._json(400, {"error": "not a .md file"})
+            return
+        ok = False
+        for root in allowed_roots:
+            try:
+                root_resolved = root.resolve(strict=False)
+            except (OSError, RuntimeError):
+                continue
+            try:
+                resolved.relative_to(root_resolved)
+                ok = True
+                break
+            except ValueError:
+                continue
+        if not ok:
+            self._json(403, {"error": "path is outside the agent catalog roots"})
+            return
+        try:
+            text = resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            self._json(500, {"error": "read failed", "detail": str(e)})
+            return
+        max_bytes = 256 * 1024
+        truncated = False
+        if len(text.encode("utf-8", errors="replace")) > max_bytes:
+            text = text[: max_bytes // 2]
+            truncated = True
+        self._json(200, {"content": text, "truncated": truncated, "path": str(resolved)})
 
     def _handle_agents_all(self) -> None:
         """Consolidated agent catalog across project + user + plugin scopes.
