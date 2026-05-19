@@ -11,8 +11,8 @@ Every agent file opens with a YAML frontmatter block. Annotated example with eve
 name: my-agent              # lowercase, hyphens, 3–50 chars, 2–4 words
 description: |              # see quality-criteria.md Criterion 1 — at least 2 <example> blocks
   Use this agent when ... Examples: <example>Context: ... user: "..." assistant: "..." <commentary>...</commentary></example> <example>Context: a second scenario covering an implicit trigger. user: "..." assistant: "..." <commentary>...</commentary></example>
-model: inherit              # haiku / sonnet / opus / inherit — pick the band; inherit is the safe default for ambiguous cases
-color: blue                 # optional UI hint; safe to omit
+model: inherit              # haiku / sonnet / opus / inherit — declare explicitly; inherit when the right band is genuinely ambiguous
+color: blue                 # Claude Code-specific UI hint; safe to omit (ignored by other agent runtimes)
 tools: ["Read", "Grep"]     # explicit, least-privilege; see Criterion 3
 ---
 ```
@@ -21,8 +21,8 @@ Field notes:
 
 - **`name`** — lowercase, hyphenated, 2–4 words. Should read as a noun phrase ("changelog-summarizer", "code-reviewer", "dependency-auditor"). Avoid generic names ("helper", "assistant", "tool") that collide with other agents.
 - **`description`** — see Criterion 1 of `quality-criteria.md`. Verb-first, ≥2 `<example>` blocks, covers explicit and implicit triggers.
-- **`model`** — present if you know the right band; otherwise omit and let it inherit. `inherit` is a legitimate default; do not invent a model choice just to fill the field.
-- **`color`** — purely cosmetic; safe to omit.
+- **`model`** — declare explicitly. Pick `haiku` / `sonnet` / `opus` if you know the right band; declare `inherit` when the right band is genuinely ambiguous. Do not omit the field — under the rubric, a missing field is treated as if you had declared the band you should have (so omission costs points when the body clearly points at one band).
+- **`color`** — purely cosmetic; Claude Code-specific UI hint, ignored by other agent runtimes. Safe to omit.
 - **`tools`** — explicit list, least privilege, every tool referenced by the prompt body.
 
 ## Body skeleton

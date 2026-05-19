@@ -168,7 +168,7 @@ This mode is **opt-in**. Trigger it only when the user asks something like:
 
 Process:
 
-1. Read recent conversation/session context and recent commits (`git log --oneline -50`) for patterns: repeated delegation to `general-purpose`, repeated manual operations that look like a named workflow, recurring multi-step tasks the user always describes the same way.
+1. Use whatever conversation/session context is in the current turn (may be empty if invoked from a fresh session) plus recent commits via `Bash` (`git log --oneline -50`). Look for patterns: repeated delegation to `general-purpose`, repeated manual operations that look like a named workflow, recurring multi-step tasks the user always describes the same way. If both signals are empty, say so and ask the user what kind of agents they have in mind.
 2. Cross-check candidates against the Phase 1 catalogue so no duplicates are proposed.
 3. Output a `Suggested new agents` block:
 
