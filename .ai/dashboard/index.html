@@ -33,6 +33,7 @@
     <button data-view="memory">Memory <span class="count" id="count-memory">·</span></button>
     <button data-view="decisions">Decisions</button>
     <button data-view="skills">Skills <span class="count" id="count-skills">·</span></button>
+    <button data-view="agents">Agents <span class="count" id="count-agents">·</span></button>
     <div class="section-label">tasks</div>
     <button data-view="plans">Plans <span class="count" id="count-plans">·</span></button>
     <button data-view="specs">Specs <span class="count" id="count-specs">·</span></button>
@@ -211,6 +212,34 @@
         <span class="meta" id="skills-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
       </div>
       <div id="skills-grid" class="cards skill-grid"></div>
+    </section>
+
+    <section class="view" id="view-agents">
+      <div class="cards" id="agents-summary"></div>
+      <div class="toolbar agents-toolbar">
+        <div class="agents-filters" id="agents-filters">
+          <button class="refresh agents-filter active" data-source="all">All</button>
+        </div>
+        <input id="agents-search" type="search" placeholder="search name or description…" />
+        <span class="meta" id="agents-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
+      </div>
+      <div id="agents-grid" class="cards skill-grid"></div>
+
+      <div class="proposal-modal" id="agent-detail-modal" hidden>
+        <div class="proposal-modal-pane">
+          <header>
+            <h3 id="agent-detail-title">Agent</h3>
+            <button class="refresh" id="agent-detail-close">close</button>
+          </header>
+          <div class="proposal-modal-meta" id="agent-detail-meta"></div>
+          <div class="skill-detail-body">
+            <section class="skill-detail-section">
+              <h4>Agent file</h4>
+              <div class="skill-detail-content" id="agent-detail-content">loading…</div>
+            </section>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="view" id="view-plans">
@@ -535,6 +564,7 @@
 
   <script src="app/core.js"></script>
   <script src="app/skills.js"></script>
+  <script src="app/agents.js"></script>
   <script src="app/jobs.js"></script>
   <script src="app/terminals.js"></script>
   <!-- Top-center toast stack. All setMsg() calls render here so transient

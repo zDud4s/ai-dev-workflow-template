@@ -51,6 +51,11 @@
         _skillsState.query = e.target.value;
         renderSkillsGrid();
       });
+      // Agents search input
+      $("#agents-search")?.addEventListener("input", (e) => {
+        _agentsState.query = e.target.value;
+        renderAgentsGrid();
+      });
       // Proposal modal wiring
       $("#proposal-modal-close")?.addEventListener("click", closeProposalModal);
       $("#proposal-modal")?.addEventListener("click", (e) => {
@@ -63,10 +68,16 @@
       $("#skill-detail-modal")?.addEventListener("click", (e) => {
         if (e.target.id === "skill-detail-modal") closeSkillDetail();
       });
+      // Agent detail modal wiring
+      $("#agent-detail-close")?.addEventListener("click", closeAgentDetail);
+      $("#agent-detail-modal")?.addEventListener("click", (e) => {
+        if (e.target.id === "agent-detail-modal") closeAgentDetail();
+      });
       document.addEventListener("keydown", (e) => {
         if (e.key !== "Escape") return;
         if (!$("#proposal-modal").hidden) closeProposalModal();
         else if (!$("#skill-detail-modal").hidden) closeSkillDetail();
+        else if (!$("#agent-detail-modal").hidden) closeAgentDetail();
       });
       // Density toggle: persist preference in localStorage and apply on boot.
       const applyDensity = (mode) => {

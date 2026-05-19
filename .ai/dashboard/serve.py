@@ -1798,6 +1798,71 @@ def _aggregate_skill_metrics() -> dict[str, dict]:
     return by_skill
 
 
+def _scan_agents_dir(agents_dir: Path, *, recursive: bool = False) -> list[dict]:
+    """Return one record per ``<agents_dir>/<name>.md`` (or recursively,
+    when ``recursive=True``, for plugin trees nested as
+    ``.../agents/<name>.md``). Each record carries frontmatter fields
+    ``name``, ``description``, ``tools``, ``model`` plus a repo-relative
+    path.
+
+    Tolerates missing dirs and unreadable files — returns ``[]`` rather
+    than raising so callers can compose results across multiple roots.
+    Agent files are single ``.md`` files (unlike skills which are
+    directories with a ``SKILL.md`` inside)."""
+    out: list[dict] = []
+    try:
+        if not agents_dir.is_dir():
+            return out
+        if recursive:
+            files = sorted(agents_dir.glob("**/agents/*.md"))
+        else:
+            files = sorted(p for p in agents_dir.iterdir() if p.suffix == ".md")
+    except OSError:
+        return out
+    for fp in files:
+        try:
+            if not fp.is_file():
+                continue
+        except OSError:
+            continue
+        name = fp.stem
+        desc = ""
+        tools = ""
+        model = ""
+        try:
+            text = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines = text.splitlines()
+        if lines and lines[0].strip() == "---":
+            for ln in lines[1:]:
+                if ln.strip() == "---":
+                    break
+                m = re.match(r"^(name|description|tools|model|color)\s*:\s*(.+)$", ln)
+                if m:
+                    key, val = m.group(1), m.group(2).strip().strip('"\'')
+                    if key == "name":
+                        name = val
+                    elif key == "description":
+                        desc = val
+                    elif key == "tools":
+                        tools = val
+                    elif key == "model":
+                        model = val
+        try:
+            rel = str(fp.relative_to(ROOT)).replace("\\", "/")
+        except ValueError:
+            rel = str(fp).replace("\\", "/")
+        out.append({
+            "name": name,
+            "description": desc,
+            "tools": tools,
+            "model": model,
+            "path": rel,
+        })
+    return out
+
+
 def _scan_skills_dir(skills_dir: Path) -> list[dict]:
     """Return one record per ``<skills_dir>/<name>/SKILL.md`` containing
     the frontmatter ``name`` + ``description`` and a repo-relative path
@@ -2887,6 +2952,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/skills/all":
             self._handle_skills_all()
             return
+        if parsed.path == "/api/agents/all":
+            self._handle_agents_all()
+            return
         if parsed.path == "/api/skills/metrics":
             self._handle_skills_metrics(urllib.parse.parse_qs(parsed.query))
             return
@@ -3630,6 +3698,55 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "count": len(entries),
             }
         self._json(200, {"skills": all_skills, "sources": source_meta})
+
+    def _handle_agents_all(self) -> None:
+        """Consolidated agent catalog across project + user + plugin scopes.
+
+        Reads four locations and emits one flat list plus a per-source
+        summary so the dashboard can render group cards + a filterable grid:
+          * ``project``       -> ``<repo>/.claude/agents/*.md``      (editable)
+          * ``user``          -> ``~/.claude/agents/*.md``           (editable)
+          * ``plugin_market`` -> ``~/.claude/plugins/marketplaces/**/agents/*.md`` (read-only)
+          * ``plugin_cache``  -> ``~/.claude/plugins/cache/**/agents/*.md``        (read-only)
+
+        Plugin agents are surfaced so the user can spot duplication with
+        their own agents but are never editable from the dashboard."""
+        home = Path.home()
+        sources = [
+            ("project",       "Project",          True,  ROOT / ".claude" / "agents",                       False),
+            ("user",          "User (global)",    True,  home / ".claude" / "agents",                       False),
+            ("plugin_market", "Plugin (market)",  False, home / ".claude" / "plugins" / "marketplaces",     True),
+            ("plugin_cache",  "Plugin (cache)",   False, home / ".claude" / "plugins" / "cache",            True),
+        ]
+        all_agents: list[dict] = []
+        source_meta: dict[str, dict] = {}
+        for src_id, label, editable, path, recursive in sources:
+            entries = _scan_agents_dir(path, recursive=recursive)
+            for e in entries:
+                all_agents.append({
+                    "name": e["name"],
+                    "description": e["description"],
+                    "tools": e["tools"],
+                    "model": e["model"],
+                    "path": e["path"],
+                    "source": src_id,
+                    "source_label": label,
+                    "editable": editable,
+                })
+            source_meta[src_id] = {
+                "label": label,
+                "editable": editable,
+                "path": str(path),
+                "exists": path.is_dir(),
+                "count": len(entries),
+            }
+        # Duplicate-name detection across all sources for cross-scope hints.
+        name_counts: dict[str, int] = {}
+        for a in all_agents:
+            name_counts[a["name"]] = name_counts.get(a["name"], 0) + 1
+        for a in all_agents:
+            a["duplicate"] = name_counts[a["name"]] > 1
+        self._json(200, {"agents": all_agents, "sources": source_meta})
 
     def _handle_skills_suggestions(self, qs: dict[str, list[str]]) -> None:
         """Detect clusters of repeated work in the persistent job ledger and

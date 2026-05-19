@@ -47,6 +47,7 @@
         await loadJobs();
         await loadSessions();
         await loadSkills();
+        await loadAgents();
 
         $("#meta").textContent = `updated ${new Date().toLocaleTimeString()}`;
       } catch (err) {

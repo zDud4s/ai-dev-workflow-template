@@ -113,6 +113,7 @@ copy_if_different "$SCRIPT_DIR/.ai/dashboard/styles.css" "$TARGET_DIR/.ai/dashbo
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/log_event.py" "$TARGET_DIR/.ai/dashboard/log_event.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/core.js" "$TARGET_DIR/.ai/dashboard/app/core.js"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/skills.js" "$TARGET_DIR/.ai/dashboard/app/skills.js"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/agents.js" "$TARGET_DIR/.ai/dashboard/app/agents.js"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/jobs.js" "$TARGET_DIR/.ai/dashboard/app/jobs.js"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/terminals.js" "$TARGET_DIR/.ai/dashboard/app/terminals.js"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/main.js" "$TARGET_DIR/.ai/dashboard/app/main.js"
