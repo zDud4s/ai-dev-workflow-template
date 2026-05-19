@@ -873,7 +873,11 @@
       if (!grid) return;
       const cmd = input?.command || "";
       const isCodex = /\bcodex\s+exec/.test(cmd);
-      const label = (isCodex ? "Codex" : "Claude") + " dispatch (" + toolUseId.slice(0, 6) + ")";
+      // tool_use_ids look like `toolu_01XXXXX...` — slice past the prefix
+      // so the label shows characters that actually distinguish dispatches
+      // instead of the literal "toolu_".
+      const shortId = toolUseId.replace(/^toolu_/, "").slice(0, 6) || toolUseId.slice(0, 6);
+      const label = (isCodex ? "Codex" : "Claude") + " dispatch (" + shortId + ")";
       const pane = document.createElement("div");
       pane.className = "term-pane focus";
       pane.dataset.jobId = paneKey;
@@ -882,7 +886,7 @@
           <span class="pill ${isCodex ? "codex" : "claude"} status-pill">dispatch</span>
           <span class="task" title="${escape(cmd)}">${escape(label)}</span>
           <span class="activity" title="current activity in this pane">queued…</span>
-          <span class="id">${escape(toolUseId.slice(0, 8))}</span>
+          <span class="id">${escape(shortId)}</span>
           <span class="actions">
             <button class="expand-btn" title="Show or hide this terminal's output">expand</button>
             <button class="close-btn" title="Close this pane">close</button>
@@ -926,10 +930,10 @@
         termToggleCollapsed(t);
       });
       // Render the prompt up-front so the operator sees what's being run.
-      const header = document.createElement("div");
-      header.className = "msg system";
-      header.textContent = "$ " + cmd;
-      body.appendChild(header);
+      // Use the same .bash-cmd treatment as inline Bash tool pills so the
+      // command is actually legible — the generic .msg.system style is
+      // --text-faint (~48% lightness) and disappears on the dark body.
+      body.appendChild(renderBashCommand(cmd));
       const waiting = document.createElement("div");
       waiting.className = "msg system";
       waiting.style.opacity = "0.7";
@@ -1176,6 +1180,11 @@
         // Header pill goes from "dispatch" to "done" / "failed".
         const status = tracker.pane.querySelector(".status-pill");
         if (status) { status.textContent = isError ? "failed" : "done"; status.classList.toggle("done", !isError); }
+        // The activity chip is initialised to "queued…" at pane creation
+        // and dispatch panes have no streaming events to advance it. If we
+        // don't update it here it stays "queued…" forever even though the
+        // pill already reads DONE — see the screenshot bug.
+        termSetActivity(tracker, isError ? "failed" : "done", isError ? "ended" : "ready");
         termAutoScroll(tracker);
       }
     }
