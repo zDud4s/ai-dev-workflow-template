@@ -53,56 +53,68 @@
   function formatLastRecord(iso) {
     if (!iso || typeof iso !== "string") return null;
     var t = Date.parse(iso);
-    if (!Number.isFinite(t)) return iso;
+    if (!Number.isFinite(t)) return { label: iso, stale: false };
     var diffMin = Math.round((Date.now() - t) / 60_000);
     var ago;
     if (diffMin < 1) ago = "just now";
     else if (diffMin < 60) ago = "~" + diffMin + "m ago";
     else if (diffMin < 60 * 24) ago = "~" + Math.round(diffMin / 60) + "h ago";
     else ago = "~" + Math.round(diffMin / (60 * 24)) + "d ago";
-    return iso + " (" + ago + ")";
+    return { label: iso + " (" + ago + ")", stale: diffMin >= 60 * 24 };
+  }
+
+  function srClass(rate) {
+    if (!Number.isFinite(rate)) return "";
+    if (rate >= 0.9) return "as-sr-good";
+    if (rate >= 0.7) return "as-sr-warn";
+    return "as-sr-bad";
+  }
+
+  function scoreBar(score) {
+    var pct = Math.max(0, Math.min(1, Number(score) || 0)) * 100;
+    return `<span class="as-score-bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></span>`;
   }
 
   function renderGroup(group) {
     const k = group.key;
-    const header = [
-      escape(k.phase),
-      k.size ? escape(k.size) : "any-size",
-      k.risk ? escape(k.risk) : "any-risk",
-      k.budget ? escape(k.budget) : "any-budget",
-    ].join(" / ");
+    const header =
+      `<span class="as-phase">${escape(k.phase)}</span> / ` +
+      `${escape(k.size || "any-size")} / ` +
+      `${escape(k.risk || "any-risk")} / ` +
+      `${escape(k.budget || "any-budget")}`;
     const rows = (group.candidates || [])
       .map((c, idx) => {
         const eff = c.reasoning_effort == null ? "—" : escape(c.reasoning_effort);
         const sr = (c.success_rate * 100).toFixed(0) + "%";
         const sc = c.score.toFixed(3);
+        const rowClass = idx === 0 ? ' class="as-top"' : "";
         return (
-          `<tr>` +
-          `<td>#${idx + 1}</td>` +
-          `<td>${escape(c.tool)}</td>` +
-          `<td>${escape(c.model)}</td>` +
-          `<td>${eff}</td>` +
-          `<td>${c.samples}</td>` +
-          `<td>${sr}</td>` +
-          `<td>${formatMs(c.mean_duration_ms)}</td>` +
-          `<td>${sc}</td>` +
+          `<tr${rowClass}>` +
+          `<td><span class="as-rank">#${idx + 1}</span></td>` +
+          `<td class="as-tool">${escape(c.tool)}</td>` +
+          `<td class="as-model">${escape(c.model)}</td>` +
+          `<td class="as-effort">${eff}</td>` +
+          `<td class="as-num">${c.samples}</td>` +
+          `<td class="as-num ${srClass(c.success_rate)}">${sr}</td>` +
+          `<td class="as-num">${formatMs(c.mean_duration_ms)}</td>` +
+          `<td class="as-num"><span class="as-score">${scoreBar(c.score)}<span>${sc}</span></span></td>` +
           `</tr>`
         );
       })
       .join("");
     return (
-      `<div class="block" style="margin-top:12px">` +
-      `<h3 style="margin:0 0 6px 0;font-size:13px;color:var(--fg-dim)">${header}</h3>` +
-      `<table class="as-table" style="width:100%;font-size:12px;border-collapse:collapse">` +
+      `<div class="as-group">` +
+      `<h3 class="as-group-key">${header}</h3>` +
+      `<table class="as-table">` +
       `<thead><tr>` +
-      `<th style="text-align:left;padding:4px 6px">rank</th>` +
-      `<th style="text-align:left;padding:4px 6px">tool</th>` +
-      `<th style="text-align:left;padding:4px 6px">model</th>` +
-      `<th style="text-align:left;padding:4px 6px">effort</th>` +
-      `<th style="text-align:right;padding:4px 6px">samples</th>` +
-      `<th style="text-align:right;padding:4px 6px">success</th>` +
-      `<th style="text-align:right;padding:4px 6px">mean</th>` +
-      `<th style="text-align:right;padding:4px 6px">score</th>` +
+      `<th>rank</th>` +
+      `<th>tool</th>` +
+      `<th>model</th>` +
+      `<th>effort</th>` +
+      `<th class="as-num">samples</th>` +
+      `<th class="as-num">success</th>` +
+      `<th class="as-num">mean</th>` +
+      `<th class="as-num">score</th>` +
       `</tr></thead>` +
       `<tbody>${rows}</tbody>` +
       `</table>` +
@@ -133,8 +145,12 @@
         `${groups.length} group(s)`,
         `${dropped} dropped (<${effective})`,
       ];
-      if (lastRecord) parts.push(`last record ${lastRecord}`);
-      meta.textContent = parts.join(" · ");
+      let metaHtml = parts.map(escape).join(" · ");
+      if (lastRecord) {
+        const cls = lastRecord.stale ? "as-meta-fresh is-stale" : "as-meta-fresh";
+        metaHtml += ` · last record <span class="${cls}">${escape(lastRecord.label)}</span>`;
+      }
+      meta.innerHTML = metaHtml;
       if (groups.length === 0) {
         root.innerHTML =
           `<div class="tl-empty">No ranked groups yet. The planner needs at least ${effective} record(s) per ` +

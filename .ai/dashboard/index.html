@@ -398,11 +398,14 @@
         <h2>Auto-select rankings</h2>
         <div class="toolbar">
           <button class="refresh" onclick="loadAutoSelect()">reload</button>
-          <label style="font-size:12px;color:var(--fg-dim);display:inline-flex;align-items:center;gap:6px;margin-left:8px">
+          <label class="as-threshold" for="auto-select-min-samples">
             min samples
-            <input type="number" id="auto-select-min-samples" min="1" max="50" step="1" value="3" style="width:56px" />
+            <input type="number" id="auto-select-min-samples" name="auto-select-min-samples"
+                   min="1" max="50" step="1" value="3"
+                   aria-label="Minimum samples per candidate before inclusion in rankings"
+                   title="Candidates with fewer samples are dropped. Persisted in localStorage." />
           </label>
-          <span class="meta" id="auto-select-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
+          <span class="meta" id="auto-select-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px" aria-live="polite"></span>
         </div>
         <div class="tl-hint">
           Ranking per <code>(phase, size, risk, budget)</code> tuple, computed from
