@@ -12,15 +12,15 @@ What it updates by default:
   - .ai/workflow/*
   - .ai/dashboard/*   (the local dashboard tool)
   - managed blocks in AGENTS.md and CLAUDE.md
+  - .ai/memory.md, .ai/decisions.md         (skeleton merge — adds missing ## sections; entries preserved)
+  - .ai/project.yaml, .ai/models.yaml       (skeleton merge — adds missing top-level keys; values preserved)
   - ~/.agents/skills/{orchestrate,planner,reviewer,maintenance,rescue,bootstrap,codex,claude}/SKILL.md
     (global mirror so Codex can discover the same skills)
 
 What it preserves by default:
   - .ai/packets/*   (must already exist — run install.sh first on new projects)
-  - .ai/models.yaml
-  - .ai/project.yaml
-  - .ai/memory.md
-  - .ai/decisions.md
+  - existing memory entries, decisions, project values, model assignments
+    (only the template scaffold around them is merged in)
   - .claude/settings.json   (may contain user hooks — never overwritten)
 
 Options:
@@ -183,6 +183,7 @@ fi
 
 $PYTHON_CMD - "$TARGET_DIR" "$SCRIPT_DIR" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 target_dir = Path(sys.argv[1])
@@ -236,6 +237,139 @@ upsert_block(
     "<!-- >>> AI WORKFLOW MANAGED IMPORT >>>",
     "<!-- <<< AI WORKFLOW MANAGED IMPORT <<< -->",
     claude_import_block,
+)
+
+# --- Skeleton merge for project state files ---
+# Goal: when the template grows a new ## section in memory.md/decisions.md or a
+# new top-level key in project.yaml/models.yaml, propagate it to the target
+# WITHOUT touching entries/values the user wrote. Strictly additive: missing
+# scaffold appended at end; existing content untouched.
+
+MD_SECTION_RE = re.compile(r'(?m)^(## .+)$')
+YAML_TOPLEVEL_RE = re.compile(r'^([A-Za-z_][\w-]*):')
+DATED_ENTRY_RE = re.compile(r'^- \d{4}-\d{2}-\d{2}\s')
+
+def strip_dated_entries(body):
+    # Template ships its own dev memory under sections like "## Entries". When
+    # we add that section to a downstream project, the heading/scaffold travels
+    # but the dated entries (per-project content) must not. Drop lines matching
+    # `- YYYY-MM-DD ...` and collapse the blank-line runs left behind.
+    kept = [
+        line for line in body.splitlines(keepends=True)
+        if not DATED_ENTRY_RE.match(line)
+    ]
+    return re.sub(r'\n{3,}', '\n\n', "".join(kept))
+
+def md_top_level_sections(text):
+    parts = MD_SECTION_RE.split(text)
+    sections = []
+    for i in range(1, len(parts), 2):
+        heading = parts[i]
+        body = parts[i + 1] if i + 1 < len(parts) else ""
+        sections.append((heading, body))
+    return sections
+
+def yaml_top_level_blocks(text):
+    # Comments/blank lines immediately preceding a NON-FIRST top-level key are
+    # attached to THAT key (its leading doc-comment travels with it on merge).
+    # File-leading comments (before the first key) are file preamble and dropped
+    # from all blocks — otherwise we'd duplicate the header on merge.
+    blocks = []
+    current_key = None
+    current_lines = []
+    pending = []
+    seen_any_key = False
+    for line in text.splitlines(keepends=True):
+        m = YAML_TOPLEVEL_RE.match(line)
+        if m:
+            if current_key is not None:
+                blocks.append((current_key, "".join(current_lines)))
+            current_key = m.group(1)
+            current_lines = ([line] if not seen_any_key else pending + [line])
+            pending = []
+            seen_any_key = True
+        elif line.strip() == "" or line.lstrip().startswith("#"):
+            pending.append(line)
+        elif current_key is not None:
+            current_lines.extend(pending)
+            current_lines.append(line)
+            pending = []
+        else:
+            pending = []
+    if current_key is not None:
+        current_lines.extend(pending)
+        blocks.append((current_key, "".join(current_lines)))
+    return blocks
+
+def append_with_blank_line(target_text, addition):
+    if not target_text:
+        return addition
+    out = target_text.rstrip("\n") + "\n\n"
+    return out + addition
+
+def merge_md_skeleton(template_path, target_path, label):
+    if not target_path.exists():
+        return
+    template_text = template_path.read_text(encoding="utf-8")
+    target_text = target_path.read_text(encoding="utf-8")
+    target_headings = {h.strip() for h, _ in md_top_level_sections(target_text)}
+    missing = [
+        (h, b) for h, b in md_top_level_sections(template_text)
+        if h.strip() not in target_headings
+    ]
+    if not missing:
+        print(f"Kept {target_path} ({label}, no missing ## sections)")
+        return
+    addition = "".join(h + strip_dated_entries(b) for h, b in missing).rstrip("\n") + "\n"
+    target_path.write_text(
+        append_with_blank_line(target_text, addition),
+        encoding="utf-8", newline="\n",
+    )
+    added = ", ".join(h.strip().lstrip("#").strip() for h, _ in missing)
+    print(f"Merged {target_path} ({label}, added sections: {added})")
+
+def merge_yaml_skeleton(template_path, target_path, label):
+    if not target_path.exists():
+        return
+    template_text = template_path.read_text(encoding="utf-8")
+    target_text = target_path.read_text(encoding="utf-8")
+    target_keys = {k for k, _ in yaml_top_level_blocks(target_text)}
+    missing = [
+        (k, b) for k, b in yaml_top_level_blocks(template_text)
+        if k not in target_keys
+    ]
+    if not missing:
+        print(f"Kept {target_path} ({label}, no missing top-level keys)")
+        return
+    addition = ""
+    for _, b in missing:
+        addition += b if b.endswith("\n") else b + "\n"
+    target_path.write_text(
+        append_with_blank_line(target_text, addition),
+        encoding="utf-8", newline="\n",
+    )
+    added = ", ".join(k for k, _ in missing)
+    print(f"Merged {target_path} ({label}, added top-level keys: {added})")
+
+merge_md_skeleton(
+    script_dir / ".ai/memory.md",
+    target_dir / ".ai/memory.md",
+    "memory",
+)
+merge_md_skeleton(
+    script_dir / ".ai/decisions.md",
+    target_dir / ".ai/decisions.md",
+    "decisions",
+)
+merge_yaml_skeleton(
+    script_dir / ".ai/project.yaml",
+    target_dir / ".ai/project.yaml",
+    "project state",
+)
+merge_yaml_skeleton(
+    script_dir / ".ai/models.yaml",
+    target_dir / ".ai/models.yaml",
+    "models config",
 )
 PY
 
