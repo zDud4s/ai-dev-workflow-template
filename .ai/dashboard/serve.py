@@ -89,6 +89,11 @@ SKILL_METRICS_FILE = ROOT / ".ai" / "dashboard" / "skill_metrics.jsonl"
 SKILL_PROPOSALS_DIR  = ROOT / ".ai" / "dashboard" / "skill_proposals"
 SKILL_BACKUPS_DIR    = ROOT / ".ai" / "dashboard" / "skill_backups"
 IMPROVEMENTS_LEDGER  = ROOT / ".ai" / "dashboard" / "improvements.jsonl"
+# Agent suggestions storage. Mirrors the skill-proposal layout but for the
+# agent-improver "Suggest-new-agents" mode: one .json payload + one .body.md
+# per proposal. Accept writes a real file at .claude/agents/<slug>.md;
+# reject just marks status="rejected" and leaves the proposal on disk.
+AGENT_PROPOSALS_DIR  = ROOT / ".ai" / "dashboard" / "agent_proposals"
 # Defaults used when models.yaml has no `improver:` block. The improver
 # only edits skills under PROJECT (.claude/skills/) — global skills are
 # never modified.
@@ -2917,6 +2922,208 @@ def _load_timeline_runs(max_events: int = 500) -> list[dict]:
     return runs
 
 
+# ---------- Agent suggestions (helpers) ----------------------------------
+#
+# These power /api/agents/suggest. The skills equivalent (_detect_skill_
+# suggestions + _handle_suggestion_draft) feeds on telemetry; agents have no
+# per-agent telemetry, so we lean on three cheap signals instead — git log,
+# recent jobs, and the editable agent catalog (so the LLM doesn't propose
+# duplicates).
+
+def _load_editable_agent_names() -> set[str]:
+    """Return the set of agent slug names (filename stem) present in either
+    the project (``<repo>/.claude/agents``) or user (``~/.claude/agents``)
+    scope. Plugin agents are intentionally excluded — they are namespaced
+    differently and we will never write into plugin paths anyway."""
+    names: set[str] = set()
+    for d in (ROOT / ".claude" / "agents",
+              Path.home() / ".claude" / "agents"):
+        try:
+            if not d.is_dir():
+                continue
+            for f in d.glob("*.md"):
+                stem = f.stem.strip().lower()
+                if stem:
+                    names.add(stem)
+        except OSError:
+            continue
+    return names
+
+
+def _recent_job_tasks(max_jobs: int = 50) -> list[str]:
+    """Most-recent ``task`` strings from ``JOBS_DIR/*.json``, deduped while
+    preserving first-seen order. Bad JSON / missing files are skipped
+    silently — this signal is best-effort context for the LLM."""
+    if not JOBS_DIR.is_dir():
+        return []
+    try:
+        entries = sorted(JOBS_DIR.glob("*.json"),
+                         key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in entries[:max_jobs * 2]:  # over-fetch in case many are blank
+        try:
+            obj = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        task = (obj.get("task") or "").strip()
+        if not task or task in seen:
+            continue
+        seen.add(task)
+        out.append(task)
+        if len(out) >= max_jobs:
+            break
+    return out
+
+
+def _git_log_excerpt(max_commits: int = 50) -> str:
+    """``git log --oneline -N`` from the repo root, with a hard 10s timeout
+    and silent OS-error fallback. Returns "" when git isn't available, the
+    repo has no commits, or anything else goes wrong — the suggester prompt
+    handles an empty section."""
+    try:
+        proc = subprocess.run(
+            ["git", "log", "--oneline", f"-{max_commits}"],
+            cwd=str(ROOT), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
+        )
+        if proc.returncode != 0:
+            return ""
+        return proc.stdout or ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _build_agent_suggester_prompt(git_log: str, recent_tasks: list[str],
+                                  existing_agent_names: set[str]) -> str:
+    """Strict-JSON-output prompt that frames the agent-improver's
+    Suggest-new-agents mode. Cap each task at 200 chars so the prompt stays
+    small even with many jobs."""
+    existing_block = "\n".join(sorted(existing_agent_names)) or "(none)"
+    bullets = "\n".join(f"- {t[:200]}" for t in recent_tasks) or "(none)"
+    git_block = git_log.strip() or "(none)"
+    return (
+        "OUTPUT FORMAT (STRICT): Respond with ONE JSON object on a single "
+        "line. NO prose, NO commentary, NO markdown fences. If you write "
+        "anything else, the output is INVALID.\n\n"
+        "Schema:\n"
+        '  {"suggestions": [{"name": "<lowercase-slug>", '
+        '"description": "<one-sentence trigger description>", '
+        '"trigger_phrasings": ["...", "..."], '
+        '"rationale": "<why a dedicated agent helps>", '
+        '"tools": "<comma-separated tool names, or empty string>", '
+        '"confidence": "high|medium|low", '
+        '"body": "<full agent file body that goes AFTER the YAML '
+        'frontmatter; markdown ok>"}]}\n\n'
+        "If there is no meaningful pattern to surface, return: "
+        '{"suggestions": []}\n\n'
+        "ROLE: You are the agent-improver in Suggest-new-agents mode. Look "
+        "at the user's recent git activity and recent dashboard jobs and "
+        "propose NEW agents that would capture repeated workflows. "
+        "Cross-check against the existing agent catalogue to avoid "
+        "duplicates. Be CONSERVATIVE — return [] rather than weak ideas. "
+        "At most 3 suggestions.\n\n"
+        "Each suggestion's \"body\" MUST start with a short purpose "
+        "statement (1-2 sentences) and a short workflow (3-5 bullet "
+        "steps). Do NOT include YAML frontmatter in \"body\" — the server "
+        "adds the frontmatter from the JSON fields.\n\n"
+        "=== Existing agent names (do NOT propose duplicates) ===\n"
+        f"<<<EXISTING\n{existing_block}\nEXISTING>>>\n\n"
+        "=== Recent git activity (oneline) ===\n"
+        f"<<<GIT\n{git_block}\nGIT>>>\n\n"
+        "=== Recent dashboard job tasks ===\n"
+        f"<<<JOBS\n{bullets}\nJOBS>>>\n\n"
+        "Now respond with ONLY the JSON object."
+    )
+
+
+def _parse_agent_suggestions_output(stdout: str) -> list[dict] | None:
+    """Extract and validate the suggester's JSON output. Returns a list of
+    valid suggestions (possibly empty) or ``None`` if the output is not a
+    parseable object with the expected shape. Drops individual items that
+    are missing required fields — partial responses still yield the valid
+    subset rather than failing the whole call."""
+    obj = _parse_improver_output(stdout)
+    if obj is None or not isinstance(obj, dict):
+        return None
+    raw = obj.get("suggestions")
+    if not isinstance(raw, list):
+        return None
+    out: list[dict] = []
+    for s in raw:
+        if not isinstance(s, dict):
+            continue
+        name = (s.get("name") or "").strip().lower()
+        slug = re.sub(r"[^a-z0-9-]+", "-", name).strip("-")
+        if not slug or len(slug) > 80:
+            continue
+        desc = (s.get("description") or "").strip()
+        if not desc:
+            continue
+        triggers = s.get("trigger_phrasings") or []
+        if not isinstance(triggers, list):
+            continue
+        triggers = [str(t).strip() for t in triggers if str(t).strip()]
+        confidence = (s.get("confidence") or "").strip().lower()
+        if confidence not in ("high", "medium", "low"):
+            confidence = "medium"
+        body = s.get("body") or ""
+        if not isinstance(body, str) or not body.strip():
+            continue
+        tools = s.get("tools") or ""
+        if not isinstance(tools, str):
+            tools = ""
+        rationale = (s.get("rationale") or "").strip()
+        out.append({
+            "name": slug,
+            "slug": slug,
+            "description": desc,
+            "trigger_phrasings": triggers,
+            "rationale": rationale,
+            "tools": tools.strip(),
+            "confidence": confidence,
+            "body": body,
+        })
+    return out
+
+
+def _persist_agent_proposal(suggestion: dict, *, source_signal: dict) -> str | None:
+    """Write the ``{pid}.json`` + ``{pid}.body.md`` pair under
+    ``AGENT_PROPOSALS_DIR`` and return the proposal id. ``None`` on any
+    OS-level write failure so the caller can skip and continue."""
+    slug = suggestion["slug"]
+    ts_dt = _dt.datetime.now(_dt.timezone.utc)
+    pid = f"_agent-{slug}-{ts_dt.strftime('%Y%m%d-%H%M%S')}"
+    payload = {
+        "id": pid,
+        "kind": "agent-draft",
+        "name": suggestion["name"],
+        "slug": slug,
+        "description": suggestion["description"],
+        "trigger_phrasings": suggestion["trigger_phrasings"],
+        "rationale": suggestion["rationale"],
+        "tools": suggestion["tools"],
+        "confidence": suggestion["confidence"],
+        "ts": ts_dt.isoformat(timespec="seconds"),
+        "source_signal": source_signal,
+        "status": "pending",
+        "target_path": f".claude/agents/{slug}.md",
+        "applied_at": None,
+        "installed_path": None,
+    }
+    try:
+        AGENT_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+        (AGENT_PROPOSALS_DIR / f"{pid}.json").write_text(
+            json.dumps(payload, indent=2), encoding="utf-8")
+        (AGENT_PROPOSALS_DIR / f"{pid}.body.md").write_text(
+            suggestion["body"], encoding="utf-8")
+    except OSError:
+        return None
+    return pid
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -2966,6 +3173,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/agents/content":
             self._handle_agent_content(urllib.parse.parse_qs(parsed.query))
+            return
+        if parsed.path == "/api/agents/proposals":
+            self._handle_agent_proposals_list()
+            return
+        m = re.fullmatch(r"/api/agents/proposals/([A-Za-z0-9_\-]+)", parsed.path)
+        if m:
+            self._handle_agent_proposal_get(m.group(1))
             return
         if parsed.path == "/api/skills/metrics":
             self._handle_skills_metrics(urllib.parse.parse_qs(parsed.query))
@@ -3047,6 +3261,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             m = re.fullmatch(r"/api/skills/suggestions/([A-Za-z0-9_\-]+)/draft", parsed.path)
             if m:
                 self._handle_suggestion_draft(m.group(1))
+                return
+            if parsed.path == "/api/agents/suggest":
+                self._handle_agent_suggest()
+                return
+            m = re.fullmatch(r"/api/agents/proposals/([A-Za-z0-9_\-]+)/(accept|reject)", parsed.path)
+            if m:
+                self._handle_agent_proposal_decision(m.group(1), m.group(2))
                 return
             self._json(404, {"error": "unknown endpoint", "path": parsed.path})
 
@@ -4254,6 +4475,223 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                            f"draft from cluster {cluster_id}",
                            pid, None, payload["diff_lines"], source="manual")
         self._json(201, payload)
+
+    # ----- Agent suggestions (agent-improver "Suggest-new-agents" mode) -----
+    #
+    # The skills auto-improver runs on telemetry: every job emits per-skill
+    # success rows, and clusters of repeated tasks become "draft a SKILL.md"
+    # proposals. Agents don't have that signal — no agent_metrics.jsonl, no
+    # per-agent success rate. Instead this flow asks an LLM to look at three
+    # cheap signals (git log + recent job task descriptions + existing agent
+    # catalog) and propose new agents on demand. One-shot, never automatic.
+    #
+    # Reuses the improver config block from .ai/models.yaml (tool, model,
+    # timeout). Persists each suggestion as a {pid}.json + {pid}.body.md pair
+    # under AGENT_PROPOSALS_DIR. Accept writes the actual agent file at
+    # .claude/agents/<slug>.md (refusing to overwrite). Reject just marks
+    # status="rejected".
+
+    def _handle_agent_suggest(self) -> None:
+        """POST /api/agents/suggest — spawn a one-shot LLM that proposes new
+        agents based on recent git + recent jobs + existing agents. Persists
+        zero or more {pid}.json + .body.md proposals. Returns the count and
+        the new proposal ids so the UI can refresh the list."""
+        cfg = _load_improver_config()
+        tool_bin = shutil.which(cfg["tool"])
+        if not tool_bin:
+            self._json(503, {"error": f"`{cfg['tool']}` CLI not on PATH"})
+            return
+        existing = _load_editable_agent_names()
+        recent_tasks = _recent_job_tasks()
+        git_log = _git_log_excerpt()
+        prompt = _build_agent_suggester_prompt(git_log, recent_tasks, existing)
+        argv = [tool_bin, "-p", "--model", cfg["model"]]
+        improver_sid: str | None = None
+        if cfg["tool"] == "claude":
+            improver_sid = str(uuid.uuid4())
+            argv += ["--session-id", improver_sid]
+        try:
+            try:
+                proc = subprocess.run(
+                    argv,
+                    cwd=str(ROOT), input=prompt,
+                    capture_output=True, text=True,
+                    timeout=int(cfg.get("timeout_seconds", 120)),
+                    encoding="utf-8", errors="replace",
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                self._json(500, {"error": "subprocess error", "detail": str(e)})
+                return
+            if proc.returncode != 0:
+                self._json(500, {"error": f"exit {proc.returncode}",
+                                 "stderr": (proc.stderr or "")[:300]})
+                return
+            suggestions = _parse_agent_suggestions_output(proc.stdout or "")
+            if suggestions is None:
+                self._json(500, {"error": "suggester output unparseable",
+                                 "stdout_tail": (proc.stdout or "")[-300:]})
+                return
+            signal_summary = {
+                "commits": len([l for l in (git_log or "").splitlines() if l.strip()]),
+                "jobs": len(recent_tasks),
+                "existing": len(existing),
+            }
+            if not suggestions:
+                self._json(200, {"count": 0, "proposal_ids": [],
+                                 "note": "no suggestions",
+                                 "signal_summary": signal_summary})
+                return
+            ids: list[str] = []
+            for s in suggestions:
+                pid = _persist_agent_proposal(s, source_signal=signal_summary)
+                if pid:
+                    ids.append(pid)
+            self._json(200, {"count": len(ids), "proposal_ids": ids,
+                             "signal_summary": signal_summary})
+        finally:
+            _purge_claude_transcript(improver_sid)
+
+    def _handle_agent_proposals_list(self) -> None:
+        """GET /api/agents/proposals — compact summary of every proposal on
+        disk, newest first. Body content is fetched separately via the
+        detail endpoint to keep the list response small."""
+        items: list[dict] = []
+        if AGENT_PROPOSALS_DIR.is_dir():
+            for p in sorted(AGENT_PROPOSALS_DIR.glob("*.json"),
+                            key=lambda x: x.stat().st_mtime, reverse=True):
+                try:
+                    obj = json.loads(p.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                items.append({
+                    "id": obj.get("id"),
+                    "name": obj.get("name"),
+                    "slug": obj.get("slug"),
+                    "description": obj.get("description"),
+                    "trigger_phrasings": obj.get("trigger_phrasings") or [],
+                    "confidence": obj.get("confidence"),
+                    "ts": obj.get("ts"),
+                    "status": obj.get("status") or "pending",
+                    "applied_at": obj.get("applied_at"),
+                    "installed_path": obj.get("installed_path"),
+                    "target_path": obj.get("target_path"),
+                })
+        self._json(200, {"proposals": items})
+
+    def _handle_agent_proposal_get(self, proposal_id: str) -> None:
+        """GET /api/agents/proposals/<id> — full payload + body for the
+        proposal modal. Path-validates the id to prevent traversal."""
+        if not re.fullmatch(r"_agent-[a-z0-9-]+-\d{8}-\d{6}", proposal_id):
+            self._json(400, {"error": "invalid proposal id"})
+            return
+        pj = AGENT_PROPOSALS_DIR / f"{proposal_id}.json"
+        if not pj.is_file():
+            self._json(404, {"error": "proposal not found"})
+            return
+        try:
+            obj = json.loads(pj.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            self._json(500, {"error": "could not read proposal", "detail": str(e)})
+            return
+        body_path = AGENT_PROPOSALS_DIR / f"{proposal_id}.body.md"
+        try:
+            obj["body"] = body_path.read_text(encoding="utf-8") if body_path.is_file() else ""
+        except OSError:
+            obj["body"] = ""
+        self._json(200, obj)
+
+    def _handle_agent_proposal_decision(self, proposal_id: str, decision: str) -> None:
+        """POST /api/agents/proposals/<id>/(accept|reject).
+
+        Accept materialises the agent at .claude/agents/<slug>.md (refusing
+        to overwrite an existing file — the user must reject + rename to
+        re-create). Reject just flips the status and leaves the proposal on
+        disk so it stays auditable."""
+        if not re.fullmatch(r"_agent-[a-z0-9-]+-\d{8}-\d{6}", proposal_id):
+            self._json(400, {"error": "invalid proposal id"})
+            return
+        pj = AGENT_PROPOSALS_DIR / f"{proposal_id}.json"
+        if not pj.is_file():
+            self._json(404, {"error": "proposal not found"})
+            return
+        try:
+            obj = json.loads(pj.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            self._json(500, {"error": "could not read proposal", "detail": str(e)})
+            return
+        if obj.get("status") not in (None, "pending"):
+            self._json(409, {"error": f"proposal already {obj.get('status')}"})
+            return
+
+        if decision == "reject":
+            obj["status"] = "rejected"
+            obj["applied_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+            try:
+                pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+            except OSError as e:
+                self._json(500, {"error": "write failed", "detail": str(e)})
+                return
+            self._json(200, {"ok": True, "id": proposal_id, "status": "rejected"})
+            return
+
+        # decision == "accept" — materialise the agent file.
+        slug = (obj.get("slug") or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", slug):
+            self._json(400, {"error": f"invalid slug: {slug!r}"})
+            return
+        agents_root = (ROOT / ".claude" / "agents").resolve()
+        target = (agents_root / f"{slug}.md").resolve()
+        try:
+            target.relative_to(agents_root)
+        except ValueError:
+            self._json(400, {"error": "slug escapes agents directory"})
+            return
+        target_rel = f".claude/agents/{slug}.md"
+        if target.is_file():
+            self._json(409, {
+                "error": "agent already exists",
+                "target_path": target_rel,
+                "hint": "Reject this proposal and rename the slug, or "
+                        "delete the existing agent first.",
+            })
+            return
+        # Build the agent file from the proposal payload. Only emit `tools:`
+        # when non-empty so we don't accidentally pin an empty allowlist.
+        front_lines = ["---", f"name: {slug}",
+                       f"description: {(obj.get('description') or '').strip()}",
+                       "model: sonnet"]
+        tools = (obj.get("tools") or "").strip()
+        if tools:
+            front_lines.append(f"tools: {tools}")
+        front_lines += ["---", ""]
+        body = obj.get("body") or ""
+        if not body:
+            body_path = AGENT_PROPOSALS_DIR / f"{proposal_id}.body.md"
+            try:
+                body = body_path.read_text(encoding="utf-8") if body_path.is_file() else ""
+            except OSError:
+                body = ""
+        content = "\n".join(front_lines) + body.lstrip("\n")
+        if not content.endswith("\n"):
+            content += "\n"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _write_text_lf(target, content)
+        except OSError as e:
+            self._json(500, {"error": "write failed", "detail": str(e)})
+            return
+        obj["status"] = "installed"
+        obj["applied_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+        obj["installed_path"] = target_rel
+        try:
+            pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+        except OSError:
+            pass  # file already on disk; non-fatal
+        self._json(200, {
+            "ok": True, "id": proposal_id, "status": "installed",
+            "installed_path": target_rel,
+            "note": f"Agent created at {target_rel}.",
+        })
 
     def _handle_skill_content(self, qs: dict[str, list[str]]) -> None:
         """Return the SKILL.md content for one skill identified by

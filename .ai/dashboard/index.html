@@ -19,8 +19,8 @@
     <span class="spacer"></span>
     <span class="meta" id="meta"><span class="spinner"></span> loading</span>
     <div class="header-actions">
-      <button class="refresh" id="density-toggle" title="Toggle compact / comfortable density">density</button>
-      <button class="refresh" onclick="loadAll()">refresh</button>
+      <button class="refresh" id="density-toggle" title="Toggle compact / comfortable density">Density</button>
+      <button class="refresh" onclick="loadAll()">Refresh</button>
     </div>
   </header>
 
@@ -228,7 +228,17 @@
         </div>
         <input id="agents-search" type="search" placeholder="search name or description…" />
         <span class="meta" id="agents-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
+        <button class="refresh" id="btn-suggest-agents" title="Ask the agent-improver to look for patterns and propose new agents" style="white-space:nowrap;flex-shrink:0">Suggest agents</button>
+        <span class="meta" id="agent-suggest-msg" style="color:var(--fg-dim);font-size:11px;flex-shrink:0"></span>
       </div>
+
+      <section class="block" id="agent-suggestions-block" style="display:none">
+        <h2>Suggested new agents <span class="count" id="agent-suggestions-count">·</span></h2>
+        <div class="form-msg" style="margin-bottom:8px;color:var(--fg-dim)">
+          Open any card to review the proposed agent before accepting (writes to <code>.claude/agents/&lt;slug&gt;.md</code>) or rejecting (kept for audit).
+        </div>
+        <div id="agent-suggestions-wrap" class="cards skill-grid"></div>
+      </section>
       <div id="agents-grid" class="cards skill-grid" data-skeletoned="1">
         <div class="card skill-card agent-card skeleton-agent-card"><span class="skeleton skeleton-h"></span><span class="skeleton skeleton-desc-1"></span><span class="skeleton skeleton-desc-2"></span><span class="skeleton skeleton-desc-3"></span><span class="skeleton skeleton-tools"></span><span class="skeleton skeleton-path"></span><span class="skeleton skeleton-meta"></span></div>
         <div class="card skill-card agent-card skeleton-agent-card"><span class="skeleton skeleton-h"></span><span class="skeleton skeleton-desc-1"></span><span class="skeleton skeleton-desc-2"></span><span class="skeleton skeleton-desc-3"></span><span class="skeleton skeleton-tools"></span><span class="skeleton skeleton-path"></span><span class="skeleton skeleton-meta"></span></div>
@@ -253,6 +263,28 @@
           </div>
         </div>
       </div>
+
+      <div class="proposal-modal" id="agent-proposal-modal" hidden>
+        <div class="proposal-modal-pane">
+          <header>
+            <h3 id="agent-proposal-title">Suggested agent</h3>
+            <button class="refresh" id="agent-proposal-close">close</button>
+          </header>
+          <div class="proposal-modal-meta" id="agent-proposal-meta"></div>
+          <div class="skill-detail-body">
+            <section class="skill-detail-section">
+              <h4>Proposed agent file</h4>
+              <div class="skill-detail-content" id="agent-proposal-body">loading…</div>
+            </section>
+          </div>
+          <div class="proposal-modal-actions">
+            <button class="refresh" id="agent-proposal-accept">Accept</button>
+            <button class="refresh" id="agent-proposal-reject">Reject</button>
+            <span class="meta" id="agent-proposal-msg" style="color:var(--fg-dim);font-size:12px"></span>
+          </div>
+        </div>
+      </div>
+
     </section>
 
     <section class="view" id="view-plans">

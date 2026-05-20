@@ -349,7 +349,10 @@
       gap: var(--s-2);
       padding-right: var(--s-3);
     }
-    header .header-actions .refresh { margin: 0; }
+    header .header-actions .refresh {
+      margin: 0;
+      text-transform: capitalize;
+    }
     header .meta {
       display: flex;
       align-items: center;
@@ -1825,6 +1828,9 @@
       gap: 7px;
     }
     .toolbar input[type="checkbox"] { accent-color: var(--accent); }
+    .toolbar.agents-toolbar .refresh {
+      text-transform: capitalize;
+    }
 
     /* ---------------- Skills view ---------------- */
     .skills-toolbar { flex-wrap: wrap; }
@@ -1846,6 +1852,104 @@
       max-width: 360px;
     }
     #skills-search:focus { outline: none; border-color: var(--accent); box-shadow: var(--accent-glow-soft); }
+    /* Agents toolbar — explicit 2-row layout:
+       row 1 = filter chips (left) + suggest agents button (right anchor)
+       row 2 = search input + counter meta
+       Wraps cleanly because each group claims its width without fighting. */
+    .toolbar.agents-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--s-3) var(--s-4);
+      row-gap: var(--s-3);
+    }
+    .agents-filters {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .agents-filter {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 10px;
+      white-space: nowrap;
+    }
+    .agents-filter .count {
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
+      color: var(--text-faint);
+      opacity: 0.75;
+    }
+    .agents-filter.active {
+      background: var(--accent-bg);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .agents-filter.active .count {
+      color: var(--accent);
+      opacity: 1;
+    }
+    .agents-filter.disabled {
+      pointer-events: none;
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    /* Suggest agents button: anchor to far right of row 1, never wrap. */
+    .toolbar.agents-toolbar #btn-suggest-agents {
+      flex: 0 0 auto;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    /* Force search + meta to start a new row, keeping them visually paired. */
+    .toolbar.agents-toolbar #agents-search {
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      padding: 6px 12px;
+      flex: 0 1 320px;
+      min-width: 240px;
+      margin-left: 0 !important;          /* override inline margin-left:auto on previous .meta */
+    }
+    .toolbar.agents-toolbar #agents-search:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: var(--accent-glow-soft);
+    }
+    .toolbar.agents-toolbar #agents-search::placeholder { color: var(--text-faint); }
+    .toolbar.agents-toolbar #agents-search::-webkit-search-cancel-button {
+      -webkit-appearance: none;
+      appearance: none;
+      display: none;
+    }
+    .toolbar.agents-toolbar #agents-meta {
+      flex: 0 0 auto;
+      margin-left: 0 !important;          /* override the inline style */
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+    }
+    .toolbar.agents-toolbar #agent-suggest-msg {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+    /* Summary cards: tighter minmax so all 5 scope cards fit one row at typical
+       desktop widths (≥1200px main content). */
+    #agents-summary { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+    @media (min-width: 1500px) { #agents-summary { grid-template-columns: repeat(5, 1fr); } }
+    .agents-empty {
+      grid-column: 1 / -1;
+      margin: 0;
+      color: var(--text-dim);
+      font-size: var(--fs-3);
+    }
     .skill-grid { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
     .skill-card {
       gap: 8px;
@@ -1910,7 +2014,12 @@
       letter-spacing: 0.04em;
     }
     .metric-pill.ok   { color: var(--good); border-color: var(--good); }
-    .metric-pill.warn { color: var(--warn); border-color: var(--warn); }
+    .metric-pill.warn {
+      font-size: 10px;
+      color: var(--text-faint);
+      border-color: var(--border-soft);
+      background: transparent;
+    }
     .metric-pill.bad  { color: var(--bad);  border-color: var(--bad);  }
     .suggestion-card h3 { gap: 10px; }
     .suggestion-card ul { color: var(--text-2); font-size: var(--fs-2); }
@@ -1936,7 +2045,6 @@
        area; the .desc line-clamp handles text overflow internally. */
     .agent-card {
       min-height: 220px;
-      max-height: 220px;
       display: flex;
       flex-direction: column;
     }
@@ -1975,19 +2083,6 @@
     .agent-card .meta-row {
       flex: 0 0 auto;
     }
-    .agent-card-readmore {
-      margin-left: auto;
-      color: var(--accent);
-      font-family: var(--ff-mono);
-      font-size: 10px;
-      letter-spacing: 0.18em;
-      opacity: 0;
-      transition: opacity var(--dur-quick) var(--easing);
-    }
-    .skill-grid .agent-card:hover .agent-card-readmore {
-      opacity: 1;
-    }
-
     /* Skeleton placeholders — shown before data lands so the page
        structure is visible immediately and content swap is smooth.
        Zero radius to match the HUD geometric language. */
@@ -2079,6 +2174,10 @@
       padding: var(--s-3);
       overflow-x: auto;
     }
+    #agent-detail-content {
+      overflow: auto;
+      max-height: clamp(220px, calc(90vh - 530px), 500px);
+    }
     .skill-detail-recent-row,
     .skill-detail-history-row {
       display: flex;
@@ -2134,7 +2233,7 @@
       border-bottom: 1px solid var(--border-soft);
     }
     .proposal-modal-pane > header h3 {
-      font-family: var(--ff-mono);
+      font-family: var(--ff-body);
       font-size: var(--fs-3);
       color: var(--accent);
       margin: 0;
@@ -2902,6 +3001,11 @@
       .card .val.big { font-size: 40px; }
       section.block h2 { font-size: 22px; }
       main { padding: var(--s-5) var(--s-4) var(--s-7); }
+    }
+
+    @media (max-width: 600px) {
+      .cards { grid-template-columns: 1fr; }
+      .toolbar.agents-toolbar { flex-wrap: wrap; }
     }
 
     /* ---------------- Timeline view (Gantt) ---------------- */
