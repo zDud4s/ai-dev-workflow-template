@@ -1701,10 +1701,22 @@
       // (still owned by the IDE writer) to the new dashboard branch
       // side-by-side. Mirror's composer is disabled after the first fork
       // — additional forks should come from the IDE-side itself.
+      // The `forking` flag + immediate UI lock below prevents a double
+      // POST when the operator hits Enter twice while the cold-start
+      // `claude --resume` is still spawning (which would otherwise create
+      // two parallel forks responding to the same prompt).
+      let forking = false;
       const forkAndSend = async () => {
+        if (forking) return;
         const text = t.input.value.trim();
         if (!text) return;
+        forking = true;
+        // Lock the composer + clear the text BEFORE the await so the
+        // operator gets instant feedback and a second Enter is a no-op.
+        t.input.value = "";
+        t.input.disabled = true;
         t.sendBtn.disabled = true;
+        t.sendBtn.textContent = "forking…";
         try {
           const res = await postJson("/api/jobs", {
             kind: "chat",
@@ -1717,11 +1729,8 @@
           banner.style.color = "var(--warn)";
           banner.textContent = `[forked into dashboard chat ${res.id.slice(0,8)} — new pane opened to the right]`;
           t.body.appendChild(banner);
-          // Lock down the mirror's composer; this branch is now history.
-          t.input.value = "";
-          t.input.disabled = true;
+          // Mirror's composer stays locked; this branch is now history.
           t.input.placeholder = "mirror pane is read-only — continue in the fork pane";
-          t.sendBtn.disabled = true;
           t.sendBtn.textContent = "forked";
           const sp = t.pane.querySelector(".status-pill");
           if (sp) { sp.textContent = "forked"; sp.classList.add("warn"); }
@@ -1734,12 +1743,20 @@
           err.style.color = "var(--bad)";
           err.textContent = `[fork failed: ${e.message}]`;
           t.body.appendChild(err);
+          // Restore the composer so the operator can retry.
+          t.input.value = text;
+          t.input.disabled = false;
           t.sendBtn.disabled = false;
+          t.sendBtn.textContent = "fork & send";
+          forking = false;
         }
       };
       t.sendBtn.addEventListener("click", forkAndSend);
       t.input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); forkAndSend(); }
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          forkAndSend();
+        }
       });
 
       const es = new EventSource(`/api/transcripts/${sessionId}/stream`);
