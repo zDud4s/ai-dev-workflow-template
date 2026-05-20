@@ -183,9 +183,11 @@ fi
 
 $PYTHON_CMD - "$TARGET_DIR" "$SCRIPT_DIR" <<'PY'
 from pathlib import Path
+from datetime import date
 import json
 import re
 import sys
+import unicodedata
 
 target_dir = Path(sys.argv[1])
 script_dir = Path(sys.argv[2])
@@ -352,10 +354,199 @@ def merge_yaml_skeleton(template_path, target_path, label):
     added = ", ".join(k for k, _ in missing)
     print(f"Merged {target_path} ({label}, added top-level keys: {added})")
 
-merge_md_skeleton(
+MEMORY_HEADER_START = "<!-- >>> WORKFLOW MANAGED MEMORY HEADER >>> -->"
+MEMORY_HEADER_END = "<!-- <<< WORKFLOW MANAGED MEMORY HEADER <<< -->"
+
+# Common Portuguese -> English topic-tag mapping for slugifying section headings
+# when migrating bullets. Unknown words pass through as-is.
+PT_EN_TOPIC_MAP = {
+    "comandos": "commands", "comando": "commands",
+    "ambiente": "env", "encoding": "encoding",
+    "estrutura": "apps", "apps": "apps",
+    "convencoes": "conventions",
+    "anomalias": "anomalies",
+    "factos": "facts", "fatos": "facts",
+    "anotacoes": "notes", "notas": "notes",
+}
+PT_STOPWORDS = {
+    "de", "do", "da", "das", "dos", "o", "a", "os", "as",
+    "um", "uma", "uns", "umas", "e", "para", "em", "no", "na",
+    "nas", "nos", "com", "por", "ao",
+}
+
+def heading_to_topic_slug(heading):
+    # "## Comandos confirmados" -> "commands"; first significant word, stripped
+    # of diacritics, mapped through PT_EN_TOPIC_MAP when known.
+    text = re.sub(r"^#+\s*", "", heading).strip()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    words = re.findall(r"[a-z]+", text.lower())
+    words = [w for w in words if w not in PT_STOPWORDS]
+    if not words:
+        return "misc"
+    first = words[0]
+    return PT_EN_TOPIC_MAP.get(first, first)
+
+def upsert_block_at_top(path, start_marker, end_marker, block_text):
+    # Like upsert_block but places the block at the TOP of the file. When
+    # markers don't exist (legacy file), discards the legacy preamble — i.e.
+    # everything before the first `## ` heading — since the managed block
+    # replaces it. If the file has no `## ` heading at all, the entire legacy
+    # content is treated as preamble and replaced.
+    block_text = block_text.strip()
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(block_text + "\n", encoding="utf-8", newline="\n")
+        return "created"
+    content = path.read_text(encoding="utf-8")
+    if start_marker in content and end_marker in content:
+        before = content.split(start_marker)[0].rstrip()
+        after = content.split(end_marker, 1)[1].lstrip()
+        had_markers = True
+    else:
+        before = ""
+        m = re.search(r"(?m)^## ", content)
+        after = content[m.start():] if m else ""
+        had_markers = False
+    pieces = []
+    if before:
+        pieces.append(before)
+    pieces.append(block_text)
+    if after:
+        pieces.append(after)
+    new_content = "\n\n".join(pieces).rstrip() + "\n"
+    if new_content == content:
+        return "unchanged"
+    path.write_text(new_content, encoding="utf-8", newline="\n")
+    return "refreshed" if had_markers else "injected"
+
+DATED_BULLET_RE = re.compile(r"^- (\d{4}-\d{2}-\d{2})\s+(\[[^\]]+\]\s+)?(.*)$")
+BULLET_RE = re.compile(r"^- ")
+
+def migrate_bullets_to_entries(target_path):
+    # Move bullet lines living under non-Entries sections into the canonical
+    # `## Entries` section. Dated bullets keep their date/topic; undated ones
+    # get today's date and a [<section_slug>] tag derived from their original
+    # section heading. Empty headings (no remaining bullets, no prose) are
+    # removed. Headings inside the managed marker region are preserved as-is.
+    if not target_path.exists():
+        return
+    content = target_path.read_text(encoding="utf-8")
+    # Split off the managed header so we don't touch it during migration.
+    if MEMORY_HEADER_START in content and MEMORY_HEADER_END in content:
+        head_end_pos = content.find(MEMORY_HEADER_END) + len(MEMORY_HEADER_END)
+        header = content[:head_end_pos]
+        body = content[head_end_pos:]
+    else:
+        header = ""
+        body = content
+    # Walk body into sections keyed by their `## ` heading. The pre-section
+    # area (text before first ##) is preserved as-is.
+    lines = body.splitlines(keepends=True)
+    sections = []  # [(heading or None, [content lines])]
+    current = (None, [])
+    for line in lines:
+        if line.startswith("## "):
+            sections.append(current)
+            current = (line, [])
+        else:
+            current[1].append(line)
+    sections.append(current)
+    today = date.today().isoformat()
+    migrated = []  # list of (target_topic, line_text) to append to ## Entries
+    drained_sections = []  # headings whose bullets were moved
+    removed_sections = []  # headings dropped entirely (now empty)
+    new_sections = []
+    entries_idx = None
+    for i, (heading, body_lines) in enumerate(sections):
+        if heading is None:
+            new_sections.append((heading, body_lines))
+            continue
+        if heading.strip().lower() == "## entries":
+            entries_idx = len(new_sections)
+            new_sections.append((heading, body_lines))
+            continue
+        slug = heading_to_topic_slug(heading)
+        kept_lines = []
+        moved_count = 0
+        for line in body_lines:
+            if BULLET_RE.match(line):
+                m = DATED_BULLET_RE.match(line.rstrip("\n"))
+                if m:
+                    # Already dated — keep its date/topic verbatim.
+                    migrated.append(line if line.endswith("\n") else line + "\n")
+                else:
+                    rest = line[2:].rstrip("\n")
+                    migrated.append(f"- {today} [{slug}] {rest}\n")
+                moved_count += 1
+            else:
+                kept_lines.append(line)
+        if moved_count > 0:
+            drained_sections.append((heading.strip(), moved_count))
+        non_blank = [l for l in kept_lines if l.strip()]
+        if not non_blank:
+            removed_sections.append(heading.strip())
+            continue
+        new_sections.append((heading, kept_lines))
+    if not migrated and not removed_sections:
+        return  # nothing to do
+    # If target had no ## Entries, create one (placed where the markers' close
+    # already sits — i.e., immediately after the header / first content gap).
+    if entries_idx is None:
+        new_sections.insert(0, ("## Entries\n", ["\n"]))
+        entries_idx = 0
+    # Append migrated bullets to ## Entries body (after existing entries).
+    heading, body_lines = new_sections[entries_idx]
+    # Ensure body ends with a blank line before appending if it has content.
+    has_content = any(l.strip() for l in body_lines)
+    if has_content and body_lines and body_lines[-1].strip():
+        body_lines.append("\n")
+    if not has_content and not body_lines:
+        body_lines.append("\n")
+    body_lines.extend(migrated)
+    new_sections[entries_idx] = (heading, body_lines)
+    # Rebuild body text.
+    rebuilt = []
+    for heading, body_lines in new_sections:
+        if heading is not None:
+            rebuilt.append(heading)
+        rebuilt.extend(body_lines)
+    new_body = "".join(rebuilt)
+    new_content = (header + "\n\n" + new_body.lstrip("\n")).rstrip("\n") + "\n"
+    target_path.write_text(new_content, encoding="utf-8", newline="\n")
+    drained_desc = ", ".join(f"{h.lstrip('#').strip()} ({n})" for h, n in drained_sections)
+    print(f"Migrated {len(migrated)} bullet(s) to ## Entries from: {drained_desc}")
+    if removed_sections:
+        removed_desc = ", ".join(h.lstrip("#").strip() for h in removed_sections)
+        print(f"Removed empty heading(s): {removed_desc}")
+
+def refresh_memory_header(template_path, target_path):
+    # Refresh the managed memory.md header (preamble + `## Entries`) and then
+    # migrate any stray bullets into `## Entries` so the structure matches the
+    # template contract: bullets live ONLY under `## Entries`.
+    if not template_path.exists():
+        return
+    template_text = template_path.read_text(encoding="utf-8")
+    if MEMORY_HEADER_START not in template_text or MEMORY_HEADER_END not in template_text:
+        # Template doesn't define markers — fall back to the additive merge.
+        merge_md_skeleton(template_path, target_path, "memory")
+        return
+    block = template_text.split(MEMORY_HEADER_START, 1)[1]
+    block = block.split(MEMORY_HEADER_END, 1)[0]
+    block = f"{MEMORY_HEADER_START}{block}{MEMORY_HEADER_END}"
+    result = upsert_block_at_top(target_path, MEMORY_HEADER_START, MEMORY_HEADER_END, block)
+    if result == "created":
+        print(f"Created {target_path} (workflow memory header)")
+    elif result == "injected":
+        print(f"Injected {target_path} managed header (no markers found before)")
+    elif result == "refreshed":
+        print(f"Refreshed {target_path} managed header")
+    # else: unchanged — print nothing
+    migrate_bullets_to_entries(target_path)
+
+refresh_memory_header(
     script_dir / ".ai/memory.md",
     target_dir / ".ai/memory.md",
-    "memory",
 )
 merge_md_skeleton(
     script_dir / ".ai/decisions.md",
