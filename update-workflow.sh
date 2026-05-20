@@ -14,14 +14,14 @@ What it updates by default:
   - managed blocks in AGENTS.md and CLAUDE.md
   - .ai/memory.md, .ai/decisions.md         (skeleton merge — adds missing ## sections; entries preserved)
   - .ai/project.yaml, .ai/models.yaml       (skeleton merge — adds missing top-level keys; values preserved)
+  - .claude/settings.json                   (merge — adds missing workflow permissions/hooks; user entries preserved)
   - ~/.agents/skills/{orchestrate,planner,reviewer,maintenance,rescue,bootstrap,codex,claude}/SKILL.md
     (global mirror so Codex can discover the same skills)
 
 What it preserves by default:
   - .ai/packets/*   (must already exist — run install.sh first on new projects)
-  - existing memory entries, decisions, project values, model assignments
-    (only the template scaffold around them is merged in)
-  - .claude/settings.json   (may contain user hooks — never overwritten)
+  - existing memory entries, decisions, project values, model assignments,
+    custom Claude Code permissions/hooks (only the workflow scaffold is merged in)
 
 Options:
   --include-packets   Also update .ai/packets/* (creates them if missing)
@@ -183,6 +183,7 @@ fi
 
 $PYTHON_CMD - "$TARGET_DIR" "$SCRIPT_DIR" <<'PY'
 from pathlib import Path
+import json
 import re
 import sys
 
@@ -370,6 +371,75 @@ merge_yaml_skeleton(
     script_dir / ".ai/models.yaml",
     target_dir / ".ai/models.yaml",
     "models config",
+)
+
+def merge_claude_settings(template_path, target_path):
+    # .claude/settings.json carries permissions + hooks the workflow needs to
+    # orchestrate (dashboard event hook, codex exec permission, etc.). Merge
+    # required entries in without overwriting user-added permissions or hooks.
+    # Create the file if missing.
+    if not template_path.exists():
+        return
+    template_data = json.loads(template_path.read_text(encoding="utf-8"))
+    if not target_path.exists():
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(
+            json.dumps(template_data, indent=2) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+        print(f"Created {target_path} (workflow settings)")
+        return
+    target_data = json.loads(target_path.read_text(encoding="utf-8"))
+    added_perms = []
+    added_hooks = []
+    # permissions.allow: union, preserve target order, append new ones.
+    template_allow = (template_data.get("permissions") or {}).get("allow") or []
+    target_perms = target_data.setdefault("permissions", {})
+    target_allow = target_perms.setdefault("allow", [])
+    target_allow_set = set(target_allow)
+    for perm in template_allow:
+        if perm not in target_allow_set:
+            target_allow.append(perm)
+            target_allow_set.add(perm)
+            added_perms.append(perm)
+    # hooks.<event>: per-matcher merge, per-command dedup.
+    template_hooks = template_data.get("hooks") or {}
+    target_hooks = target_data.setdefault("hooks", {})
+    for event, template_entries in template_hooks.items():
+        target_entries = target_hooks.setdefault(event, [])
+        for template_entry in template_entries:
+            matcher = template_entry.get("matcher", "")
+            target_entry = next(
+                (te for te in target_entries if te.get("matcher") == matcher),
+                None,
+            )
+            if target_entry is None:
+                target_entry = {"matcher": matcher, "hooks": []}
+                target_entries.append(target_entry)
+            existing_cmds = {h.get("command") for h in target_entry.get("hooks") or []}
+            for template_hook in template_entry.get("hooks") or []:
+                cmd = template_hook.get("command")
+                if cmd and cmd not in existing_cmds:
+                    target_entry.setdefault("hooks", []).append(template_hook)
+                    existing_cmds.add(cmd)
+                    added_hooks.append(f"{event}/{matcher}")
+    if not (added_perms or added_hooks):
+        print(f"Kept {target_path} (workflow settings already present)")
+        return
+    target_path.write_text(
+        json.dumps(target_data, indent=2) + "\n",
+        encoding="utf-8", newline="\n",
+    )
+    parts = []
+    if added_perms:
+        parts.append(f"+{len(added_perms)} permission(s)")
+    if added_hooks:
+        parts.append(f"+{len(added_hooks)} hook(s)")
+    print(f"Merged {target_path} ({', '.join(parts)})")
+
+merge_claude_settings(
+    script_dir / ".claude/settings.json",
+    target_dir / ".claude/settings.json",
 )
 PY
 

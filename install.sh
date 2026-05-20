@@ -131,16 +131,6 @@ if [ -f "$TARGET_DIR/.ai/dashboard/app.js" ]; then
   echo "Removed stale $TARGET_DIR/.ai/dashboard/app.js (now split into app/*.js)"
 fi
 
-# Project-level Claude Code settings (hook that feeds events.jsonl).
-# Only create if missing — never overwrite a user's existing settings.json.
-SETTINGS_DST="$TARGET_DIR/.claude/settings.json"
-if [ ! -f "$SETTINGS_DST" ]; then
-  cp "$SCRIPT_DIR/.claude/settings.json" "$SETTINGS_DST"
-  echo "Created $SETTINGS_DST (registers dashboard event hook)"
-else
-  echo "Kept existing $SETTINGS_DST — merge the dashboard hook manually if you want event logging"
-fi
-
 PYTHON_CMD=""
 if command -v python3 &>/dev/null; then
   PYTHON_CMD="python3"
@@ -153,6 +143,7 @@ fi
 
 $PYTHON_CMD - "$TARGET_DIR" "$SCRIPT_DIR" <<'PY'
 from pathlib import Path
+import json
 import sys
 
 target_dir = Path(sys.argv[1])
@@ -209,6 +200,73 @@ upsert_block(
     "<!-- >>> AI WORKFLOW MANAGED IMPORT >>>",
     "<!-- <<< AI WORKFLOW MANAGED IMPORT <<< -->",
     claude_import_block,
+)
+
+def merge_claude_settings(template_path, target_path):
+    # .claude/settings.json carries permissions + hooks the workflow needs to
+    # orchestrate (dashboard event hook, codex exec permission, etc.). Merge
+    # required entries in without overwriting user-added permissions or hooks.
+    # Create the file if missing.
+    if not template_path.exists():
+        return
+    template_data = json.loads(template_path.read_text(encoding="utf-8"))
+    if not target_path.exists():
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(
+            json.dumps(template_data, indent=2) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+        print(f"Created {target_path} (workflow settings)")
+        return
+    target_data = json.loads(target_path.read_text(encoding="utf-8"))
+    added_perms = []
+    added_hooks = []
+    template_allow = (template_data.get("permissions") or {}).get("allow") or []
+    target_perms = target_data.setdefault("permissions", {})
+    target_allow = target_perms.setdefault("allow", [])
+    target_allow_set = set(target_allow)
+    for perm in template_allow:
+        if perm not in target_allow_set:
+            target_allow.append(perm)
+            target_allow_set.add(perm)
+            added_perms.append(perm)
+    template_hooks = template_data.get("hooks") or {}
+    target_hooks = target_data.setdefault("hooks", {})
+    for event, template_entries in template_hooks.items():
+        target_entries = target_hooks.setdefault(event, [])
+        for template_entry in template_entries:
+            matcher = template_entry.get("matcher", "")
+            target_entry = next(
+                (te for te in target_entries if te.get("matcher") == matcher),
+                None,
+            )
+            if target_entry is None:
+                target_entry = {"matcher": matcher, "hooks": []}
+                target_entries.append(target_entry)
+            existing_cmds = {h.get("command") for h in target_entry.get("hooks") or []}
+            for template_hook in template_entry.get("hooks") or []:
+                cmd = template_hook.get("command")
+                if cmd and cmd not in existing_cmds:
+                    target_entry.setdefault("hooks", []).append(template_hook)
+                    existing_cmds.add(cmd)
+                    added_hooks.append(f"{event}/{matcher}")
+    if not (added_perms or added_hooks):
+        print(f"Kept {target_path} (workflow settings already present)")
+        return
+    target_path.write_text(
+        json.dumps(target_data, indent=2) + "\n",
+        encoding="utf-8", newline="\n",
+    )
+    parts = []
+    if added_perms:
+        parts.append(f"+{len(added_perms)} permission(s)")
+    if added_hooks:
+        parts.append(f"+{len(added_hooks)} hook(s)")
+    print(f"Merged {target_path} ({', '.join(parts)})")
+
+merge_claude_settings(
+    script_dir / ".claude/settings.json",
+    target_dir / ".claude/settings.json",
 )
 PY
 
