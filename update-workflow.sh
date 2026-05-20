@@ -130,6 +130,12 @@ copy_if_different "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/wo
 copy_if_different "$SCRIPT_DIR/.ai/workflow/workflow.md" "$TARGET_DIR/.ai/workflow/workflow.md"
 copy_if_different "$SCRIPT_DIR/.ai/workflow/dispatch.md" "$TARGET_DIR/.ai/workflow/dispatch.md"
 
+# Pre-rename leftover from older installs (claude-workflow.md -> workflow.md).
+if [ -f "$TARGET_DIR/.ai/workflow/claude-workflow.md" ]; then
+  rm -f "$TARGET_DIR/.ai/workflow/claude-workflow.md"
+  echo "Removed stale $TARGET_DIR/.ai/workflow/claude-workflow.md (renamed to workflow.md)"
+fi
+
 # Dashboard tool — keep in sync
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/serve.py" "$TARGET_DIR/.ai/dashboard/serve.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/index.html" "$TARGET_DIR/.ai/dashboard/index.html"
@@ -182,14 +188,14 @@ import sys
 target_dir = Path(sys.argv[1])
 script_dir = Path(sys.argv[2])
 
-agents_block = (script_dir / ".ai/workflow/agents-block.md").read_text()
+agents_block = (script_dir / ".ai/workflow/agents-block.md").read_text(encoding="utf-8")
 claude_import_block = """<!-- >>> AI WORKFLOW MANAGED IMPORT >>> -->
 @.ai/workflow/workflow.md
 <!-- <<< AI WORKFLOW MANAGED IMPORT <<< -->"""
 
 def upsert_block(path: Path, start_marker: str, end_marker: str, block_text: str) -> None:
     if path.exists():
-        content = path.read_text()
+        content = path.read_text(encoding="utf-8")
         if start_marker in content and end_marker in content:
             before = content.split(start_marker)[0].rstrip()
             after = content.split(end_marker, 1)[1].lstrip()
@@ -205,8 +211,9 @@ def upsert_block(path: Path, start_marker: str, end_marker: str, block_text: str
     new_content += block_text.strip() + "\n"
     if after:
         new_content += "\n" + after
+    # encoding="utf-8" so we don't crash on PT/UTF-8 content on Windows (default cp1252).
     # newline="\n" so the file stays LF on Windows (matches .gitattributes eol=lf).
-    path.write_text(new_content, newline="\n")
+    path.write_text(new_content, encoding="utf-8", newline="\n")
 
 agents_path = target_dir / "AGENTS.md"
 upsert_block(
