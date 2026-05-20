@@ -448,14 +448,15 @@
         payload.reasoning_effort = $("#pe-reff")?.value || "";
       }
       if (!model) {
-        alert("model is required");
+        setMsg("#models-phase-msg", "err", "Model is required");
         return;
       }
       try {
         await postJson("/api/models/phase", payload);
+        setMsg("#models-phase-msg", "ok", "Saved " + phase, 4000);
         await loadAll();
       } catch (e) {
-        alert("save failed: " + e.message);
+        setMsg("#models-phase-msg", "err", "Save failed: " + e.message);
       }
     }
 

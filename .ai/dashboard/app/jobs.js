@@ -9,8 +9,10 @@
         _eventsCache = [];
         if (_eventsState && _eventsState.expanded) _eventsState.expanded.clear();
         await loadEvents();
+        setMsg("#events-clear", "ok", "Events log cleared", 4000);
       } catch (e) {
         $("#events-meta").textContent = "clear failed: " + e.message;
+        setMsg("#events-clear", "err", "Clear failed: " + e.message);
       }
     }
 
@@ -106,6 +108,7 @@
         if (_selectedJobId && runTabActive) loadJobDetail();
       } catch (e) {
         $("#jobs-list").innerHTML = `<div class="err">${escape(e.message)}</div>`;
+        setMsg("#jobs-load", "err", "Jobs load failed: " + e.message);
       }
     }
 
@@ -412,6 +415,7 @@
       } catch (err) {
         meta.textContent = "error";
         chart.innerHTML = `<div class="err">${escape(err.message)}</div>`;
+        setMsg("#timeline-load", "err", "Timeline load failed: " + err.message);
       }
     }
 
@@ -590,6 +594,7 @@
         renderEvents();
       } catch (err) {
         body.innerHTML = `<div class="err">${escape(err.message)}</div>`;
+        setMsg("#events-load", "err", "Events load failed: " + err.message);
       }
     }
 

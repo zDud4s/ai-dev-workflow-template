@@ -368,6 +368,7 @@
               : "");
       } catch (e) {
         $("#proposal-msg").textContent = "load failed: " + e.message;
+        setMsg("#proposal-load", "err", "Proposal load failed: " + e.message);
       }
     }
 

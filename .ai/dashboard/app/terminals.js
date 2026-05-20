@@ -379,6 +379,7 @@
             err.style.color = "var(--bad)";
             err.textContent = `[resume failed: ${e.message}]`;
             t.body.appendChild(err);
+            setMsg("#term-msg", "err", "Resume failed: " + e.message, 4000);
           } finally {
             t.sendBtn.disabled = false;
           }
@@ -1519,6 +1520,7 @@
           note.style.color = "var(--bad)";
           note.textContent = "[stop failed: " + err.message + "]";
           t.body.appendChild(note);
+          setMsg("#term-msg", "err", "Stop failed: " + err.message, 4000);
         }
       });
       pane.querySelector(".pin-btn")?.addEventListener("click", (e) => {
@@ -1743,6 +1745,7 @@
           err.style.color = "var(--bad)";
           err.textContent = `[fork failed: ${e.message}]`;
           t.body.appendChild(err);
+          setMsg("#term-msg", "err", "Fork failed: " + e.message, 4000);
           // Restore the composer so the operator can retry.
           t.input.value = text;
           t.input.disabled = false;
