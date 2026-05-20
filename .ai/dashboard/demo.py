@@ -148,17 +148,19 @@ def load_serve():
 def main() -> None:
     serve = load_serve()
 
-    # Start the dashboard server on PORT (fall back if busy).
+    # Start the dashboard server on PORT, fall back across a wider window if
+    # busy, and finally let the OS pick an ephemeral port (bind to 0).
     httpd = None
+    bound: int | None = None
     last_err: OSError | None = None
-    for candidate in (PORT, PORT + 1, PORT + 2, PORT + 3, PORT + 4):
+    for candidate in [PORT + i for i in range(20)] + [0]:
         try:
             httpd = socketserver.ThreadingTCPServer(("127.0.0.1", candidate), serve.Handler)
-            bound = candidate
+            bound = httpd.server_address[1]
             break
         except OSError as e:
             last_err = e
-    if not httpd:
+    if not httpd or bound is None:
         raise SystemExit(f"could not bind: {last_err}")
 
     threading.Thread(target=httpd.serve_forever, daemon=True, name="demo-http").start()

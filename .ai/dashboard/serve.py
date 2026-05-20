@@ -4791,23 +4791,33 @@ def main() -> None:
     pruned = _prune_old_logs(JOBS_DIR, max_age_days=7, keep_newest=50)
     if pruned:
         print(f"[dashboard] pruned {pruned} old .log file(s) from {JOBS_DIR}")
+    # Dynamic port selection: prefer the configured PORT, fall back across a
+    # window of consecutive ports if it's busy, and finally let the OS pick an
+    # ephemeral port (bind to 0) so the dashboard always launches.
+    httpd = None
+    bound: int | None = None
     last_err: OSError | None = None
-    for candidate in (PORT, PORT + 1, PORT + 2, PORT + 3):
+    candidates = [PORT + i for i in range(20)] + [0]
+    for candidate in candidates:
         try:
             httpd = socketserver.ThreadingTCPServer(("127.0.0.1", candidate), Handler)
+            bound = httpd.server_address[1]
+            break
         except OSError as e:
             last_err = e
             continue
-        with httpd:
-            url = f"http://localhost:{candidate}/.ai/dashboard/"
-            print(f"AI workflow dashboard: {url}")
-            print("Press Ctrl+C to stop.")
-            try:
-                httpd.serve_forever()
-            except KeyboardInterrupt:
-                print("\nstopped.")
-        return
-    raise SystemExit(f"could not bind to any port starting at {PORT}: {last_err}")
+    if httpd is None or bound is None:
+        raise SystemExit(f"could not bind to any port starting at {PORT}: {last_err}")
+    with httpd:
+        url = f"http://localhost:{bound}/.ai/dashboard/"
+        if bound != PORT:
+            print(f"[dashboard] configured port {PORT} unavailable; using {bound}")
+        print(f"AI workflow dashboard: {url}")
+        print("Press Ctrl+C to stop.")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nstopped.")
 
 
 if __name__ == "__main__":
