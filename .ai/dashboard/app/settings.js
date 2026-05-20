@@ -243,9 +243,12 @@
     }
   }
 
-  // ---------- Repository updates ----------
-  function setGitStatus(text, tone) {
-    var el = $q("#git-status");
+  // ---------- Workflow updates ----------
+  // Wired against POST /api/workflow/{check,update}. Both endpoints clone the
+  // template upstream into a temp dir server-side; the JS just orchestrates
+  // status text, the output panel, and the restart-required banner.
+  function setWorkflowStatus(text, tone) {
+    var el = $q("#workflow-status");
     if (!el) return;
     el.textContent = text;
     el.style.color = tone === "good" ? "var(--good)"
@@ -253,27 +256,31 @@
       : tone === "warn" ? "var(--warn)"
       : "var(--text-dim)";
   }
-  function setGitOutput(text) {
-    var el = $q("#git-output");
+  function setWorkflowOutput(text) {
+    var el = $q("#workflow-output");
     if (!el) return;
     if (!text) { el.style.display = "none"; el.textContent = ""; return; }
     el.style.display = "block";
     el.textContent = text;
   }
-  function setGitBusy(busy) {
-    var c = $q("#btn-git-check");
-    var p = $q("#btn-git-pull");
+  function setWorkflowBusy(busy) {
+    var c = $q("#btn-workflow-check");
+    var p = $q("#btn-workflow-update");
     if (c) c.disabled = busy;
     if (p && busy) p.disabled = true;
+  }
+  function setRestartWarning(visible) {
+    var el = $q("#workflow-restart-warning");
+    if (el) el.style.display = visible ? "block" : "none";
   }
   function escHtml(s) {
     return String(s == null ? "" : s).replace(/[<>&]/g, function (ch) {
       return { "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch];
     });
   }
-  function showGitLog(commits) {
-    var wrap = $q("#git-log-wrap");
-    var box = $q("#git-log");
+  function showWorkflowLog(commits) {
+    var wrap = $q("#workflow-log-wrap");
+    var box = $q("#workflow-log");
     if (!wrap || !box) return;
     if (!commits || !commits.length) { wrap.style.display = "none"; box.innerHTML = ""; return; }
     box.innerHTML = commits.map(function (c) {
@@ -283,53 +290,55 @@
     wrap.style.display = "block";
   }
 
-  async function gitCheck() {
-    setGitBusy(true);
-    setGitStatus("Checking for updates…");
-    setGitOutput("");
-    showGitLog([]);
+  async function workflowCheck() {
+    setWorkflowBusy(true);
+    setWorkflowStatus("Cloning template upstream…");
+    setWorkflowOutput("");
+    setRestartWarning(false);
+    showWorkflowLog([]);
     try {
-      var data = await getJson("/api/git/check");
-      if (data.error) {
-        setGitStatus(data.message || data.error, "bad");
-        $q("#btn-git-pull").disabled = true;
+      var data = await postJson("/api/workflow/check", {});
+      if (data.success === false) {
+        setWorkflowStatus(data.message || data.error || "Check failed", "bad");
+        if (data.output) setWorkflowOutput(data.output);
+        $q("#btn-workflow-update").disabled = true;
         return;
       }
-      var line = "Branch " + (data.branch || "?") + " · upstream " + (data.upstream || "?")
-        + " · ahead " + (data.ahead || 0) + ", behind " + (data.behind || 0);
-      setGitStatus(line + " — " + (data.message || ""), data.has_updates ? "warn" : "good");
-      $q("#btn-git-pull").disabled = !data.has_updates;
-      if (data.has_updates) {
-        try {
-          var log = await getJson("/api/git/log");
-          showGitLog(log.commits || []);
-        } catch (_) { /* swallow */ }
-      }
+      var shortUp = (data.upstream_sha || "").substring(0, 7) || "?";
+      var shortCur = data.current_sha ? data.current_sha.substring(0, 7) : "none";
+      var line = "Upstream " + shortUp + " · installed " + shortCur;
+      setWorkflowStatus(line + " — " + (data.message || ""),
+                        data.has_updates ? "warn" : "good");
+      $q("#btn-workflow-update").disabled = !data.has_updates && data.current_sha != null;
+      showWorkflowLog(data.commits || []);
     } catch (e) {
-      setGitStatus("Network error: " + e.message, "bad");
+      setWorkflowStatus("Network error: " + e.message, "bad");
     } finally {
-      setGitBusy(false);
+      setWorkflowBusy(false);
     }
   }
 
-  async function gitPull() {
-    setGitBusy(true);
-    setGitStatus("Applying update…");
-    setGitOutput("");
+  async function workflowUpdate() {
+    setWorkflowBusy(true);
+    setWorkflowStatus("Applying update — cloning template and running update-workflow.sh…");
+    setWorkflowOutput("");
+    setRestartWarning(false);
     try {
-      var data = await postJson("/api/git/pull", {});
-      setGitStatus(data.message || (data.success ? "Pull OK" : "Pull failed"),
-                   data.success ? "good" : "bad");
-      if (data.output) setGitOutput(data.output);
+      var data = await postJson("/api/workflow/update", {});
+      setWorkflowStatus(data.message || (data.success ? "Workflow updated." : "Update failed."),
+                        data.success ? "good" : "bad");
+      if (data.output) setWorkflowOutput(data.output);
       if (data.success) {
-        $q("#btn-git-pull").disabled = true;
-        showGitLog([]);
+        showWorkflowLog([]);
+        if (data.restart_dashboard) setRestartWarning(true);
       }
     } catch (e) {
-      setGitStatus("Network error: " + e.message, "bad");
+      setWorkflowStatus("Network error: " + e.message, "bad");
     } finally {
-      var c = $q("#btn-git-check");
+      var c = $q("#btn-workflow-check");
+      var p = $q("#btn-workflow-update");
       if (c) c.disabled = false;
+      if (p) p.disabled = false;
     }
   }
 
@@ -364,8 +373,8 @@
   function initSettings() {
     bindOnce("btn-imp-save",        "click", saveImprover);
     bindOnce("btn-as-save",         "click", saveAutoSelect);
-    bindOnce("btn-git-check",       "click", gitCheck);
-    bindOnce("btn-git-pull",        "click", gitPull);
+    bindOnce("btn-workflow-check",  "click", workflowCheck);
+    bindOnce("btn-workflow-update", "click", workflowUpdate);
     bindOnce("btn-settings-reload", "click", loadAllSettings);
     if (!loadedOnce) loadAllSettings();
   }

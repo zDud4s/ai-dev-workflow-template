@@ -555,22 +555,25 @@
       </section>
 
       <section class="block">
-        <h2>Repository updates</h2>
+        <h2>Workflow updates</h2>
         <p class="settings-hint">
-          Checks for new commits on the remote and applies them via <code>git pull --ff-only</code>.
+          Pulls the latest workflow files from the template upstream and applies them to this project (clones the template fresh into a temp directory, then runs <code>update-workflow.sh</code>). This does <strong>not</strong> touch the host project's git history.
         </p>
         <div class="form-actions" style="margin-top:0">
-          <button class="btn" id="btn-git-check">Check for updates</button>
-          <button class="btn secondary" id="btn-git-pull" disabled>Apply update</button>
+          <button class="btn" id="btn-workflow-check">Check for updates</button>
+          <button class="btn secondary" id="btn-workflow-update" disabled>Apply update</button>
         </div>
-        <div id="git-status" class="status-panel" aria-live="polite" style="margin-top:var(--s-3);padding:var(--s-3);border:1px solid var(--border);background:var(--bg-inset);color:var(--text-dim);font-size:13px">
-          Click <strong>Check for updates</strong> to query the remote.
+        <div id="workflow-status" class="status-panel" aria-live="polite" style="margin-top:var(--s-3);padding:var(--s-3);border:1px solid var(--border);background:var(--bg-inset);color:var(--text-dim);font-size:13px">
+          Click <strong>Check for updates</strong> to query the template upstream.
         </div>
-        <div id="git-log-wrap" style="margin-top:var(--s-3);display:none">
-          <div class="form-msg" style="margin-bottom:var(--s-2)">Pending commits — newest first · max 20</div>
-          <div id="git-log" class="git-log"></div>
+        <div id="workflow-restart-warning" role="status" style="margin-top:var(--s-3);padding:var(--s-3);border:1px solid var(--warn);background:var(--bg-inset);color:var(--warn);font-size:13px;display:none">
+          <strong>Restart required:</strong> <code>.ai/dashboard/</code> was updated. Stop this server (Ctrl+C) and re-run <code>python .ai/dashboard/serve.py</code> for the new version to take effect.
         </div>
-        <pre id="git-output" style="margin-top:var(--s-2);padding:var(--s-2);background:var(--bg-inset);border:1px solid var(--border);font-family:var(--ff-mono);font-size:12px;white-space:pre-wrap;display:none;max-height:300px;overflow:auto;color:var(--text-dim)"></pre>
+        <div id="workflow-log-wrap" style="margin-top:var(--s-3);display:none">
+          <div class="form-msg" style="margin-bottom:var(--s-2)">Recent template commits — newest first · max 20</div>
+          <div id="workflow-log" class="git-log"></div>
+        </div>
+        <pre id="workflow-output" style="margin-top:var(--s-2);padding:var(--s-2);background:var(--bg-inset);border:1px solid var(--border);font-family:var(--ff-mono);font-size:12px;white-space:pre-wrap;display:none;max-height:300px;overflow:auto;color:var(--text-dim)"></pre>
       </section>
     </section>
   </main>

@@ -37,6 +37,7 @@ import shutil
 import socketserver
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -47,6 +48,20 @@ from pathlib import Path
 PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 _SERVER_STARTED_AT = time.time()
+# Source of truth for the workflow template. /api/workflow/check and
+# /api/workflow/update clone this fresh on each call so a one-click update from
+# the dashboard always reflects the latest upstream version. Override via
+# AI_WORKFLOW_TEMPLATE_URL (useful for forks or for testing against a local
+# bare repo via file:// URL).
+WORKFLOW_TEMPLATE_URL = os.environ.get(
+    "AI_WORKFLOW_TEMPLATE_URL",
+    "https://github.com/zDud4s/ai-dev-workflow-template.git",
+)
+# One-line file with the upstream sha that produced the currently-installed
+# workflow files. Written by /api/workflow/update after a successful run; read
+# by /api/workflow/check to compute "ahead/behind in commits". Absent on
+# projects that haven't been updated through the dashboard yet.
+WORKFLOW_VERSION_FILE = ROOT / ".ai" / "workflow" / ".version"
 JOBS_DIR = ROOT / ".ai" / "dashboard" / "jobs"
 # Append-only ledger of job snapshots — every status transition adds one
 # JSON line so the dashboard can rebuild the JOBS dict after a server
@@ -2930,12 +2945,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/auto-select":
             self._handle_auto_select(parsed)
             return
-        if parsed.path == "/api/git/check":
-            self._handle_git_check()
-            return
-        if parsed.path == "/api/git/log":
-            self._handle_git_log()
-            return
         if parsed.path == "/api/system/info":
             self._handle_system_info()
             return
@@ -3010,8 +3019,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_phase_update(body)
         elif parsed.path == "/api/jobs":
             self._handle_jobs_create(body)
-        elif parsed.path == "/api/git/pull":
-            self._handle_git_pull()
+        elif parsed.path == "/api/workflow/check":
+            self._handle_workflow_check()
+        elif parsed.path == "/api/workflow/update":
+            self._handle_workflow_update()
         elif parsed.path == "/api/settings/improver":
             self._handle_improver_update(body)
         elif parsed.path == "/api/settings/auto_select":
@@ -3348,13 +3359,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             min_samples = 3
         self._json(200, _load_auto_select_ranking(min_samples=min_samples))
 
-    # ----- settings (git update) helpers -----
+    # ----- settings (workflow update) helpers -----
+    #
+    # /api/workflow/{check,update} clone the template upstream into a temporary
+    # directory on every call and run update-workflow.sh from there. This is
+    # deliberately different from the old /api/git/* endpoints (which did a
+    # plain `git pull` on the host project repo): in a project that just
+    # *consumes* the workflow, the host repo's history has nothing to do with
+    # workflow updates, so a pull there was either a no-op or — worse — pulled
+    # unrelated project commits.
 
-    def _run_git(self, args: list[str], timeout: int = 30) -> tuple[int, str, str]:
+    def _run_subprocess(
+        self,
+        args: list[str],
+        cwd: str | None = None,
+        timeout: int = 60,
+    ) -> tuple[int, str, str]:
         try:
             proc = subprocess.run(
-                ["git", *args],
-                cwd=str(ROOT),
+                args,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -3363,81 +3387,222 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             )
             return proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired:
-            return -1, "", f"git {' '.join(args)} timed out after {timeout}s"
+            return -1, "", f"{args[0]} timed out after {timeout}s"
         except FileNotFoundError:
-            return -2, "", "git executable not found on PATH"
+            return -2, "", f"{args[0]} not found on PATH"
 
-    def _handle_git_check(self) -> None:
-        rc, out, err = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+    @staticmethod
+    def _find_bash() -> str | None:
+        # On Windows, prefer Git-for-Windows bash. The System32\bash.exe shipped
+        # with WSL won't see Windows-style C:\... paths the way update-workflow.sh
+        # expects.
+        if sys.platform == "win32":
+            for guess in (
+                r"C:\Program Files\Git\bin\bash.exe",
+                r"C:\Program Files\Git\usr\bin\bash.exe",
+                r"C:\Program Files (x86)\Git\bin\bash.exe",
+            ):
+                if os.path.isfile(guess):
+                    return guess
+            candidate = shutil.which("bash")
+            if candidate and "system32" not in candidate.lower():
+                return candidate
+            return None
+        return shutil.which("bash")
+
+    def _is_template_repo(self) -> bool:
+        # True when the dashboard is being served from a checkout of the
+        # template itself (e.g. during workflow development), in which case a
+        # one-click "update" would clobber in-progress local edits with the
+        # upstream copy. Compared case-insensitively and ignoring a trailing
+        # ".git" so https/ssh/path variants all collapse to the same key.
+        rc, out, _ = self._run_subprocess(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=str(ROOT),
+            timeout=5,
+        )
         if rc != 0:
-            self._json(200, {
-                "error": "not_a_git_repo",
-                "message": (err or out or "git rev-parse failed").strip(),
-            })
-            return
-        branch = out.strip()
+            return False
+        url = out.strip().lower().removesuffix(".git")
+        template = WORKFLOW_TEMPLATE_URL.lower().removesuffix(".git")
+        return bool(url) and url == template
 
-        rc_f, out_f, err_f = self._run_git(["fetch", "--quiet"])
-        if rc_f != 0:
-            self._json(200, {
-                "branch": branch,
-                "error": "fetch_failed",
-                "message": (err_f or out_f or "git fetch returned non-zero").strip(),
-            })
-            return
-
-        rc_u, out_u, err_u = self._run_git(
-            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
+    def _clone_template(self, dest: str, depth: int = 1) -> tuple[int, str, str]:
+        return self._run_subprocess(
+            ["git", "clone", f"--depth={max(1, depth)}", WORKFLOW_TEMPLATE_URL, dest],
+            timeout=120,
         )
-        if rc_u != 0:
-            self._json(200, {
-                "branch": branch,
-                "error": "no_upstream",
-                "message": (err_u or "branch has no upstream configured").strip(),
-            })
-            return
-        upstream = out_u.strip()
 
-        rc_c, out_c, _err_c = self._run_git(
-            ["rev-list", "--left-right", "--count", "HEAD...@{u}"]
-        )
-        ahead, behind = 0, 0
-        if rc_c == 0:
-            parts = out_c.strip().split()
-            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                ahead, behind = int(parts[0]), int(parts[1])
+    @staticmethod
+    def _read_workflow_version() -> str | None:
+        try:
+            return WORKFLOW_VERSION_FILE.read_text(encoding="utf-8").strip() or None
+        except (FileNotFoundError, OSError):
+            return None
 
-        if behind > 0:
-            message = f"{behind} new commit(s) on {upstream}."
-        elif ahead > 0:
-            message = f"Branch is {ahead} commit(s) ahead of {upstream}."
-        else:
-            message = "Branch is up to date with upstream."
+    def _handle_workflow_check(self) -> None:
+        tmp_parent = tempfile.mkdtemp(prefix="aiwt-check-")
+        clone_dir = os.path.join(tmp_parent, "template")
+        try:
+            # Depth 20 so the recent-commits list has context even when the
+            # project is far behind. Cheap for a small template repo.
+            rc, _out, err = self._clone_template(clone_dir, depth=20)
+            if rc != 0:
+                self._json(200, {
+                    "success": False,
+                    "error": "clone_failed",
+                    "message": "Could not clone the workflow template upstream.",
+                    "output": err.strip(),
+                })
+                return
 
-        self._json(200, {
-            "branch": branch,
-            "upstream": upstream,
-            "ahead": ahead,
-            "behind": behind,
-            "has_updates": behind > 0,
-            "message": message,
-        })
+            rc_sha, sha_out, _ = self._run_subprocess(
+                ["git", "-C", clone_dir, "rev-parse", "HEAD"], timeout=10
+            )
+            upstream_sha = sha_out.strip() if rc_sha == 0 else ""
 
-    def _handle_git_pull(self) -> None:
-        rc, out, err = self._run_git(["pull", "--ff-only"], timeout=60)
-        output = (out + (("\n" + err) if err else "")).strip()
-        if rc == 0:
+            rc_log, log_out, _ = self._run_subprocess(
+                ["git", "-C", clone_dir, "log", "--oneline", "--no-decorate", "-n", "20"],
+                timeout=10,
+            )
+            commits = []
+            if rc_log == 0:
+                for line in log_out.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(" ", 1)
+                    commits.append({
+                        "sha": parts[0],
+                        "subject": parts[1] if len(parts) > 1 else "",
+                    })
+
+            current_sha = self._read_workflow_version()
+            has_updates = bool(upstream_sha) and current_sha != upstream_sha
+
+            if current_sha is None:
+                message = (
+                    "No installed workflow version recorded yet — "
+                    "apply update to record the current upstream sha."
+                )
+            elif has_updates:
+                message = "New workflow version available upstream."
+            else:
+                message = "Workflow is up to date with upstream."
+
             self._json(200, {
                 "success": True,
-                "output": output,
-                "message": "Update applied successfully.",
+                "upstream_sha": upstream_sha,
+                "current_sha": current_sha,
+                "has_updates": has_updates,
+                "template_url": WORKFLOW_TEMPLATE_URL,
+                "commits": commits,
+                "message": message,
             })
-        else:
+        finally:
+            shutil.rmtree(tmp_parent, ignore_errors=True)
+
+    def _handle_workflow_update(self) -> None:
+        if self._is_template_repo():
             self._json(200, {
                 "success": False,
-                "output": output,
-                "message": "Could not apply update (pull failed).",
+                "error": "is_template_repo",
+                "message": (
+                    "Refusing to self-update: this dashboard is being served "
+                    "from a checkout of the template itself. Use `git pull` "
+                    "on this checkout, then run "
+                    "`bash update-workflow.sh <other-project>` from here."
+                ),
+                "output": "",
             })
+            return
+
+        bash_path = self._find_bash()
+        if not bash_path:
+            self._json(200, {
+                "success": False,
+                "error": "bash_not_found",
+                "message": (
+                    "bash not found. Install Git for Windows (which bundles "
+                    "bash) or ensure a POSIX bash is on PATH."
+                ),
+                "output": "",
+            })
+            return
+
+        tmp_parent = tempfile.mkdtemp(prefix="aiwt-update-")
+        clone_dir = os.path.join(tmp_parent, "template")
+        try:
+            rc, _out, err = self._clone_template(clone_dir)
+            if rc != 0:
+                self._json(200, {
+                    "success": False,
+                    "error": "clone_failed",
+                    "message": "Could not clone the workflow template upstream.",
+                    "output": err.strip(),
+                })
+                return
+
+            rc_sha, sha_out, _ = self._run_subprocess(
+                ["git", "-C", clone_dir, "rev-parse", "HEAD"], timeout=10
+            )
+            upstream_sha = sha_out.strip() if rc_sha == 0 else ""
+
+            update_script = os.path.join(clone_dir, "update-workflow.sh")
+            if not os.path.isfile(update_script):
+                self._json(200, {
+                    "success": False,
+                    "error": "missing_script",
+                    "message": "Upstream checkout has no update-workflow.sh.",
+                    "output": "",
+                })
+                return
+
+            rc_u, out_u, err_u = self._run_subprocess(
+                [bash_path, update_script, str(ROOT)],
+                timeout=180,
+            )
+            output = out_u
+            if err_u:
+                output = (output + "\n" + err_u).strip() if output else err_u.strip()
+            output = output.strip()
+
+            if rc_u != 0:
+                self._json(200, {
+                    "success": False,
+                    "error": "update_script_failed",
+                    "message": "update-workflow.sh exited with a non-zero status.",
+                    "output": output,
+                    "exit_code": rc_u,
+                })
+                return
+
+            # update-workflow.sh prints "Updated <path>" / "Created <path>" per
+            # file it touched. Anything under .ai/dashboard/ means the running
+            # serve.py / static assets just got overwritten — the user needs to
+            # restart so the new code takes effect.
+            restart_needed = False
+            for line in output.splitlines():
+                if line.startswith(("Updated ", "Created ")) and "/.ai/dashboard/" in line.replace("\\", "/"):
+                    restart_needed = True
+                    break
+
+            if upstream_sha:
+                try:
+                    WORKFLOW_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    _write_text_lf(WORKFLOW_VERSION_FILE, upstream_sha + "\n")
+                except OSError as e:
+                    output = (output + f"\n[warn] could not write {WORKFLOW_VERSION_FILE}: {e}").strip()
+
+            self._json(200, {
+                "success": True,
+                "message": "Workflow updated.",
+                "output": output,
+                "upstream_sha": upstream_sha,
+                "restart_dashboard": restart_needed,
+            })
+        finally:
+            shutil.rmtree(tmp_parent, ignore_errors=True)
 
     def _handle_system_info(self) -> None:
         try:
@@ -3461,26 +3626,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "events_file": str(EVENTS_FILE),
             "jobs_dir": str(JOBS_DIR),
         })
-
-    def _handle_git_log(self) -> None:
-        """Pending commits between local HEAD and upstream (what `git pull` would apply)."""
-        rc, out, _err = self._run_git(
-            ["log", "HEAD..@{u}", "--oneline", "--no-decorate", "-n", "20"]
-        )
-        if rc != 0:
-            self._json(200, {"commits": [], "error": "could not list pending commits"})
-            return
-        commits = []
-        for line in out.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(" ", 1)
-            commits.append({
-                "sha": parts[0],
-                "subject": parts[1] if len(parts) > 1 else "",
-            })
-        self._json(200, {"commits": commits})
 
     # ----- workflow settings (improver / auto_select / per-phase tuning) -----
 
