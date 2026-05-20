@@ -22,6 +22,7 @@
         $("#count-skills").textContent = "!";
         const grid = $("#skills-grid");
         if (grid) grid.innerHTML = `<div class="err">${escape(e.message)}</div>`;
+        setMsg("#skills-load", "err", "Skills load failed: " + e.message);
       }
     }
 
@@ -273,6 +274,7 @@
         wrap.innerHTML = `<div class="err">${escape(e.message)}</div>`;
         $("#proposals-count").textContent = "!";
         block.style.display = "";
+        setMsg("#skill-proposals-load", "err", "Proposals load failed: " + e.message);
       }
     }
 
@@ -379,19 +381,22 @@
       $("#proposal-accept").disabled = true;
       $("#proposal-reject").disabled = true;
       $("#proposal-msg").textContent = decision + "ing…";
+      const propId = _currentProposalId;
       try {
         const r = await fetch(
-          `/api/skills/proposals/${encodeURIComponent(_currentProposalId)}/${decision}`,
+          `/api/skills/proposals/${encodeURIComponent(propId)}/${decision}`,
           { method: "POST" }
         );
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
         $("#proposal-msg").textContent = data.note || (decision + "ed");
+        setMsg("#proposal-msg", "ok", `Proposal ${decision}ed`, 4000);
         await loadSkillProposals();
         await loadSkills();  // refresh metrics + summary in case a skill changed
         setTimeout(closeProposalModal, 600);
       } catch (e) {
         $("#proposal-msg").textContent = "failed: " + e.message;
+        setMsg("#proposal-msg", "err", `Proposal ${decision} failed: ${e.message}`);
         $("#proposal-accept").disabled = false;
         $("#proposal-reject").disabled = false;
       }
@@ -454,10 +459,12 @@
         if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
         await loadSkillProposals();
         btn.textContent = "drafted ✓";
+        setMsg("#skill-draft", "ok", "Draft created — review the proposal", 4000);
         if (data.id) setTimeout(() => openProposalModal(data.id), 300);
       } catch (e) {
         btn.textContent = "failed";
         btn.title = e.message;
+        setMsg("#skill-draft", "err", "Draft failed: " + e.message);
       } finally {
         _draftPending.delete(clusterId);
         setTimeout(() => { btn.disabled = false; btn.textContent = oldText; }, 2400);
@@ -475,6 +482,7 @@
       } catch (e) {
         wrap.innerHTML = `<div class="err">${escape(e.message)}</div>`;
         $("#suggestions-count").textContent = "!";
+        setMsg("#skill-suggestions-load", "err", "Suggestions load failed: " + e.message);
       }
     }
 

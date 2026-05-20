@@ -54,6 +54,7 @@
         $("#count-agents").textContent = "!";
         const grid = $("#agents-grid");
         if (grid) grid.innerHTML = `<div class="err">${escape(e.message)}</div>`;
+        setMsg("#agents-load", "err", "Agents load failed: " + e.message);
       }
     }
 

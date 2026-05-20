@@ -33,13 +33,26 @@
 
   // ---------- DOM helpers ----------
   function $q(sel) { return document.querySelector(sel); }
+  // Save / error feedback routes through the global toast stack defined in
+  // core.js so settings actions surface the same way as memory, decisions,
+  // jobs and terminals. The `settings-meta` channel is the only exception:
+  // it's a persistent toolbar timestamp ("Loaded HH:MM:SS"), not a transient
+  // notification, so it stays inline.
   function setMsg(id, text, tone) {
-    var el = $q("#" + id);
-    if (!el) return;
-    el.textContent = text || "";
-    el.classList.remove("ok", "err");
-    if (tone === "good") el.classList.add("ok");
-    else if (tone === "bad") el.classList.add("err");
+    if (id === "settings-meta") {
+      var el = $q("#" + id);
+      if (!el) return;
+      el.textContent = text || "";
+      el.classList.remove("ok", "err");
+      if (tone === "good") el.classList.add("ok");
+      else if (tone === "bad") el.classList.add("err");
+      return;
+    }
+    var kind = tone === "good" ? "ok" : tone === "bad" ? "err" : "";
+    if (typeof window.setMsg === "function") {
+      // window.setMsg bypasses the local shadowing introduced by this IIFE.
+      window.setMsg("#" + id, kind, text || "");
+    }
   }
   async function withBusy(btn, fn) {
     if (!btn) return fn();

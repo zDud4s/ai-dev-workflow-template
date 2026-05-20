@@ -164,6 +164,9 @@
       meta.textContent = "load failed";
       root.innerHTML =
         `<div class="tl-empty">Failed to load: ${escape(String(err))}.</div>`;
+      if (typeof window.setMsg === "function") {
+        window.setMsg("#auto-select-load", "err", "Auto-select load failed: " + err);
+      }
     }
   }
 

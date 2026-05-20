@@ -54,6 +54,7 @@
         $("#meta").textContent = "error";
         $("#overview-cards").innerHTML = `<div class="err">${escape(err.message)}</div>`;
         console.error(err);
+        setMsg("#dashboard-load", "err", "Dashboard load failed: " + err.message);
       }
     }
 
