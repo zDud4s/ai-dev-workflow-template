@@ -43,6 +43,10 @@ If `auto_overrides["execute"]` is set, use its `(tool, model, reasoning_effort)`
 
 The orchestrator does not make code changes itself unless `execute` resolves to `inline` per dispatch routing. Never Edit/Write a patch produced by a dispatched executor, never extract a diff from its output and apply it, never offer "let me apply it myself" — if you catch yourself doing any of these, STOP.
 
+### Hard rule: synchronous dispatch only
+
+Every dispatched phase MUST be launched synchronously — the orchestrator blocks until the subprocess exits or its timeout fires. Never launch via background flags (shell `&`, `nohup`, `Start-Process` without `-Wait`, Claude Code's `Bash` tool with `run_in_background: true`, etc.). Background mode returns immediately with metadata instead of the phase output, which breaks the Handoff check, dashboard dispatch tracker, and metrics row. If a phase needs more than the default timeout, raise `<phase>.timeout_seconds` in `.ai/models.yaml`. See dispatch.md "Synchronous-call invariant".
+
 If the executor fails (timeout, non-zero exit, environment/permission block), only allowed responses: report the exact error; suggest `.ai/models.yaml` or executor-environment fixes; dispatch rescue (`auto_overrides["rescue"]` if set, else `rescue.tool`/`rescue.model` from `.ai/models.yaml`); STOP and wait for user direction.
 
 ### Handoff check

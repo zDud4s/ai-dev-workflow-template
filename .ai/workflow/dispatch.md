@@ -86,6 +86,8 @@ The subprocess does not inherit the controller's session. Do not send bare instr
 
 Wrap each dispatcher command with a timeout. On POSIX shells: `timeout <N>s <cmd>`. On Windows / PowerShell: `Start-Process -Wait -Timeout` or a wrapper script. Timeout exit (124 on POSIX `timeout`) is treated as a freeze: dispatch rescue, report to user, stop.
 
+**Synchronous-call invariant.** Dispatcher subprocesses MUST be launched synchronously (the controller blocks on stdout/stderr until the process exits or the timeout fires). NEVER use background-launch flags — e.g. Claude Code's `Bash` tool with `run_in_background: true`, shell `&`, `nohup`, `Start-Job`, `Start-Process` without `-Wait`. Background launches return immediately with metadata (PID / output-file path) instead of the phase's actual output, breaking the Handoff check, the dashboard's dispatch tracker, and the metrics-logging step (no exit code, no duration, no stdout to parse). If a phase is genuinely too long for the default timeout, raise `<phase>.timeout_seconds` in `.ai/models.yaml`; do not work around it with background mode.
+
 **Mode: inline.** Run the phase logic in the current session. Assemble the same full prompt you would send to a subprocess, then follow it directly. If `mode: inline` is set explicitly and session model differs from `phase.model`, warn first:
 
 > "Warning: Phase `<phase>` is set to inline but session model (`<session.model>`) differs from phase model (`<phase.model>`). Running in session model."
