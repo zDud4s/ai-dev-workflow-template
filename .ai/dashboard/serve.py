@@ -574,9 +574,25 @@ def _aggregate_codex_usage(repo_root: Path, now: _dt.datetime) -> dict:
 
     if latest_rl is not None:
         ts, rl = latest_rl
+        # Each window carries its own resets_at (epoch seconds). If that
+        # moment is in the past, the window has rolled over since the
+        # snapshot was recorded and the percent is no longer current —
+        # mark it stale so the UI can show that rather than pretending the
+        # old number is live (Codex's IDE pulls live API data; we can't
+        # from local rollouts).
+        now_ts = now.timestamp()
+        def _annotate_stale(win):
+            if not isinstance(win, dict):
+                return win
+            ra = win.get("resets_at")
+            if isinstance(ra, (int, float)) and ra < now_ts:
+                w = dict(win)
+                w["stale"] = True
+                return w
+            return win
         out["rate_limits"] = {
-            "primary": rl.get("primary"),
-            "secondary": rl.get("secondary"),
+            "primary": _annotate_stale(rl.get("primary")),
+            "secondary": _annotate_stale(rl.get("secondary")),
             "plan_type": rl.get("plan_type"),
             "last_event_at": ts.isoformat(),
         }

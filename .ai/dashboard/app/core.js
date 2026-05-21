@@ -283,16 +283,27 @@
         }
 
         // ----- Codex (rate_limits from latest token_count event) -----
+        // Dashboard reads local rollout files; the IDE queries OpenAI's API
+        // live. When a window's resets_at has passed the server marks it
+        // stale — render dimmed so users don't mistake an old snapshot for
+        // current state.
         const codexRL = x.rate_limits;
+        function renderCodexWindow(win) {
+          if (!win || win.used_percent == null) return "no data";
+          const pct = formatPct(win.used_percent);
+          const reset = formatResetIn(win.resets_at);
+          if (win.stale) {
+            return `<span style="opacity:0.55" title="Window rolled over since last Codex run — value is historical. The IDE shows live API data; the dashboard only sees what's in local rollout files. Run codex once to refresh.">${pct} <span style="font-size:11px">(stale)</span></span>`;
+          }
+          return `<strong>${pct}</strong> <span style="color:var(--fg-dim);font-size:11px">${reset}</span>`;
+        }
         if (!codexRL) {
           codex5hEl.textContent = "no data";
           codexWeekEl.textContent = "no data";
           metaBits.push("run codex once to populate");
         } else {
-          const p = codexRL.primary || {};
-          const s = codexRL.secondary || {};
-          codex5hEl.innerHTML   = `<strong>${formatPct(p.used_percent)}</strong> <span style="color:var(--fg-dim);font-size:11px">${formatResetIn(p.resets_at)}</span>`;
-          codexWeekEl.innerHTML = `<strong>${formatPct(s.used_percent)}</strong> <span style="color:var(--fg-dim);font-size:11px">${formatResetIn(s.resets_at)}</span>`;
+          codex5hEl.innerHTML   = renderCodexWindow(codexRL.primary);
+          codexWeekEl.innerHTML = renderCodexWindow(codexRL.secondary);
           if (codexRL.plan_type) metaBits.push(`Codex plan: ${codexRL.plan_type}`);
           if (codexRL.last_event_at) {
             try { metaBits.push(`Codex seen ${new Date(codexRL.last_event_at).toLocaleString()}`); } catch (_) { /* ignore */ }
