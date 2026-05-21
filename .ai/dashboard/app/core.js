@@ -189,7 +189,9 @@
       const dispatchPill = dispatchMode === "auto"
         ? `<span class="pill good">${dispatchMode}</span>`
         : `<span class="pill warn">${dispatchMode}</span>`;
-      $("#overview-cards").innerHTML = `
+      const overviewCards = $("#overview-cards");
+      delete overviewCards.dataset.skeletoned;
+      overviewCards.innerHTML = `
         <div class="card"><h3>Stack</h3><div class="val">${escape(stack)}</div></div>
         <div class="card"><h3>Package managers</h3><div class="val">${escape(pms)}</div></div>
         <div class="card"><h3>Dispatch mode</h3><div class="val">${dispatchPill}</div></div>
@@ -320,11 +322,13 @@
         ...plans.map((p) => ({ kind: "plan", name: p })),
         ...specs.map((s) => ({ kind: "spec", name: s })),
       ].sort((a, b) => b.name.localeCompare(a.name)).slice(0, 8);
+      const activity = $("#overview-activity");
+      delete activity.dataset.skeletoned;
       if (!items.length) {
-        $("#overview-activity").innerHTML = `<div class="empty">No plans or specs yet. Run the planner.</div>`;
+        activity.innerHTML = `<div class="empty">No plans or specs yet. Run the planner.</div>`;
         return;
       }
-      $("#overview-activity").innerHTML = `<table><thead><tr><th>Kind</th><th>Name</th></tr></thead><tbody>${
+      activity.innerHTML = `<table><thead><tr><th>Kind</th><th>Name</th></tr></thead><tbody>${
         items.map((it) => `<tr><td><span class="pill ${it.kind === "plan" ? "claude" : "codex"}">${it.kind}</span></td><td class="mono">${escape(it.name)}</td></tr>`).join("")
       }</tbody></table>`;
     }
@@ -332,7 +336,9 @@
     function renderModels(models) {
       const mode = models.dispatch_mode || "manual";
       const session = models.session || {};
-      $("#dispatch-cards").innerHTML = `
+      const dispatchCards = $("#dispatch-cards");
+      delete dispatchCards.dataset.skeletoned;
+      dispatchCards.innerHTML = `
         <div class="card"><h3>Dispatch mode</h3><div class="val big">${escape(mode)}</div></div>
         <div class="card"><h3>Session tool</h3><div class="val">${pillTool(session.tool)}</div></div>
         <div class="card"><h3>Session model</h3><div class="val mono">${escape(session.model || "—")}</div></div>
@@ -363,7 +369,9 @@
           <td style="text-align:right"><button class="btn secondary" style="padding:3px 10px;font-size:11px" onclick="editPhaseRow('${ph}')">Edit</button></td>
         </tr>`;
       }).join("");
-      $("#models-table").innerHTML = `<table>
+      const modelsTable = $("#models-table");
+      delete modelsTable.dataset.skeletoned;
+      modelsTable.innerHTML = `<table>
         <thead><tr><th>Phase</th><th>Tool</th><th>Model</th><th>Override</th><th>Resolved</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
@@ -478,7 +486,9 @@
         const val = arr.length && arr[0] ? arr.join(" && ") : "—";
         return `<tr><td class="mono">${k}</td><td class="mono">${escape(val)}</td></tr>`;
       }).join("");
-      $("#project-stack").innerHTML = cmdRows
+      const stack = $("#project-stack");
+      delete stack.dataset.skeletoned;
+      stack.innerHTML = cmdRows
         ? `<table><thead><tr><th>Command</th><th>Value</th></tr></thead><tbody>${cmdRows}</tbody></table>`
         : `<div class="empty">No commands declared. Run bootstrap.</div>`;
 
@@ -488,14 +498,21 @@
         const val = arr.length ? arr.map((x) => `<span class="pill">${escape(x)}</span>`).join(" ") : "—";
         return `<tr><td class="mono">${k}</td><td>${val}</td></tr>`;
       }).join("");
-      $("#project-boundaries").innerHTML = boundaryRows
+      const boundaries = $("#project-boundaries");
+      delete boundaries.dataset.skeletoned;
+      boundaries.innerHTML = boundaryRows
         ? `<table><thead><tr><th>Category</th><th>Entries</th></tr></thead><tbody>${boundaryRows}</tbody></table>`
         : `<div class="empty">No boundaries declared.</div>`;
 
-      $("#project-raw").textContent = rawText;
+      const raw = $("#project-raw");
+      delete raw.dataset.skeletoned;
+      raw.textContent = rawText;
     }
 
-    function renderMarkdown(el, text) { el.innerHTML = marked.parse(text || ""); }
+    function renderMarkdown(el, text) {
+      if (el && el.dataset) delete el.dataset.skeletoned;
+      el.innerHTML = marked.parse(text || "");
+    }
 
     function countMemoryEntries(text) {
       const m = text.match(/^- \d{4}-\d{2}-\d{2}/gm);
@@ -504,6 +521,7 @@
 
     function buildList(containerSel, items, onSelect) {
       const el = $(containerSel);
+      delete el.dataset.skeletoned;
       if (!items.length) {
         el.innerHTML = `<div class="empty">Empty</div>`;
         return;
@@ -522,6 +540,21 @@
           onSelect(li.dataset.name);
         });
       });
+    }
+
+    // Shared helper: pre-render N list-item skeletons into a `.list` container
+    // so the page doesn't snap from empty to populated. Idempotent via
+    // dataset.skeletoned, matching the pattern in agents.js/skills.js.
+    function renderListSkeletons(containerSel, n) {
+      const el = $(containerSel);
+      if (!el || el.dataset.skeletoned) return;
+      el.innerHTML = Array.from({ length: n || 6 }).map(() => `
+        <div class="skeleton-list-item">
+          <span class="skeleton skeleton-row-h"></span>
+          <span class="skeleton skeleton-row-sub"></span>
+        </div>
+      `).join("");
+      el.dataset.skeletoned = "1";
     }
 
     function escape(s) {

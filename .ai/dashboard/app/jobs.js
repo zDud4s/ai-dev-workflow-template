@@ -53,6 +53,7 @@
         const jobs = data.jobs || [];
         $("#count-jobs").textContent = jobs.length;
         const el = $("#jobs-list");
+        delete el.dataset.skeletoned;
         if (!jobs.length) {
           el.innerHTML = `<div class="empty"><strong>No jobs yet.</strong><br><span class="empty-sub">Pick <em>Chat</em> for an interactive Claude/Codex session, or <em>Workflow</em> to run plan/orchestrate in the background.</span></div>`;
         } else {
@@ -349,15 +350,32 @@
       return `<div class="tl-filter-banner">Filtered to session <code>${escape(sid.slice(0, 8))}</code> · <button id="tl-clear-filter" type="button">clear</button></div>`;
     }
 
+    function renderTimelineSkeletons() {
+      const chart = $("#timeline-chart");
+      if (!chart || chart.dataset.skeletoned) return;
+      chart.innerHTML = Array.from({ length: 5 }).map(() => `
+        <div class="skeleton-timeline-row">
+          <div>
+            <span class="skeleton skeleton-tl-label"></span>
+            <span class="skeleton skeleton-tl-meta"></span>
+          </div>
+          <span class="skeleton skeleton-tl-track"></span>
+        </div>
+      `).join("");
+      chart.dataset.skeletoned = "1";
+    }
+
     async function loadTimeline() {
       const meta = $("#timeline-meta");
       const chart = $("#timeline-chart");
+      renderTimelineSkeletons();
       try {
         const r = await fetch("/api/timeline", { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();
         let runs = data.runs || [];
         $("#count-timeline").textContent = runs.length;
+        delete chart.dataset.skeletoned;
         const filterSid = window._timelineSessionFilter || null;
         const bannerHtml = _tlBannerHtml(filterSid);
         if (filterSid) runs = runs.filter((r) => r.session_id === filterSid);
@@ -414,6 +432,7 @@
         }).join("");
       } catch (err) {
         meta.textContent = "error";
+        delete chart.dataset.skeletoned;
         chart.innerHTML = `<div class="err">${escape(err.message)}</div>`;
         setMsg("#timeline-load", "err", "Timeline load failed: " + err.message);
       }
@@ -536,6 +555,8 @@
       const body = $("#events-body");
       const stats = $("#events-stats");
       if (!body || !stats) return;
+      delete stats.dataset.skeletoned;
+      delete body.dataset.skeletoned;
       const filtered = _eventsCache.filter(_evMatchesFilters);
       stats.innerHTML = _evFormatStats(filtered);
       if (!filtered.length) {
@@ -559,15 +580,46 @@
       if (current && phases.includes(current)) sel.value = current;
     }
 
+    // Skeleton placeholders for the events table and the stats strip.
+    // Paints once per page-load — the auto-refresh and filter handlers
+    // re-render real content into the same containers, clearing the flag.
+    function renderEventsSkeletons() {
+      const stats = $("#events-stats");
+      if (stats && !stats.dataset.skeletoned) {
+        stats.innerHTML = `<div class="skeleton-events-stats">
+          <span class="skeleton skeleton-stat"></span>
+          <span class="skeleton skeleton-stat"></span>
+          <span class="skeleton skeleton-stat"></span>
+        </div>`;
+        stats.dataset.skeletoned = "1";
+      }
+      const body = $("#events-body");
+      if (body && !body.dataset.skeletoned) {
+        body.innerHTML = Array.from({ length: 6 }).map(() => `
+          <div class="skeleton-table-row">
+            <span class="skeleton skeleton-cell narrow"></span>
+            <span class="skeleton skeleton-cell narrow"></span>
+            <span class="skeleton skeleton-cell narrow"></span>
+            <span class="skeleton skeleton-cell"></span>
+            <span class="skeleton skeleton-cell narrow"></span>
+            <span class="skeleton skeleton-cell wide"></span>
+          </div>
+        `).join("");
+        body.dataset.skeletoned = "1";
+      }
+    }
+
     async function loadEvents() {
       const meta = $("#events-meta");
       const body = $("#events-body");
       const stats = $("#events-stats");
+      renderEventsSkeletons();
       try {
         const r = await fetch("/.ai/events.jsonl", { cache: "no-store" });
         if (r.status === 404) {
           _eventsCache = [];
-          if (stats) stats.innerHTML = "";
+          if (stats) { stats.innerHTML = ""; delete stats.dataset.skeletoned; }
+          delete body.dataset.skeletoned;
           body.innerHTML = `<div class="empty">No events yet.<br><br>The hook is registered in <code>.claude/settings.json</code> and will start logging dispatches on the next Claude Code session that runs workflow phases.</div>`;
           $("#count-events").textContent = "0";
           if (meta) meta.textContent = "no events";
@@ -586,13 +638,15 @@
         $("#count-events").textContent = events.length;
         _evRefreshPhaseOptions();
         if (!events.length) {
-          if (stats) stats.innerHTML = "";
+          if (stats) { stats.innerHTML = ""; delete stats.dataset.skeletoned; }
+          delete body.dataset.skeletoned;
           body.innerHTML = `<div class="empty">No events yet.</div>`;
           if (meta) meta.textContent = "0 events";
           return;
         }
         renderEvents();
       } catch (err) {
+        delete body.dataset.skeletoned;
         body.innerHTML = `<div class="err">${escape(err.message)}</div>`;
         setMsg("#events-load", "err", "Events load failed: " + err.message);
       }

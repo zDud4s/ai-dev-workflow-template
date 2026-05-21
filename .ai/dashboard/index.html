@@ -50,17 +50,36 @@
 
   <main>
     <section class="view active" id="view-overview">
-      <div class="cards" id="overview-cards"></div>
+      <div class="cards" id="overview-cards" data-skeletoned="1">
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-line"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-line"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-line"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-line"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-line"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-line"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-line"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-line"></span></div>
+      </div>
       <section class="block">
         <h2>Recent activity</h2>
-        <div id="overview-activity"></div>
+        <div id="overview-activity" data-skeletoned="1">
+          <div class="skeleton-doc-block">
+            <span class="skeleton skeleton-doc-p1"></span>
+            <span class="skeleton skeleton-doc-p2"></span>
+            <span class="skeleton skeleton-doc-p3"></span>
+          </div>
+        </div>
       </section>
     </section>
 
     <section class="view" id="view-models">
       <section class="block">
         <h2>Dispatch mode</h2>
-        <div class="cards" id="dispatch-cards"></div>
+        <div class="cards" id="dispatch-cards" data-skeletoned="1">
+          <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
+          <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
+          <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
+        </div>
         <div class="form-actions" style="margin-top:8px">
           <button class="btn secondary" id="dispatch-toggle">Toggle dispatch mode</button>
           <span class="form-msg" id="dispatch-msg"></span>
@@ -68,22 +87,35 @@
       </section>
       <section class="block">
         <h2>Phase routing</h2>
-        <div id="models-table"></div>
+        <div id="models-table" data-skeletoned="1">
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+        </div>
       </section>
     </section>
 
     <section class="view" id="view-project">
       <section class="block">
         <h2>Stack &amp; commands</h2>
-        <div id="project-stack"></div>
+        <div id="project-stack" data-skeletoned="1">
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell wide"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell wide"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell wide"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span></div>
+        </div>
       </section>
       <section class="block">
         <h2>Boundaries</h2>
-        <div id="project-boundaries"></div>
+        <div id="project-boundaries" data-skeletoned="1">
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell wide"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell wide"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell"></span></div>
+        </div>
       </section>
       <section class="block">
         <h2>Raw project.yaml</h2>
-        <pre class="yaml-tree" id="project-raw"></pre>
+        <pre class="yaml-tree" id="project-raw" data-skeletoned="1"><span class="skeleton-doc-block" style="padding:var(--s-3) 0"><span class="skeleton skeleton-doc-p1"></span><span class="skeleton skeleton-doc-p2"></span><span class="skeleton skeleton-doc-p3"></span><span class="skeleton skeleton-doc-p4"></span></span></pre>
       </section>
     </section>
 
@@ -105,7 +137,18 @@
           <span class="form-msg" id="mem-msg"></span>
         </div>
       </div>
-      <div class="doc" id="memory-doc"></div>
+      <div class="doc" id="memory-doc" data-skeletoned="1">
+        <div class="skeleton-doc-block">
+          <span class="skeleton skeleton-doc-h"></span>
+          <span class="skeleton skeleton-doc-p1"></span>
+          <span class="skeleton skeleton-doc-p2"></span>
+          <span class="skeleton skeleton-doc-p3"></span>
+          <span class="skeleton skeleton-doc-h2"></span>
+          <span class="skeleton skeleton-doc-p1"></span>
+          <span class="skeleton skeleton-doc-p2"></span>
+          <span class="skeleton skeleton-doc-p4"></span>
+        </div>
+      </div>
     </section>
 
     <section class="view" id="view-decisions">
@@ -142,11 +185,27 @@
           <span class="form-msg" id="dec-msg"></span>
         </div>
       </div>
-      <div class="doc" id="decisions-doc"></div>
+      <div class="doc" id="decisions-doc" data-skeletoned="1">
+        <div class="skeleton-doc-block">
+          <span class="skeleton skeleton-doc-h"></span>
+          <span class="skeleton skeleton-doc-p1"></span>
+          <span class="skeleton skeleton-doc-p2"></span>
+          <span class="skeleton skeleton-doc-p3"></span>
+          <span class="skeleton skeleton-doc-h2"></span>
+          <span class="skeleton skeleton-doc-p1"></span>
+          <span class="skeleton skeleton-doc-p2"></span>
+          <span class="skeleton skeleton-doc-p4"></span>
+        </div>
+      </div>
     </section>
 
     <section class="view" id="view-skills">
-      <div class="cards" id="skills-summary"></div>
+      <div class="cards" id="skills-summary" data-skeletoned="1">
+        <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
+        <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
+        <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
+        <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
+      </div>
 
       <section class="block" id="skills-proposals-block" style="display:none">
         <h2>Pending proposals <span class="count" id="proposals-count">·</span></h2>
@@ -211,7 +270,14 @@
         <input id="skills-search" type="search" placeholder="search name or description…" />
         <span class="meta" id="skills-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
       </div>
-      <div id="skills-grid" class="cards skill-grid"></div>
+      <div id="skills-grid" class="cards skill-grid" data-skeletoned="1">
+        <div class="card skill-card skeleton-card"><span class="skeleton skeleton-h"></span><span class="skeleton skeleton-desc-1"></span><span class="skeleton skeleton-desc-2"></span><span class="skeleton skeleton-desc-3"></span><span class="skeleton skeleton-tools"></span><span class="skeleton skeleton-path"></span><span class="skeleton skeleton-meta"></span></div>
+        <div class="card skill-card skeleton-card"><span class="skeleton skeleton-h"></span><span class="skeleton skeleton-desc-1"></span><span class="skeleton skeleton-desc-2"></span><span class="skeleton skeleton-desc-3"></span><span class="skeleton skeleton-tools"></span><span class="skeleton skeleton-path"></span><span class="skeleton skeleton-meta"></span></div>
+        <div class="card skill-card skeleton-card"><span class="skeleton skeleton-h"></span><span class="skeleton skeleton-desc-1"></span><span class="skeleton skeleton-desc-2"></span><span class="skeleton skeleton-desc-3"></span><span class="skeleton skeleton-tools"></span><span class="skeleton skeleton-path"></span><span class="skeleton skeleton-meta"></span></div>
+        <div class="card skill-card skeleton-card"><span class="skeleton skeleton-h"></span><span class="skeleton skeleton-desc-1"></span><span class="skeleton skeleton-desc-2"></span><span class="skeleton skeleton-desc-3"></span><span class="skeleton skeleton-tools"></span><span class="skeleton skeleton-path"></span><span class="skeleton skeleton-meta"></span></div>
+        <div class="card skill-card skeleton-card"><span class="skeleton skeleton-h"></span><span class="skeleton skeleton-desc-1"></span><span class="skeleton skeleton-desc-2"></span><span class="skeleton skeleton-desc-3"></span><span class="skeleton skeleton-tools"></span><span class="skeleton skeleton-path"></span><span class="skeleton skeleton-meta"></span></div>
+        <div class="card skill-card skeleton-card"><span class="skeleton skeleton-h"></span><span class="skeleton skeleton-desc-1"></span><span class="skeleton skeleton-desc-2"></span><span class="skeleton skeleton-desc-3"></span><span class="skeleton skeleton-tools"></span><span class="skeleton skeleton-path"></span><span class="skeleton skeleton-meta"></span></div>
+      </div>
     </section>
 
     <section class="view" id="view-agents">
@@ -289,21 +355,39 @@
 
     <section class="view" id="view-plans">
       <div class="split">
-        <div class="list" id="plans-list"></div>
+        <div class="list" id="plans-list" data-skeletoned="1">
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+        </div>
         <div class="doc" id="plans-doc"><div class="empty">Select a plan</div></div>
       </div>
     </section>
 
     <section class="view" id="view-specs">
       <div class="split">
-        <div class="list" id="specs-list"></div>
+        <div class="list" id="specs-list" data-skeletoned="1">
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+        </div>
         <div class="doc" id="specs-doc"><div class="empty">Select a spec</div></div>
       </div>
     </section>
 
     <section class="view" id="view-packets">
       <div class="split">
-        <div class="list" id="packets-list"></div>
+        <div class="list" id="packets-list" data-skeletoned="1">
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+        </div>
         <div class="doc" id="packets-doc"><div class="empty">Select a packet template</div></div>
       </div>
     </section>
@@ -390,7 +474,12 @@
       </div>
 
       <div class="split">
-        <div class="list" id="jobs-list"></div>
+        <div class="list" id="jobs-list" data-skeletoned="1">
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+          <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
+        </div>
         <div class="doc" id="jobs-doc"><div class="empty">Select a job</div></div>
       </div>
     </section>
@@ -438,7 +527,13 @@
     </section>
 
     <section class="view" id="view-events">
-      <div class="events-stats" id="events-stats"></div>
+      <div class="events-stats" id="events-stats" data-skeletoned="1">
+        <div class="skeleton-events-stats">
+          <span class="skeleton skeleton-stat"></span>
+          <span class="skeleton skeleton-stat"></span>
+          <span class="skeleton skeleton-stat"></span>
+        </div>
+      </div>
       <div class="events-filters">
         <select id="ev-phase" aria-label="Filter by phase">
           <option value="">all phases</option>
@@ -463,7 +558,13 @@
         </details>
         <span class="meta" id="events-meta"></span>
       </div>
-      <div id="events-body"></div>
+      <div id="events-body" data-skeletoned="1">
+        <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell wide"></span></div>
+        <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell wide"></span></div>
+        <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell wide"></span></div>
+        <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell wide"></span></div>
+        <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell wide"></span></div>
+      </div>
     </section>
 
     <section class="view" id="view-timeline">
@@ -488,7 +589,12 @@
           <span><span class="tl-swatch" style="background:var(--warn)"></span>pending / unknown exit</span>
           <span><span class="tl-swatch" style="background:var(--border-strong);opacity:0.55"></span>ad-hoc (phase not detected)</span>
         </div>
-        <div id="timeline-chart"></div>
+        <div id="timeline-chart" data-skeletoned="1">
+          <div class="skeleton-timeline-row"><div><span class="skeleton skeleton-tl-label"></span><span class="skeleton skeleton-tl-meta"></span></div><span class="skeleton skeleton-tl-track"></span></div>
+          <div class="skeleton-timeline-row"><div><span class="skeleton skeleton-tl-label"></span><span class="skeleton skeleton-tl-meta"></span></div><span class="skeleton skeleton-tl-track"></span></div>
+          <div class="skeleton-timeline-row"><div><span class="skeleton skeleton-tl-label"></span><span class="skeleton skeleton-tl-meta"></span></div><span class="skeleton skeleton-tl-track"></span></div>
+          <div class="skeleton-timeline-row"><div><span class="skeleton skeleton-tl-label"></span><span class="skeleton skeleton-tl-meta"></span></div><span class="skeleton skeleton-tl-track"></span></div>
+        </div>
       </section>
     </section>
 
@@ -515,7 +621,11 @@
           When the planner falls back to the static table (cold-start or guard rail), the line in
           <code>## Selected models</code> annotates <code>reason="static: …"</code>.
         </div>
-        <div id="auto-select-rankings"></div>
+        <div id="auto-select-rankings" data-skeletoned="1">
+          <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
+          <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
+          <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
+        </div>
       </section>
     </section>
 
@@ -581,7 +691,13 @@
           <code>timeout_seconds</code> overrides the default (1800s for execute, 600s for others); empty = default.
         </p>
         <div id="phases-auto-warning" class="settings-env-warning" role="status"></div>
-        <div id="phases-table"><div class="settings-skeleton">loading…</div></div>
+        <div id="phases-table" data-skeletoned="1">
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span></div>
+        </div>
         <div class="form-actions">
           <span class="form-msg" id="phases-msg" aria-live="polite"></span>
         </div>

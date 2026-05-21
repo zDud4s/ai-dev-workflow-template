@@ -122,10 +122,26 @@
     );
   }
 
+  function renderAutoSelectSkeletons() {
+    const root = $("#auto-select-rankings");
+    if (!root || root.dataset.skeletoned) return;
+    root.innerHTML = Array.from({ length: 3 }).map(() => `
+      <div class="skeleton-as-group">
+        <span class="skeleton skeleton-as-head"></span>
+        <span class="skeleton skeleton-as-line"></span>
+        <span class="skeleton skeleton-as-line"></span>
+        <span class="skeleton skeleton-as-line"></span>
+        <span class="skeleton skeleton-as-line"></span>
+      </div>
+    `).join("");
+    root.dataset.skeletoned = "1";
+  }
+
   async function loadAutoSelect() {
     const meta = $("#auto-select-meta");
     const root = $("#auto-select-rankings");
     if (!root) return;
+    renderAutoSelectSkeletons();
     const threshold = setThreshold(getThreshold());
     try {
       const r = await fetch("/api/auto-select?min_samples=" + threshold, { cache: "no-store" });
@@ -151,6 +167,7 @@
         metaHtml += ` · last record <span class="${cls}">${escape(lastRecord.label)}</span>`;
       }
       meta.innerHTML = metaHtml;
+      delete root.dataset.skeletoned;
       if (groups.length === 0) {
         root.innerHTML =
           `<div class="tl-empty">No ranked groups yet. The planner needs at least ${effective} record(s) per ` +
@@ -162,6 +179,7 @@
       root.innerHTML = groups.map(renderGroup).join("");
     } catch (err) {
       meta.textContent = "load failed";
+      delete root.dataset.skeletoned;
       root.innerHTML =
         `<div class="tl-empty">Failed to load: ${escape(String(err))}.</div>`;
       if (typeof window.setMsg === "function") {

@@ -5,7 +5,42 @@
     // ----- Skills catalog -----
     var _skillsState = { all: [], sources: {}, filter: "all", query: "" };
 
+    // Pre-render skeleton placeholders so the page does not snap from
+    // empty to fully-populated. The skeleton shapes match the real
+    // card layout so there is no layout shift when data lands.
+    // Mirrors renderAgentsSkeletons() in agents.js.
+    function renderSkillsSkeletons() {
+      const summary = $("#skills-summary");
+      if (summary && !summary.dataset.skeletoned) {
+        const labels = ["Total skills", "Project", "Claude global", "Codex global"];
+        summary.innerHTML = labels.map(() => `
+          <div class="card skeleton-summary-card">
+            <span class="skeleton skeleton-title"></span>
+            <span class="skeleton skeleton-big"></span>
+            <span class="skeleton skeleton-sub"></span>
+          </div>
+        `).join("");
+        summary.dataset.skeletoned = "1";
+      }
+      const grid = $("#skills-grid");
+      if (grid && !grid.dataset.skeletoned) {
+        grid.innerHTML = Array.from({ length: 12 }).map(() => `
+          <div class="card skill-card skeleton-card">
+            <span class="skeleton skeleton-h"></span>
+            <span class="skeleton skeleton-desc-1"></span>
+            <span class="skeleton skeleton-desc-2"></span>
+            <span class="skeleton skeleton-desc-3"></span>
+            <span class="skeleton skeleton-tools"></span>
+            <span class="skeleton skeleton-path"></span>
+            <span class="skeleton skeleton-meta"></span>
+          </div>
+        `).join("");
+        grid.dataset.skeletoned = "1";
+      }
+    }
+
     async function loadSkills() {
+      renderSkillsSkeletons();
       try {
         const r = await fetch("/api/skills/all", { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
@@ -21,7 +56,10 @@
       } catch (e) {
         $("#count-skills").textContent = "!";
         const grid = $("#skills-grid");
-        if (grid) grid.innerHTML = `<div class="err">${escape(e.message)}</div>`;
+        if (grid) {
+          grid.innerHTML = `<div class="err">${escape(e.message)}</div>`;
+          delete grid.dataset.skeletoned;
+        }
         setMsg("#skills-load", "err", "Skills load failed: " + e.message);
       }
     }
@@ -50,7 +88,9 @@
           .filter(([, s]) => s)
           .map(([, s]) => card(s.label, s.count, s.tool, s.path, s.exists)),
       ].join("");
-      $("#skills-summary").innerHTML = html;
+      const summary = $("#skills-summary");
+      summary.innerHTML = html;
+      delete summary.dataset.skeletoned;
     }
 
     function renderSkillsFilters() {
@@ -86,6 +126,7 @@
       });
       $("#skills-meta").textContent = `${filtered.length} of ${_skillsState.all.length} shown`;
       const grid = $("#skills-grid");
+      delete grid.dataset.skeletoned;
       if (!filtered.length) {
         grid.innerHTML = `<div class="empty">No skills match the current filter.</div>`;
         return;

@@ -2,9 +2,44 @@
 // NOTE: top-level const/let were converted to var so identifiers cross <script> boundaries.
 
     // ----- main loader -----
+    // Pre-render skeleton cards for the Overview grid so the page doesn't
+    // snap from empty to populated when YAML / counts finish loading.
+    // Matches the structured skeleton pattern used by Agents / Skills.
+    function renderOverviewSkeletons() {
+      const cards = $("#overview-cards");
+      if (!cards || cards.dataset.skeletoned) return;
+      // 9 cards mirrors the real grid: stack, pkg managers, dispatch mode,
+      // memory, plans/specs, claude tokens, codex tokens, limits, recent.
+      cards.innerHTML = Array.from({ length: 9 }).map(() => `
+        <div class="card skeleton-overview-card">
+          <span class="skeleton skeleton-title"></span>
+          <span class="skeleton skeleton-big"></span>
+          <span class="skeleton skeleton-line"></span>
+        </div>
+      `).join("");
+      cards.dataset.skeletoned = "1";
+      const activity = $("#overview-activity");
+      if (activity && !activity.dataset.skeletoned) {
+        activity.innerHTML = `<div class="skeleton-doc-block">
+          <span class="skeleton skeleton-doc-p1"></span>
+          <span class="skeleton skeleton-doc-p2"></span>
+          <span class="skeleton skeleton-doc-p3"></span>
+        </div>`;
+        activity.dataset.skeletoned = "1";
+      }
+    }
+
     async function loadAll() {
       $("#meta").innerHTML = `<span class="spinner"></span> loading…`;
-      $("#overview-cards").innerHTML = `<div class="card-skeleton"><span class="spinner lg"></span> loading overview…</div>`;
+      renderOverviewSkeletons();
+      // Seed list skeletons for plans/specs/packets so the lists render
+      // a couple of shimmer rows until listDir() resolves.
+      if (typeof renderListSkeletons === "function") {
+        renderListSkeletons("#plans-list", 6);
+        renderListSkeletons("#specs-list", 6);
+        renderListSkeletons("#packets-list", 6);
+        renderListSkeletons("#jobs-list", 6);
+      }
       try {
         const [projectRaw, modelsRaw, memoryText, decisionsText, plans, specs, packets] = await Promise.all([
           getText(".ai/project.yaml"),
@@ -52,7 +87,9 @@
         $("#meta").textContent = `updated ${new Date().toLocaleTimeString()}`;
       } catch (err) {
         $("#meta").textContent = "error";
-        $("#overview-cards").innerHTML = `<div class="err">${escape(err.message)}</div>`;
+        const cards = $("#overview-cards");
+        cards.innerHTML = `<div class="err">${escape(err.message)}</div>`;
+        delete cards.dataset.skeletoned;
         console.error(err);
         setMsg("#dashboard-load", "err", "Dashboard load failed: " + err.message);
       }

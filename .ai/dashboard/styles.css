@@ -2161,20 +2161,123 @@
       .skeleton { animation: none; background: var(--surf-3); }
     }
     .skeleton-summary-card,
-    .skeleton-agent-card {
+    .skeleton-agent-card,
+    .skeleton-card,
+    .skeleton-list-item,
+    .skeleton-doc-block,
+    .skeleton-table-row,
+    .skeleton-timeline-row,
+    .skeleton-as-group,
+    .skeleton-events-stats,
+    .skeleton-overview-card {
       cursor: default;
       pointer-events: none;
     }
     .skeleton-summary-card .skeleton-title  { width: 55%; height: 12px; }
     .skeleton-summary-card .skeleton-big    { width: 28%; height: 26px; margin-top: var(--s-1); }
     .skeleton-summary-card .skeleton-sub    { width: 80%; height: 10px; margin-top: var(--s-1); }
-    .skeleton-agent-card .skeleton-h        { width: 45%; height: 14px; }
-    .skeleton-agent-card .skeleton-desc-1   { width: 95%; height: 10px; }
-    .skeleton-agent-card .skeleton-desc-2   { width: 82%; height: 10px; }
-    .skeleton-agent-card .skeleton-desc-3   { width: 60%; height: 10px; }
-    .skeleton-agent-card .skeleton-tools    { width: 50%; height: 9px; }
-    .skeleton-agent-card .skeleton-path     { width: 75%; height: 9px; }
-    .skeleton-agent-card .skeleton-meta     { width: 35%; height: 10px; margin-top: auto; }
+    .skeleton-agent-card .skeleton-h,
+    .skeleton-card .skeleton-h              { width: 45%; height: 14px; }
+    .skeleton-agent-card .skeleton-desc-1,
+    .skeleton-card .skeleton-desc-1         { width: 95%; height: 10px; }
+    .skeleton-agent-card .skeleton-desc-2,
+    .skeleton-card .skeleton-desc-2         { width: 82%; height: 10px; }
+    .skeleton-agent-card .skeleton-desc-3,
+    .skeleton-card .skeleton-desc-3         { width: 60%; height: 10px; }
+    .skeleton-agent-card .skeleton-tools,
+    .skeleton-card .skeleton-tools          { width: 50%; height: 9px; }
+    .skeleton-agent-card .skeleton-path,
+    .skeleton-card .skeleton-path           { width: 75%; height: 9px; }
+    .skeleton-agent-card .skeleton-meta,
+    .skeleton-card .skeleton-meta           { width: 35%; height: 10px; margin-top: auto; }
+
+    /* Overview card variant — narrower big number + 2-line sub */
+    .skeleton-overview-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .skeleton-overview-card .skeleton-title { width: 50%; height: 12px; }
+    .skeleton-overview-card .skeleton-big   { width: 40%; height: 22px; }
+    .skeleton-overview-card .skeleton-line  { width: 80%; height: 10px; }
+
+    /* List rows — used by Plans / Specs / Packets / Jobs lists.
+       Shape echoes .list-item: a primary line + a smaller mono sub-line. */
+    .skeleton-list-item {
+      padding: 13px 16px 13px 20px;
+      border-bottom: 1px solid var(--border-soft);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .skeleton-list-item:last-child { border-bottom: 0; }
+    .skeleton-list-item .skeleton-row-h   { width: 65%; height: 12px; }
+    .skeleton-list-item .skeleton-row-sub { width: 35%; height: 9px; }
+
+    /* Doc body — used by Memory / Decisions / Plans-doc / Specs-doc /
+       Packets-doc / Jobs-doc when no real content is loaded yet.
+       Mimics a few markdown paragraphs and a heading. */
+    .skeleton-doc-block {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .skeleton-doc-block .skeleton-doc-h   { width: 40%; height: 22px; margin-bottom: var(--s-2); }
+    .skeleton-doc-block .skeleton-doc-p1  { width: 95%; height: 11px; }
+    .skeleton-doc-block .skeleton-doc-p2  { width: 88%; height: 11px; }
+    .skeleton-doc-block .skeleton-doc-p3  { width: 72%; height: 11px; }
+    .skeleton-doc-block .skeleton-doc-p4  { width: 60%; height: 11px; }
+    .skeleton-doc-block .skeleton-doc-h2  { width: 30%; height: 18px; margin-top: var(--s-3); }
+
+    /* Generic table-row skeleton — used by events / models / phases tables.
+       Sits inside a <tr> so it must be a span on td to avoid layout
+       weirdness; in practice we use a wrapper div with cells. */
+    .skeleton-table-row {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: var(--s-2);
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .skeleton-table-row .skeleton-cell { height: 10px; width: 80%; }
+    .skeleton-table-row .skeleton-cell.narrow { width: 40%; }
+    .skeleton-table-row .skeleton-cell.wide   { width: 95%; }
+
+    /* Timeline row — task label on the left + horizontal track. */
+    .skeleton-timeline-row {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: var(--s-3);
+      padding: var(--s-2) 0;
+      align-items: center;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .skeleton-timeline-row .skeleton-tl-label { width: 80%; height: 12px; }
+    .skeleton-timeline-row .skeleton-tl-meta  { width: 60%; height: 9px; margin-top: 6px; }
+    .skeleton-timeline-row .skeleton-tl-track {
+      width: 100%;
+      height: 22px;
+    }
+
+    /* Auto-select group — header line + a small table. */
+    .skeleton-as-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: var(--s-3);
+      border: 1px solid var(--border-soft);
+      margin-bottom: var(--s-3);
+    }
+    .skeleton-as-group .skeleton-as-head { width: 55%; height: 14px; }
+    .skeleton-as-group .skeleton-as-line { width: 92%; height: 10px; }
+
+    /* Events stats line — three small chips. */
+    .skeleton-events-stats {
+      display: flex;
+      gap: var(--s-3);
+      padding: var(--s-2) 0;
+    }
+    .skeleton-events-stats .skeleton-stat { width: 80px; height: 12px; }
 
     /* Skill detail modal body */
     .skill-detail-body {

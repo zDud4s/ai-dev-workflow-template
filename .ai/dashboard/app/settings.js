@@ -223,6 +223,7 @@
       + '  <tbody>' + rows + '</tbody>'
       + '</table>';
     var wrap = $q("#phases-table");
+    delete wrap.dataset.skeletoned;
     wrap.innerHTML = html;
     wrap.querySelectorAll("button.ph-save").forEach(function (btn) {
       btn.addEventListener("click", function () { savePhaseRow(btn.closest("tr"), btn); });
@@ -343,9 +344,27 @@
   }
 
   // ---------- Loading & coordination ----------
+  // Builds the structured skeleton variant used elsewhere in the dashboard
+  // (.skeleton + .skeleton-table-row), so the Settings tab matches the
+  // visual language of Agents / Skills / Events while data loads.
+  function phasesTableSkeletonHtml() {
+    var row = '<div class="skeleton-table-row">'
+      + '<span class="skeleton skeleton-cell narrow"></span>'
+      + '<span class="skeleton skeleton-cell"></span>'
+      + '<span class="skeleton skeleton-cell narrow"></span>'
+      + '<span class="skeleton skeleton-cell narrow"></span>'
+      + '<span class="skeleton skeleton-cell"></span>'
+      + '<span class="skeleton skeleton-cell narrow"></span>'
+      + '</div>';
+    return new Array(6).fill(row).join("");
+  }
   function showLoadingState() {
     setMsg("settings-meta", "Loading…");
-    $q("#phases-table").innerHTML = '<div class="settings-skeleton">loading…</div>';
+    var phases = $q("#phases-table");
+    if (phases) {
+      phases.innerHTML = phasesTableSkeletonHtml();
+      phases.dataset.skeletoned = "1";
+    }
   }
 
   async function loadAllSettings() {
@@ -359,7 +378,11 @@
       loadedOnce = true;
     } catch (e) {
       setMsg("settings-meta", "Failed to load: " + e.message, "bad");
-      $q("#phases-table").innerHTML = '<div class="settings-skeleton" style="color:var(--bad)">load failed</div>';
+      var wrap = $q("#phases-table");
+      if (wrap) {
+        delete wrap.dataset.skeletoned;
+        wrap.innerHTML = '<div class="settings-skeleton" style="color:var(--bad)">load failed</div>';
+      }
     }
   }
 
