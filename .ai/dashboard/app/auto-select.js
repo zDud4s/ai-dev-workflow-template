@@ -8,14 +8,9 @@
     return document.querySelector(sel);
   }
 
+  const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
   function escape(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    })[c]);
+    return (s == null ? "" : String(s)).replace(/[&<>"']/g, (c) => ESC[c]);
   }
 
   function formatMs(ms) {
@@ -125,15 +120,9 @@
   function renderAutoSelectSkeletons() {
     const root = $("#auto-select-rankings");
     if (!root || root.dataset.skeletoned) return;
-    root.innerHTML = Array.from({ length: 3 }).map(() => `
-      <div class="skeleton-as-group">
-        <span class="skeleton skeleton-as-head"></span>
-        <span class="skeleton skeleton-as-line"></span>
-        <span class="skeleton skeleton-as-line"></span>
-        <span class="skeleton skeleton-as-line"></span>
-        <span class="skeleton skeleton-as-line"></span>
-      </div>
-    `).join("");
+    const lines = '<span class="skeleton skeleton-as-line"></span>'.repeat(4);
+    const group = `<div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span>${lines}</div>`;
+    root.innerHTML = group.repeat(3);
     root.dataset.skeletoned = "1";
   }
 
@@ -147,10 +136,8 @@
       const r = await fetch("/api/auto-select?min_samples=" + threshold, { cache: "no-store" });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
-      const groups = data.groups || [];
-      const samples = data.samples || 0;
-      const dropped = data.dropped_candidates || 0;
-      const effective = data.min_samples != null ? data.min_samples : threshold;
+      const { groups = [], samples = 0, dropped_candidates: dropped = 0 } = data;
+      const effective = data.min_samples ?? threshold;
       const lastRecord = formatLastRecord(data.last_record_ts);
       const cnt = $("#count-auto-select");
       if (cnt) cnt.textContent = groups.length;
