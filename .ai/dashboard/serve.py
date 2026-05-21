@@ -1993,6 +1993,7 @@ def _spawn_job(
     resume_session_id: str | None = None,
     permission_mode: str | None = None,
     fork_session_id: str | None = None,
+    model_override: str | None = None,
 ) -> None:
     """Spawn a job in a worker thread and capture stdout+stderr to a log file.
 
@@ -2002,9 +2003,13 @@ def _spawn_job(
                                        --input-format stream-json
                                        --output-format stream-json`` session
                                        driven by JSON messages on stdin.
+
+    ``model_override`` lets the caller pin a specific model for this job
+    (e.g. the dashboard's "New terminal" picker). When absent, falls back
+    to ``session.model`` from ``.ai/models.yaml``.
     """
     session = _read_yaml_field(ROOT / ".ai" / "models.yaml", "session")
-    model = session.get("model") or "claude-sonnet-4-6"
+    model = model_override or session.get("model") or "claude-sonnet-4-6"
     claude_bin = shutil.which("claude") or "claude"
 
     if kind == "chat":
@@ -2044,8 +2049,9 @@ def _spawn_job(
     if kind == "chat-codex":
         codex_session = session if isinstance(session, dict) else {}
         # Codex uses its own session/model defaults; fall back to the claude
-        # session.model if no separate codex one is configured.
-        codex_model = codex_session.get("codex_model") or model
+        # session.model if no separate codex one is configured. An explicit
+        # ``model_override`` from the caller still wins over both.
+        codex_model = model_override or codex_session.get("codex_model") or model
         codex_bin = shutil.which("codex") or "codex"
         argv = _build_codex_chat_argv(
             model=codex_model,
@@ -2324,6 +2330,18 @@ def _start_subprocess_job(
                                 continue
                             if obj.get("type") == "result":
                                 _update_job_cost(job_id, obj)
+                            # Codex emits a ``session_meta`` event on its first
+                            # JSON line with ``payload.id`` = the rollout/session
+                            # id. We capture it once so the next-turn handler
+                            # can ``codex exec resume <sid>`` to continue the
+                            # same conversation without spawning a brand-new
+                            # session every message.
+                            if kind == "chat-codex" and obj.get("type") == "session_meta":
+                                sid = (obj.get("payload") or {}).get("id")
+                                if sid:
+                                    with JOBS_LOCK:
+                                        if not JOBS[job_id].get("session_id"):
+                                            JOBS[job_id]["session_id"] = sid
 
                 # Flush any final partial line (no trailing newline). Add a
                 # synthetic ``\n`` so downstream line-based parsers can still
@@ -3482,6 +3500,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if permission_mode and permission_mode not in _VALID_PERMISSION_MODES:
             self._json(400, {"error": f"permission_mode must be one of {sorted(_VALID_PERMISSION_MODES)}"})
             return
+        # Optional explicit model id (e.g. selected from the "New terminal"
+        # picker on the Terminals page). When absent the spawner falls back
+        # to ``session.model`` in models.yaml.
+        model_override = (body.get("model") or "").strip() or None
+        if model_override and (len(model_override) > 80 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", model_override)):
+            self._json(400, {"error": "model must be a short id matching [A-Za-z0-9._-]{1,80}"})
+            return
         # Optional tag list: lowercase short slugs only, max 8 tags per job,
         # so the persistence ledger stays small and the resume filter works.
         tags_raw = body.get("tags") or []
@@ -3532,6 +3557,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             resume_session_id=resume_session_id,
             permission_mode=permission_mode,
             fork_session_id=fork_session_id,
+            model_override=model_override,
         )
         _persist_job(job_id)  # capture the initial queued/running snapshot
         _evict_old_jobs()

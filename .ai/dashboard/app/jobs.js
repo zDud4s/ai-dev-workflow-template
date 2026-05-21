@@ -266,7 +266,7 @@
       const kind = document.getElementById("run-kind")?.value || "chat";
       const map = {
         "chat":        "Opens an interactive Claude terminal panel — you can chat back and forth.",
-        "chat-codex":  "Opens an interactive Codex panel — one-turn task, no follow-up.",
+        "chat-codex":  "Opens an interactive Codex panel — each follow-up spawns <code>codex exec resume</code> behind the scenes.",
         "orchestrate": "Runs the orchestrate skill in the background: plan → execute → review. The subprocess cannot prompt — it must emit <code>## Escalation</code> if blocked.",
         "plan":        "Runs the planner skill in the background. Produces an execution packet but does not implement.",
       };

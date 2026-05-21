@@ -1375,6 +1375,60 @@
       font-stretch: condensed;
     }
 
+    /* ---------------- Draft terminal (New terminal) ----------------
+       Empty pane that lets the operator pick tool/model BEFORE the
+       first message is sent. The job is POSTed only on send — until
+       then the pane is purely local UI state. */
+    .term-pane.term-draft { border-style: dashed; border-color: var(--border-strong); }
+    .term-pane.term-draft.focus { border-color: var(--accent); border-style: solid; }
+    .term-pane.term-draft .status-pill {
+      background: var(--bg-inset);
+      color: var(--text-dim);
+      border: 1px dashed var(--border-strong);
+    }
+    .term-draft-config {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--s-3);
+      padding: var(--s-3) var(--s-4);
+      background: var(--surf-1);
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .term-draft-config .draft-field {
+      display: inline-flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 160px;
+    }
+    .term-draft-config .draft-label {
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .term-draft-config select {
+      background: var(--panel-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text);
+      padding: 4px 6px;
+      font-family: var(--ff-mono);
+      font-size: 12px;
+    }
+    .term-draft-config select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+    .term-draft-config .draft-hint {
+      flex: 1 1 200px;
+      color: var(--text-dim);
+      font-size: 12px;
+      font-style: italic;
+    }
+    .term-pane.term-draft .draft-placeholder {
+      color: var(--text-dim);
+      font-style: italic;
+      border-left: 2px solid var(--border-strong);
+    }
+
     /* ---------------- Chat-mode rendering ----------------
        Real-chat layout: user bubbles align right, assistant bubbles align
        left, system/result notes sit centered as meta strips. Cyber-HUD

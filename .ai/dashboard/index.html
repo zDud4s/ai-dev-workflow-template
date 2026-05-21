@@ -326,7 +326,7 @@
             <label for="run-kind">Kind</label>
             <select id="run-kind">
               <option value="chat" data-mode="chat">Chat — Claude (interactive)</option>
-              <option value="chat-codex" data-mode="chat">Chat — Codex (one-turn)</option>
+              <option value="chat-codex" data-mode="chat">Chat — Codex (interactive)</option>
               <option value="orchestrate" data-mode="workflow">Full orchestrate (plan → execute → review)</option>
               <option value="plan" data-mode="workflow">Plan only (planner skill)</option>
             </select>
@@ -403,6 +403,7 @@
         </div>
         <!-- Cluster 1: pane visibility (open more / collapse / auto-show) -->
         <button class="btn" id="term-open">Open</button>
+        <button class="btn" id="term-new" title="Open a new empty terminal — pick tool/model, then send the first message to start the conversation">New terminal</button>
         <button class="term-icon-btn" id="term-open-all" title="Open all running panes" aria-label="Open all running">
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="4" width="9" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5" y="2" width="9" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
         </button>

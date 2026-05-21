@@ -171,13 +171,202 @@
     function termRenderEmptyState() {
       const grid = $("#terms-grid");
       if (TERMS.size === 0) {
-        grid.innerHTML = `<div class="term-empty">No terminal panes open. Pick a job above, or start one in <em>Run</em>.</div>`;
+        grid.innerHTML = `<div class="term-empty">No terminal panes open. Pick a job above, click <em>New terminal</em>, or start one in <em>Run</em>.</div>`;
       } else {
         // Drop the empty placeholder if it's still there.
         const empty = grid.querySelector(".term-empty");
         if (empty) empty.remove();
       }
       $("#count-terminals").textContent = TERMS.size || "·";
+    }
+
+    // ----- Draft terminal (created via "New terminal") -----
+    // A draft pane is an EMPTY terminal: no job exists on the server yet.
+    // The operator picks tool (claude / codex) + model and only when they
+    // hit send does the dashboard POST /api/jobs and turn the draft into
+    // a real, connected pane.
+
+    // Mirrors the MODELS_BY_TOOL catalog in core.js. Kept here as a local
+    // fallback so this file doesn't depend on script load order.
+    var DRAFT_MODELS_BY_TOOL = (typeof MODELS_BY_TOOL === "object" && MODELS_BY_TOOL)
+      ? MODELS_BY_TOOL
+      : {
+          claude: ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+          codex:  ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+        };
+
+    var _draftCounter = 0;
+
+    function termDraftModelOptions(tool, selected) {
+      const list = DRAFT_MODELS_BY_TOOL[tool] || [];
+      return list.map((m) =>
+        `<option value="${escape(m)}"${m === selected ? " selected" : ""}>${escape(m)}</option>`
+      ).join("");
+    }
+
+    function termOpenDraft() {
+      _draftCounter += 1;
+      const draftId = "draft:" + Date.now() + ":" + _draftCounter;
+      const grid = $("#terms-grid");
+      if (!grid) return;
+
+      // Default tool/model. The picker is editable before the first send.
+      const defaultTool = "claude";
+      const defaultModel = (DRAFT_MODELS_BY_TOOL[defaultTool] || [""])[0] || "claude-sonnet-4-6";
+
+      const pane = document.createElement("div");
+      pane.className = "term-pane term-draft focus";
+      pane.dataset.jobId = draftId;
+      pane.innerHTML = `
+        <div class="term-head">
+          <span class="pill status-pill" title="not yet started — picks tool + model first">draft</span>
+          <span class="task">New terminal</span>
+          <span class="activity waiting" title="will start when you send the first message">unsent</span>
+          <span class="id">${escape(draftId.slice(-6))}</span>
+          <span class="actions">
+            <button class="close-btn" title="Discard this draft">close</button>
+          </span>
+        </div>
+        <div class="term-draft-config">
+          <label class="draft-field">
+            <span class="draft-label">Tool</span>
+            <select class="draft-tool">
+              <option value="claude"${defaultTool === "claude" ? " selected" : ""}>Claude</option>
+              <option value="codex"${defaultTool === "codex" ? " selected" : ""}>Codex</option>
+            </select>
+          </label>
+          <label class="draft-field">
+            <span class="draft-label">Model</span>
+            <select class="draft-model">
+              ${termDraftModelOptions(defaultTool, defaultModel)}
+            </select>
+          </label>
+          <span class="draft-hint">Conversation starts when you send the first message.</span>
+        </div>
+        <div class="term-body chat" tabindex="0">
+          <div class="msg system draft-placeholder">Pick a tool and model above, then type your first message below. The job is created on send.</div>
+        </div>
+        <div class="attach-tray" style="display:none"></div>
+        <div class="term-foot">
+          <textarea class="stdin-input" rows="1" placeholder="type your first message — Enter starts the conversation · Shift+Enter newline"></textarea>
+          <button class="send-btn">start</button>
+        </div>
+      `;
+      grid.appendChild(pane);
+
+      const body = pane.querySelector(".term-body");
+      const input = pane.querySelector(".stdin-input");
+      const sendBtn = pane.querySelector(".send-btn");
+      const toolSel = pane.querySelector(".draft-tool");
+      const modelSel = pane.querySelector(".draft-model");
+
+      // Auto-grow the textarea exactly like real panes do.
+      const autosize = () => {
+        input.style.height = "auto";
+        const next = Math.min(input.scrollHeight, 220);
+        input.style.height = next + "px";
+      };
+      input.addEventListener("input", autosize);
+
+      const t = {
+        jobId: draftId,
+        pane, body, input, sendBtn,
+        source: null,
+        task: "",
+        kind: "draft",
+        isDraft: true,
+        attached: { images: [], files: [] },
+      };
+      TERMS.set(draftId, t);
+
+      // Repopulate the model list when the tool changes — claude models
+      // are useless if the user picked codex and vice versa.
+      toolSel.addEventListener("change", () => {
+        const tool = toolSel.value;
+        const list = DRAFT_MODELS_BY_TOOL[tool] || [];
+        modelSel.innerHTML = termDraftModelOptions(tool, list[0] || "");
+      });
+
+      // Image paste / drop reuses the real-pane plumbing.
+      input.addEventListener("paste", (e) => {
+        const items = e.clipboardData?.items || [];
+        for (const it of items) {
+          if (it.kind === "file" && it.type.startsWith("image/")) {
+            const f = it.getAsFile();
+            if (f) { termPasteImage(t, f); e.preventDefault(); }
+          }
+        }
+      });
+      pane.addEventListener("dragover", (e) => { e.preventDefault(); pane.classList.add("dragover"); });
+      pane.addEventListener("dragleave", () => pane.classList.remove("dragover"));
+      pane.addEventListener("drop", (e) => {
+        e.preventDefault();
+        pane.classList.remove("dragover");
+        for (const f of e.dataTransfer.files || []) {
+          if (f.type.startsWith("image/")) termPasteImage(t, f);
+        }
+      });
+
+      pane.addEventListener("click", () => {
+        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
+        pane.classList.add("focus");
+      });
+
+      pane.querySelector(".close-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        TERMS.delete(draftId);
+        pane.remove();
+        termRenderEmptyState();
+      });
+
+      const startConversation = async () => {
+        const text = input.value.trim();
+        const attached = t.attached || { images: [], files: [] };
+        if (!text && !attached.images.length && !attached.files.length) {
+          input.focus();
+          return;
+        }
+        const tool = toolSel.value;
+        const model = modelSel.value;
+        if (!model) {
+          setMsg("#term-msg", "err", "Pick a model before sending.", 4000);
+          return;
+        }
+        const kind = tool === "codex" ? "chat-codex" : "chat";
+        sendBtn.disabled = true;
+        toolSel.disabled = true;
+        modelSel.disabled = true;
+        sendBtn.textContent = "starting…";
+        try {
+          const payload = { kind, task: text, model };
+          const res = await postJson("/api/jobs", payload);
+          // Tear down the draft pane — the real one takes its place.
+          TERMS.delete(draftId);
+          pane.remove();
+          termOpen(res.id, res);
+          await loadJobs();
+        } catch (err) {
+          sendBtn.disabled = false;
+          toolSel.disabled = false;
+          modelSel.disabled = false;
+          sendBtn.textContent = "start";
+          const note = document.createElement("div");
+          note.className = "msg system";
+          note.style.color = "var(--bad)";
+          note.textContent = "[start failed: " + err.message + "]";
+          body.appendChild(note);
+          setMsg("#term-msg", "err", "Start failed: " + err.message, 4000);
+        }
+      };
+
+      sendBtn.addEventListener("click", startConversation);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); startConversation(); }
+      });
+
+      termRenderEmptyState();
+      // Drop focus into the message field so the operator can start typing.
+      requestAnimationFrame(() => { try { input.focus(); } catch (_) {} });
     }
 
     function termAppendChunk(t, chunk) {
@@ -414,18 +603,32 @@
       loadJobs();
     }
 
-    async function termSend(jobId) {
-      const t = TERMS.get(jobId);
+    async function termSend(arg) {
+      // Accepts either a jobId string (legacy callers) or the term object
+      // itself. The object form is required for chat-codex panes whose
+      // ``t.jobId`` is re-keyed across turns — closures captured at
+      // termOpen() time would otherwise point at the FIRST turn's job and
+      // fail with 404 from turn 2 onwards.
+      const t = typeof arg === "object" && arg ? arg : TERMS.get(arg);
       if (!t) return;
       const text = t.input.value;
       const attached = t.attached || { images: [], files: [] };
       if (!text.trim() && !attached.images.length && !attached.files.length) return;
+      // Codex chat is one subprocess per turn (``codex exec`` exits after
+      // emitting its answer). To present continuous multi-turn UX in the
+      // same pane, every follow-up message spawns a fresh
+      // ``codex exec resume <sid>`` job and the pane's SSE is rewired
+      // in place — see termSendCodexNextTurn.
+      if (t.kind === "chat-codex") {
+        await termSendCodexNextTurn(t, text, attached);
+        return;
+      }
       t.sendBtn.disabled = true;
       try {
         const payload = { text };
         if (attached.images.length) payload.images = attached.images;
         if (attached.files.length) payload.files = attached.files;
-        await postJson(`/api/jobs/${jobId}/input`, payload);
+        await postJson(`/api/jobs/${t.jobId}/input`, payload);
         if (t.kind === "chat") {
           termRenderUserMessage(t, text);
           // Show the "thinking" bubble immediately — it's the user's only
@@ -471,6 +674,245 @@
       } finally {
         t.sendBtn.disabled = false;
         t.input.focus();
+      }
+    }
+
+    // ----- chat-codex: multi-turn (one job per turn, SSE rewired in-place)
+    //
+    // The codex CLI exits after one turn. To make a chat-codex pane feel
+    // continuous, we:
+    //   1. capture session_id from the codex stream (server-side, in
+    //      _start_subprocess_job, looking for ``type=session_meta``);
+    //   2. on SSE 'end' for a chat-codex pane, mark the pane idle instead
+    //      of dead (termCodexAwaitNextTurn);
+    //   3. on the next user send, POST a fresh chat-codex job with
+    //      ``resume_session_id=<sid>``, then close the old EventSource and
+    //      open a new one bound to the new job id — re-keying TERMS so the
+    //      same pane object owns both job ids over its lifetime.
+
+    function termCodexBeginTurn(t) {
+      if (t.input) t.input.disabled = true;
+      if (t.sendBtn) { t.sendBtn.disabled = true; t.sendBtn.textContent = "running…"; }
+      termSetActivity(t, "running…", "busy");
+    }
+
+    async function termCodexAwaitNextTurn(t) {
+      termClearThinkingPlaceholder(t);
+      termSetActivity(t, "waiting", "waiting");
+      const sp = t.pane.querySelector(".status-pill");
+      if (sp) {
+        sp.textContent = "ready";
+        sp.classList.remove("queued", "running");
+        sp.classList.add("done");
+      }
+      if (t.input) {
+        t.input.disabled = false;
+        t.input.placeholder = "type, /skill, @file — Enter sends next turn (Codex resumes session)";
+      }
+      if (t.sendBtn) {
+        t.sendBtn.disabled = false;
+        t.sendBtn.textContent = "send";
+      }
+      // Fetch the latest job summary so we pick up the session_id the
+      // server captured from the codex stream. Without it the next turn
+      // can't resume.
+      try {
+        const r = await fetch(`/api/jobs/${t.jobId}`, { cache: "no-store" });
+        if (r.ok) {
+          const j = await r.json();
+          if (j.session_id) t.sessionId = j.session_id;
+          if (j.model) t.model = j.model;
+        }
+      } catch (_) { /* the operator can retry — we'll try again on send */ }
+      termRefreshCost(t);
+    }
+
+    async function termSendCodexNextTurn(t, text, attached) {
+      // The first turn happens via the draft/run flow with initial_stdin;
+      // termSend should only fire for follow-up turns. If we somehow got
+      // here without a captured session_id, try one last fetch — then bail.
+      if (!t.sessionId) {
+        try {
+          const r = await fetch(`/api/jobs/${t.jobId}`, { cache: "no-store" });
+          if (r.ok) {
+            const j = await r.json();
+            if (j.session_id) t.sessionId = j.session_id;
+          }
+        } catch (_) { /* fall through */ }
+      }
+      if (!t.sessionId) {
+        const err = document.createElement("div");
+        err.className = "msg system";
+        err.style.color = "var(--bad)";
+        err.textContent = "[codex session id unavailable — wait for the current turn to finish before sending again]";
+        t.body.appendChild(err);
+        setMsg("#term-msg", "err", "Codex session not yet captured; try again in a moment.", 4000);
+        return;
+      }
+      // Render the operator's message locally before the new job spawns
+      // so the chat reads naturally, and put up a "thinking" bubble.
+      termRenderUserMessage(t, text);
+      termShowThinkingPlaceholder(t);
+      t.input.value = "";
+      if (t.input.tagName === "TEXTAREA") t.input.style.height = "";
+      t.attached = { images: [], files: [] };
+      termRenderAttachments(t);
+      termCodexBeginTurn(t);
+      try {
+        const payload = { kind: "chat-codex", task: text, resume_session_id: t.sessionId };
+        if (t.model) payload.model = t.model;
+        const res = await postJson("/api/jobs", payload);
+        // Re-key TERMS so the same pane is reachable by its NEW job id —
+        // the closures in termOpen() pass the pane object (`t`) to
+        // termSend(), not a string, so they keep working across rekeys.
+        TERMS.delete(t.jobId);
+        t.jobId = res.id;
+        t.pane.dataset.jobId = res.id;
+        TERMS.set(res.id, t);
+        const idEl = t.pane.querySelector(".id");
+        if (idEl) idEl.textContent = res.id.slice(0, 8);
+        const sp = t.pane.querySelector(".status-pill");
+        if (sp) {
+          sp.textContent = "connecting";
+          sp.classList.remove("done", "warn");
+          sp.classList.add("running");
+        }
+        // Tear down the previous job's SSE and bind a new one to the
+        // freshly-spawned resume job.
+        try { t.source && t.source.close(); } catch (_) {}
+        t.jsonBuf = "";
+        t.currentAssistant = null;
+        const es = new EventSource(`/api/jobs/${res.id}/stream`);
+        t.source = es;
+        es.onopen = () => {
+          const pill = t.pane.querySelector(".status-pill");
+          if (pill) { pill.textContent = "live"; pill.classList.remove("queued"); }
+          termSetActivity(t, "live", "busy");
+        };
+        es.onmessage = (ev) => termHandleCodexChunk(t, ev.data);
+        es.addEventListener("end", () => {
+          try { es.close(); } catch (_) {}
+          termCodexAwaitNextTurn(t);
+          loadJobs();
+        });
+        es.onerror = () => {
+          try { es.close(); } catch (_) {}
+          // Surface the error but keep the pane writable; the operator
+          // can retry the turn.
+          if (!t.pane.classList.contains("dead")) termCodexAwaitNextTurn(t);
+        };
+        loadJobs();
+      } catch (e) {
+        termClearThinkingPlaceholder(t);
+        const err = document.createElement("div");
+        err.className = "msg system";
+        err.style.color = "var(--bad)";
+        err.textContent = `[next turn failed: ${e.message}]`;
+        t.body.appendChild(err);
+        setMsg("#term-msg", "err", "next turn failed: " + e.message, 4000);
+        if (t.input) t.input.disabled = false;
+        if (t.sendBtn) { t.sendBtn.disabled = false; t.sendBtn.textContent = "send"; }
+        termSetActivity(t, "error", "ended");
+      }
+    }
+
+    // Minimal renderer for the codex JSON event stream. We deliberately
+    // surface only assistant text, reasoning blocks, and tool calls — the
+    // session_meta / turn_context / event_msg noise stays out of the
+    // chat body. The operator's own messages are rendered locally on
+    // send, so we skip the user/developer ``response_item`` records that
+    // codex injects for system prompts and AGENTS.md context.
+    function termHandleCodexChunk(t, chunk) {
+      if (!chunk) return;
+      t.jsonBuf = (t.jsonBuf || "") + chunk;
+      let nl;
+      while ((nl = t.jsonBuf.indexOf("\n")) !== -1) {
+        const line = t.jsonBuf.slice(0, nl);
+        t.jsonBuf = t.jsonBuf.slice(nl + 1);
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let obj;
+        try { obj = JSON.parse(trimmed); }
+        catch (_) { continue; }
+        termRenderCodexEvent(t, obj);
+      }
+      termAutoScroll(t);
+    }
+
+    function termRenderCodexEvent(t, obj) {
+      if (!obj || typeof obj !== "object") return;
+      const type = obj.type;
+      const payload = obj.payload || {};
+      if (type === "session_meta") {
+        if (payload.id && !t.sessionId) t.sessionId = payload.id;
+        if (payload.model_provider) {
+          // We don't have a single model id here, but the role chip falls
+          // back to "codex" via termAssistantRoleLabel which is fine.
+        }
+        return;
+      }
+      if (type === "turn_context") {
+        const m = payload.model;
+        if (m && typeof m === "string") termSetPaneModel(t, m);
+        return;
+      }
+      if (type === "response_item") {
+        const role = payload.role;
+        const kind = payload.type;
+        if (kind === "message" && role === "assistant" && Array.isArray(payload.content)) {
+          // Discrete assistant message — close any in-progress block, then
+          // render the full text as a fresh assistant bubble.
+          t.currentAssistant = null;
+          const text = payload.content.map((c) => c.text || c.output_text || "").join("");
+          if (text) termAppendAssistantText(t, text);
+          return;
+        }
+        if (kind === "reasoning" && Array.isArray(payload.content)) {
+          const block = termAssistantBlock(t);
+          const txtEl = block.querySelector(".text");
+          const det = document.createElement("details");
+          det.className = "thinking-block";
+          const sum = document.createElement("summary");
+          const txt = payload.content.map((c) => c.text || "").join("\n");
+          sum.textContent = `reasoning · ${txt.length} chars`;
+          const pre = document.createElement("pre");
+          pre.textContent = txt;
+          det.appendChild(sum); det.appendChild(pre);
+          txtEl.appendChild(det);
+          return;
+        }
+        if (kind === "function_call") {
+          const name = payload.name || "(tool)";
+          let args = {};
+          try { args = JSON.parse(payload.arguments || "{}"); } catch (_) {}
+          const callId = payload.call_id || payload.id || ("codex_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8));
+          termAddToolPill(t, callId, name, args);
+          return;
+        }
+        if (kind === "function_call_output") {
+          const callId = payload.call_id || payload.id;
+          if (callId) termMarkToolResult(t, callId, false, payload.output || "");
+          return;
+        }
+        // user / developer response_items are codex's own system context;
+        // the operator already saw their prompt as a local user bubble.
+        return;
+      }
+      if (type === "event_msg") {
+        const sub = payload.type;
+        if (sub === "agent_message_delta") {
+          termAppendAssistantText(t, payload.delta || "");
+          return;
+        }
+        if (sub === "task_started") {
+          termSetActivity(t, "thinking…", "busy");
+          return;
+        }
+        if (sub === "task_complete") {
+          termSetActivity(t, "responding…", "busy");
+          return;
+        }
+        return;
       }
     }
 
@@ -1433,7 +1875,10 @@
       };
       input.addEventListener("input", autosize);
       const kind = meta?.kind || "orchestrate";
-      if (kind === "chat") body.classList.add("chat");
+      // Both Claude and Codex chat panes use the same chat-bubble styling.
+      // Even though codex is one-shot per subprocess, the pane renders
+      // multi-turn conversations via SSE rewiring (see termSendCodexNextTurn).
+      if (kind === "chat" || kind === "chat-codex") body.classList.add("chat");
       const t = {
         jobId, pane, body, input, sendBtn,
         source: null,
@@ -1556,9 +2001,9 @@
           termToggleSearch(t, true);
         }
       });
-      sendBtn.addEventListener("click", () => termSend(jobId));
+      sendBtn.addEventListener("click", () => termSend(t));
       input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); termSend(jobId); }
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); termSend(t); }
       });
 
       // Wire SSE
@@ -1570,9 +2015,10 @@
         statusPill.textContent = "live";
         termSetActivity(t, "live", "busy");
       };
-      // For chat jobs the SSE stream is one stream-json object per line;
-      // buffer partial lines, parse each, and render structured messages.
-      // For other kinds the chunk is plain text and goes straight in.
+      // Each chat tool has its own structured event stream:
+      //   * Claude — Anthropic stream-json (system/assistant/user/result/stream_event)
+      //   * Codex  — Rust CLI rollout events (session_meta/response_item/event_msg)
+      // Non-chat kinds (orchestrate / plan) dump plain text.
       //
       // IMPORTANT: do NOT append "\n" here. The server's pump reads stdout
       // in 1024-byte chunks, so a single long JSON record (e.g. the 8KB
@@ -1584,25 +2030,44 @@
       // termRenderRaw and dumps it as a raw "msg system" block.
       es.onmessage = (ev) => {
         if (t.kind === "chat") termHandleChatChunk(t, ev.data);
+        else if (t.kind === "chat-codex") termHandleCodexChunk(t, ev.data);
         else termAppendChunk(t, ev.data);
       };
       es.addEventListener("end", () => {
-        termSetDead(t, "done");
         try { es.close(); } catch (_) {}
+        if (t.kind === "chat-codex") {
+          // Codex job exited after one turn. Don't mark the pane dead —
+          // it's our multi-turn vehicle. The next send will spawn a
+          // resume job and rewire SSE in-place.
+          termCodexAwaitNextTurn(t);
+        } else {
+          termSetDead(t, "done");
+        }
         loadJobs();
       });
       es.onerror = () => {
+        try { es.close(); } catch (_) {}
         // The stream ends with `end` event; an error here usually means the
-        // subprocess finished AND the server closed the connection. Mark dead
-        // but don't spam the body.
-        if (!t.pane.classList.contains("dead")) {
+        // subprocess finished AND the server closed the connection. For
+        // codex panes (multi-turn) we transition to idle; for everything
+        // else we mark dead so the operator can resume manually.
+        if (t.pane.classList.contains("dead")) return;
+        if (t.kind === "chat-codex") {
+          termCodexAwaitNextTurn(t);
+        } else {
           termSetDead(t, "ended");
         }
-        try { es.close(); } catch (_) {}
       };
       // Initial cost fetch (also handles resumed sessions that already
       // have prior turns accumulated on disk).
       termRefreshCost(t);
+
+      // Codex panes start a turn the moment the subprocess spawns (via
+      // initial_stdin on the server). Lock the composer until SSE 'end'
+      // fires and termCodexAwaitNextTurn captures session_id, so the
+      // operator can't try to send a follow-up before the resume target
+      // is known.
+      if (kind === "chat-codex") termCodexBeginTurn(t);
 
       termRenderEmptyState();
     }
@@ -2065,6 +2530,7 @@
           setMsg("#term-msg", "err", e.message, 4000);
         }
       });
+      $("#term-new")?.addEventListener("click", termOpenDraft);
       $("#term-open-all")?.addEventListener("click", termOpenAllRunning);
       // Restore the auto-open preference and wire its toggle.
       termSetAutoOpen(termAutoOpenEnabled());
