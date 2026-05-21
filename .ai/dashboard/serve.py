@@ -545,7 +545,13 @@ def _aggregate_codex_usage(repo_root: Path, now: _dt.datetime) -> dict:
                         ts = _parse_iso_ts(obj.get("timestamp"))
                         rl = payload.get("rate_limits")
                         if isinstance(rl, dict) and ts is not None:
-                            if latest_rl is None or ts > latest_rl[0]:
+                            # Once the 5h quota is exhausted Codex switches to an
+                            # empty rate_limits payload (limit_id="premium",
+                            # primary/secondary both null). Skip those so they
+                            # don't clobber the last healthy snapshot — otherwise
+                            # the UI sticks on "—" until the next real event.
+                            has_payload = isinstance(rl.get("primary"), dict) or isinstance(rl.get("secondary"), dict)
+                            if has_payload and (latest_rl is None or ts > latest_rl[0]):
                                 latest_rl = (ts, rl)
                         if not cwd_matches:
                             continue
