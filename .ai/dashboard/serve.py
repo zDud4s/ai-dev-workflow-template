@@ -111,6 +111,20 @@ SKILL_METRICS_FILE = ROOT / ".ai" / "dashboard" / "skill_metrics.jsonl"
 SKILL_PROPOSALS_DIR  = ROOT / ".ai" / "dashboard" / "skill_proposals"
 SKILL_BACKUPS_DIR    = ROOT / ".ai" / "dashboard" / "skill_backups"
 IMPROVEMENTS_LEDGER  = ROOT / ".ai" / "dashboard" / "improvements.jsonl"
+_JOBS_PERSIST_LOCK = threading.Lock()
+_IMPROVEMENTS_LEDGER_LOCK = threading.Lock()
+_SKILL_METRICS_LOCK = threading.Lock()
+# Serialises /api/workflow/update so two concurrent clients can't both spawn
+# update-workflow.sh against the same tree at the same time (interleaved file
+# writes corrupt the workflow core). Non-blocking acquire — second caller gets
+# 409.
+_WORKFLOW_UPDATE_LOCK = threading.Lock()
+# Caps concurrent /api/suggestions/<id>/draft + /api/agents/suggest requests.
+# Both endpoints spawn long-running `claude -p` / `codex` subprocesses
+# (timeout_seconds, default 120s) on the request thread; without a cap a
+# handful of concurrent clients can exhaust the server thread pool. Shared
+# between both endpoints because they consume the same LLM CLI binary.
+_SUGGESTION_SEMAPHORE = threading.Semaphore(2)
 # Agent suggestions storage. Mirrors the skill-proposal layout but for the
 # agent-improver "Suggest-new-agents" mode: one .json payload + one .body.md
 # per proposal. Accept writes a real file at .claude/agents/<slug>.md;
@@ -144,6 +158,74 @@ _JOB_RUNTIME_FIELDS = frozenset({"proc", "subscribers", "stdin_lock"})
 _TERMINAL_JOB_STATUSES = frozenset({"done", "failed", "cancelled", "interrupted"})
 
 
+# Generic mtime-invalidated cache for append-only JSONL ledgers (jobs,
+# improvements, skill metrics, ...). Every list/aggregate endpoint used to
+# re-read and re-parse its whole ledger on every call — at ~100MB the
+# dashboard became unresponsive. The cache returns the same parsed ``list``
+# object until the file's mtime changes, so a cache hit is a single
+# ``stat()`` + dict lookup. The cache lock guards only the dict; the actual
+# read happens between two lock acquisitions on purpose so a slow disk
+# can't block other readers. Two concurrent first-callers may parse the
+# same payload twice; the second write just replaces the first with an
+# identical value, which is harmless.
+#
+# Write-side locks on the ledgers (``_JOBS_PERSIST_LOCK``,
+# ``_IMPROVEMENTS_LEDGER_LOCK``, ``_SKILL_METRICS_LOCK``) are independent —
+# we never hold the cache lock while opening the file, so there is no
+# deadlock path.
+_JSONL_CACHE: dict[str, tuple[int, list[dict]]] = {}
+_JSONL_CACHE_LOCK = threading.Lock()
+
+
+def _load_jsonl_cached(path: Path) -> list[dict]:
+    """Return parsed rows from a JSONL file, cached until ``mtime`` changes.
+
+    Behaviour matches the prior hand-rolled readers: blank lines are skipped,
+    decode errors fall back to the unicode replacement character, and
+    ``json.JSONDecodeError`` on individual lines is silently swallowed so a
+    single corrupt entry can't poison the whole endpoint. Returns ``[]`` when
+    the file does not exist (callers used to special-case this themselves).
+    """
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return []
+    except OSError:
+        # Permission errors etc. — behave as if empty so a transient FS hiccup
+        # doesn't surface as a 500. Endpoints that need to know the difference
+        # already wrap their own file ops in try/except above this layer.
+        return []
+    key = str(path)
+    with _JSONL_CACHE_LOCK:
+        cached = _JSONL_CACHE.get(key)
+        if cached is not None and cached[0] == st.st_mtime_ns:
+            return cached[1]
+    # Read outside the lock — slow I/O must not block other cache readers.
+    # Two concurrent first-callers will parse twice; both writes produce the
+    # same list so the race is benign.
+    rows: list[dict] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except (json.JSONDecodeError, ValueError):
+                    # Mirror the prior hand-rolled behaviour: skip malformed
+                    # rows silently rather than failing the whole endpoint.
+                    continue
+    except OSError:
+        # If the file vanished or became unreadable between ``stat()`` and
+        # ``open()`` (a rare race during rotation), treat as empty. Don't
+        # cache the empty result — the next call will retry the stat.
+        return []
+    with _JSONL_CACHE_LOCK:
+        _JSONL_CACHE[key] = (st.st_mtime_ns, rows)
+    return rows
+
+
 def _write_text_lf(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` with LF line endings, regardless of platform.
 
@@ -166,8 +248,9 @@ def _persist_job(job_id: str) -> None:
         snapshot = {k: v for k, v in j.items() if k not in _JOB_RUNTIME_FIELDS}
     try:
         JOBS_PERSIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with JOBS_PERSIST_FILE.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(snapshot, default=str) + "\n")
+        with _JOBS_PERSIST_LOCK:
+            with JOBS_PERSIST_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(snapshot, default=str) + "\n")
     except OSError:
         # Persistence is best-effort; never break the live pipeline.
         pass
@@ -287,24 +370,15 @@ def _load_persisted_jobs() -> None:
     are flagged as ``interrupted`` since their subprocess is dead — we
     cannot honestly call them running after a restart.
     """
-    try:
-        if not JOBS_PERSIST_FILE.exists():
-            return
-        seen: dict[str, dict] = {}
-        with JOBS_PERSIST_FILE.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                jid = obj.get("id")
-                if jid:
-                    seen[jid] = obj
-    except OSError:
-        return
+    seen: dict[str, dict] = {}
+    for obj in _load_jsonl_cached(JOBS_PERSIST_FILE):
+        jid = obj.get("id")
+        if jid:
+            # Copy the cached row: we hand the object straight to ``JOBS`` and
+            # the loop below mutates ``status`` / ``error`` in place. Without a
+            # copy those mutations would leak back into the JSONL cache and
+            # poison every subsequent reader.
+            seen[jid] = dict(obj)  # last snapshot per id wins
 
     with JOBS_LOCK:
         for obj in seen.values():
@@ -359,7 +433,7 @@ def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
                             continue
                         try:
                             obj = json.loads(line)
-                        except Exception:
+                        except (json.JSONDecodeError, ValueError):
                             continue
                         if str(obj.get("cwd") or "").lower() == target:
                             return sub
@@ -519,6 +593,22 @@ def _aggregate_codex_usage(repo_root: Path, now: _dt.datetime) -> dict:
         files = list(root.rglob("rollout-*.jsonl"))
     except OSError:
         return out
+
+    # Cap traversal at the N most recently modified rollouts. ``rglob`` walks
+    # ALL Codex sessions on the machine (across every repo); the unfiltered
+    # set can be ~150MB and hundreds of files. Older sessions don't contribute
+    # meaningfully to "recent usage", and the 30s TTL cache means the first
+    # call after expiry would otherwise stall the overview. Sort by mtime
+    # descending and keep the most recent slice.
+    _CODEX_SESSION_FILE_CAP = 100
+    if len(files) > _CODEX_SESSION_FILE_CAP:
+        try:
+            files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            # If stat() fails on some entries, fall back to the unsorted
+            # truncation; better than a 500 on the overview endpoint.
+            pass
+        files = files[:_CODEX_SESSION_FILE_CAP]
 
     def add(win, model, last):
         inp = int(last.get("input_tokens") or 0)
@@ -809,6 +899,20 @@ class _WsClosed(Exception):
     """Raised by WebSocket recv/send when the peer has disconnected."""
 
 
+def _origin_allowed(headers) -> bool:
+    """Origin allowlist for PTY endpoints. Returns True iff:
+      - the Origin header is absent (curl / programmatic clients), OR
+      - it exactly matches http://127.0.0.1:<PORT> or http://localhost:<PORT>.
+    'null' Origin (sandboxed iframes / file://) is rejected. No trailing-
+    slash tolerance -- Origin per RFC6454 has no path.
+    """
+    origin = headers.get("Origin")
+    if origin is None:
+        return True
+    allowed = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
+    return origin in allowed
+
+
 class WebSocket:
     """Minimal RFC6455 server endpoint.
 
@@ -855,6 +959,9 @@ class WebSocket:
             return None
         if "upgrade" not in h.get("Connection", "").lower():
             handler.send_error(400, "Expected Connection: Upgrade")
+            return None
+        if not _origin_allowed(h):
+            handler.send_error(403, "Origin not allowed")
             return None
         key = h.get("Sec-WebSocket-Key", "").strip()
         if not key:
@@ -1051,8 +1158,10 @@ def _pty_kill(pty_id: str) -> bool:
     pty = entry.get("_pty")
     try:
         pty.kill()
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001 — PTY backend may raise anything
+        # Best-effort: the session is being torn down anyway, but log so an
+        # operator can grep for stuck shells that wouldn't kill.
+        print(f"[serve] pty kill({pty_id}) failed: {e}", flush=True)
     with entry["_lock"]:
         entry["status"] = "ended"
         for q in entry["_subscribers"]:
@@ -1344,8 +1453,9 @@ def _audit_improvement(skill_id: str, status: str, reason: str,
     }
     try:
         IMPROVEMENTS_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-        with IMPROVEMENTS_LEDGER.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, default=str) + "\n")
+        with _IMPROVEMENTS_LEDGER_LOCK:
+            with IMPROVEMENTS_LEDGER.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, default=str) + "\n")
     except OSError:
         pass
 
@@ -1393,7 +1503,9 @@ def _apply_improvement(skill_path: Path, new_content: str, source: str,
     try:
         original = skill_path.read_text(encoding="utf-8")
         backup_path.write_text(original, encoding="utf-8")
-        skill_path.write_text(new_content, encoding="utf-8")
+        tmp_path = skill_path.with_name(skill_path.name + ".tmp")
+        tmp_path.write_text(new_content, encoding="utf-8")
+        os.replace(str(tmp_path), str(skill_path))
     except OSError as e:
         _audit_improvement(skill_id, "failed", f"write error: {e}",
                            proposal_id, None, diff_lines, source=source)
@@ -1410,8 +1522,11 @@ def _apply_improvement(skill_path: Path, new_content: str, source: str,
                 obj["applied_via"] = source
                 obj["backup_path"] = str(backup_path.relative_to(ROOT)).replace("\\", "/")
                 pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-            except (OSError, json.JSONDecodeError):
-                pass
+            except (OSError, json.JSONDecodeError) as e:
+                # On-disk proposal stays "pending" while we already applied the
+                # SKILL.md change. Best-effort here so caller still completes,
+                # but operators need to see this drift.
+                print(f"[serve] failed to write proposal {pj} (apply): {e}", flush=True)
     return True
 
 
@@ -1594,8 +1709,9 @@ def _auto_revert_skill(decision: dict) -> bool:
             "n_post": decision["n_post"],
         }
         pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as e:
+        # Proposal already rolled back on disk; the .json record is now stale.
+        print(f"[serve] failed to write proposal {pj} (rollback): {e}", flush=True)
     return True
 
 
@@ -1620,13 +1736,15 @@ def _post_job_skill_actions(job_id: str, skill_ids: list[str]) -> None:
     for sid in canonical:
         try:
             decision = _check_skill_regression(sid, cfg)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 — never crash the runner
+            print(f"[serve] regression check failed for {sid}: {e}", flush=True)
             continue
         if not decision:
             continue
         try:
             _auto_revert_skill(decision)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 — never crash the runner
+            print(f"[serve] auto-revert failed for {sid}: {e}", flush=True)
             continue
     # 2. Improver pass — spawns one daemon thread per eligible skill.
     _trigger_improvers_for_job(job_id, skill_ids)
@@ -1806,26 +1924,10 @@ def _load_unique_jobs(max_age_days: int = 30) -> list[dict]:
     filtering to ``max_age_days``. Skips jobs without a meaningful task
     (test-mode placeholders)."""
     snapshots: dict[str, dict] = {}
-    try:
-        if not JOBS_PERSIST_FILE.is_file():
-            return []
-    except OSError:
-        return []
-    try:
-        with JOBS_PERSIST_FILE.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line.startswith("{"):
-                    continue
-                try:
-                    o = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                jid = o.get("id")
-                if jid:
-                    snapshots[jid] = o  # last write wins
-    except OSError:
-        return []
+    for o in _load_jsonl_cached(JOBS_PERSIST_FILE):
+        jid = o.get("id")
+        if jid:
+            snapshots[jid] = o  # last write wins
     cutoff_epoch = _dt.datetime.now(_dt.timezone.utc).timestamp() - max_age_days * 86400
     keep: list[dict] = []
     for o in snapshots.values():
@@ -1858,23 +1960,11 @@ def _detect_skill_suggestions(threshold: float = 0.5, min_cluster: int = 3,
 
     # Optional skill-sequence index per job (helps when tasks are short).
     skill_seqs: dict[str, list[str]] = {}
-    try:
-        if SKILL_METRICS_FILE.is_file():
-            with SKILL_METRICS_FILE.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line.startswith("{"):
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-                    jid = row.get("job_id")
-                    sk = row.get("name") or row.get("skill")
-                    if jid and sk:
-                        skill_seqs.setdefault(jid, []).append(sk)
-    except OSError:
-        pass
+    for row in _load_jsonl_cached(SKILL_METRICS_FILE):
+        jid = row.get("job_id")
+        sk = row.get("name") or row.get("skill")
+        if jid and sk:
+            skill_seqs.setdefault(jid, []).append(sk)
 
     used = [False] * len(fps)
     clusters: list[dict] = []
@@ -2061,7 +2151,9 @@ def _record_skill_metrics(job_id: str) -> int:
     if log_path:
         try:
             scanned = _extract_skills_from_stream_json(Path(log_path))
-        except Exception:  # noqa: BLE001 - never crash the runner
+        except Exception as e:  # noqa: BLE001 - never crash the runner
+            # Log so operators can find malformed stream-json transcripts.
+            print(f"[serve] skill scan failed for {log_path}: {e}", flush=True)
             scanned = {}
         for sid, n in scanned.items():
             counts[sid] = counts.get(sid, 0) + n
@@ -2092,9 +2184,10 @@ def _record_skill_metrics(job_id: str) -> int:
 
     try:
         SKILL_METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with SKILL_METRICS_FILE.open("a", encoding="utf-8") as f:
-            for row in rows:
-                f.write(json.dumps(row, default=str) + "\n")
+        with _SKILL_METRICS_LOCK:
+            with SKILL_METRICS_FILE.open("a", encoding="utf-8") as f:
+                for row in rows:
+                    f.write(json.dumps(row, default=str) + "\n")
     except OSError:
         return 0
 
@@ -2103,8 +2196,8 @@ def _record_skill_metrics(job_id: str) -> int:
     # safe even when the improver is disabled.
     try:
         _post_job_skill_actions(job_id, list(counts.keys()))
-    except Exception:  # noqa: BLE001 - never break the runner
-        pass
+    except Exception as e:  # noqa: BLE001 - never break the runner
+        print(f"[serve] post-job skill actions failed for {job_id}: {e}", flush=True)
 
     return len(rows)
 
@@ -2114,59 +2207,43 @@ def _aggregate_skill_metrics() -> dict[str, dict]:
     can render in skill cards. Keyed by both the raw skill id and the
     canonical short name so callers can look up either flavor."""
     by_skill: dict[str, dict] = {}
-    try:
-        if not SKILL_METRICS_FILE.is_file():
-            return by_skill
-    except OSError:
-        return by_skill
-    try:
-        with SKILL_METRICS_FILE.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line.startswith("{"):
-                    continue
-                try:
-                    row = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                sid = row.get("skill") or ""
-                if not sid:
-                    continue
-                agg = by_skill.setdefault(sid, {
-                    "skill": sid,
-                    "name": row.get("name") or _skill_name_canonical(sid),
-                    "total_jobs": 0,
-                    "total_invocations": 0,
-                    "successes": 0,
-                    "failures": 0,
-                    "total_cost_usd": 0.0,
-                    "total_duration_ms": 0,
-                    "last_used": None,
-                    "last_outcome": None,
-                    "recent": [],
-                })
-                agg["total_jobs"] += 1
-                agg["total_invocations"] += int(row.get("invocations") or 1)
-                if row.get("outcome") == "done":
-                    agg["successes"] += 1
-                else:
-                    agg["failures"] += 1
-                agg["total_cost_usd"] += float(row.get("cost_usd") or 0.0)
-                agg["total_duration_ms"] += int(row.get("duration_ms") or 0)
-                ts = row.get("ts")
-                if ts and (agg["last_used"] is None or ts > agg["last_used"]):
-                    agg["last_used"] = ts
-                    agg["last_outcome"] = row.get("outcome")
-                agg["recent"].append({
-                    "ts": ts,
-                    "job_id": row.get("job_id"),
-                    "kind": row.get("kind"),
-                    "outcome": row.get("outcome"),
-                    "cost_usd": row.get("cost_usd"),
-                    "duration_ms": row.get("duration_ms"),
-                })
-    except OSError:
-        return by_skill
+    for row in _load_jsonl_cached(SKILL_METRICS_FILE):
+        sid = row.get("skill") or ""
+        if not sid:
+            continue
+        agg = by_skill.setdefault(sid, {
+            "skill": sid,
+            "name": row.get("name") or _skill_name_canonical(sid),
+            "total_jobs": 0,
+            "total_invocations": 0,
+            "successes": 0,
+            "failures": 0,
+            "total_cost_usd": 0.0,
+            "total_duration_ms": 0,
+            "last_used": None,
+            "last_outcome": None,
+            "recent": [],
+        })
+        agg["total_jobs"] += 1
+        agg["total_invocations"] += int(row.get("invocations") or 1)
+        if row.get("outcome") == "done":
+            agg["successes"] += 1
+        else:
+            agg["failures"] += 1
+        agg["total_cost_usd"] += float(row.get("cost_usd") or 0.0)
+        agg["total_duration_ms"] += int(row.get("duration_ms") or 0)
+        ts = row.get("ts")
+        if ts and (agg["last_used"] is None or ts > agg["last_used"]):
+            agg["last_used"] = ts
+            agg["last_outcome"] = row.get("outcome")
+        agg["recent"].append({
+            "ts": ts,
+            "job_id": row.get("job_id"),
+            "kind": row.get("kind"),
+            "outcome": row.get("outcome"),
+            "cost_usd": row.get("cost_usd"),
+            "duration_ms": row.get("duration_ms"),
+        })
     for agg in by_skill.values():
         total = agg["total_jobs"] or 1
         agg["success_rate"] = round(agg["successes"] / total, 4)
@@ -2705,10 +2782,11 @@ def _start_subprocess_job(
             _persist_job(job_id)  # final state -> ledger
             try:
                 _record_skill_metrics(job_id)
-            except Exception:  # noqa: BLE001 - never break the runner
-                pass
+            except Exception as e:  # noqa: BLE001 - never break the runner
+                print(f"[serve] record_skill_metrics failed for {job_id}: {e}", flush=True)
             _publish_chunk(job_id, None)  # sentinel: stream end
         except Exception as e:  # noqa: BLE001 (don't crash the server)
+            print(f"[serve] job runner crashed for {job_id}: {e}", flush=True)
             with JOBS_LOCK:
                 JOBS[job_id]["status"] = "failed"
                 JOBS[job_id]["error"] = str(e)
@@ -3087,7 +3165,10 @@ def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 3) -> d
     if not METRICS_FILE.exists():
         return empty
     try:
-        raw_lines = METRICS_FILE.read_text(encoding="utf-8").splitlines()
+        # ``errors="replace"`` so a half-written concurrent append (rare but
+        # possible when the orchestrate skill is logging while we read) can't
+        # 500 the whole /api/auto-select endpoint with UnicodeDecodeError.
+        raw_lines = METRICS_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return empty
     tail = raw_lines[-max_records:] if len(raw_lines) > max_records else raw_lines
@@ -3214,7 +3295,10 @@ def _load_timeline_runs(max_events: int = 500) -> list[dict]:
     if not EVENTS_FILE.exists():
         return []
     try:
-        raw_lines = EVENTS_FILE.read_text(encoding="utf-8").splitlines()
+        # ``errors="replace"`` so a half-written concurrent append from the
+        # log_event.py hook (writes are not atomic at the byte level) can't
+        # 500 the /api/timeline endpoint with UnicodeDecodeError.
+        raw_lines = EVENTS_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
     tail = raw_lines[-max_events:] if len(raw_lines) > max_events else raw_lines
@@ -3501,8 +3585,30 @@ def _persist_agent_proposal(suggestion: dict, *, source_signal: dict) -> str | N
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    # Sensitive paths that MUST NOT be served by the static handler. Resolved
+    # at class load so symlinks and Windows case differences cannot bypass.
+    # The dashboard intentionally reads other project files (.ai/memory.md,
+    # .ai/decisions.md, .ai/project.yaml, .ai/models.yaml, .ai/plans/*,
+    # .ai/specs/*, .ai/packets/*, .ai/events.jsonl, .claude/skills/*) via this
+    # handler — those must keep working, so we blocklist instead of allowlist.
+    _BLOCKED_PATHS = tuple(
+        os.path.normcase(os.path.realpath(str(p)))
+        for p in (
+            ROOT / ".git",
+            ROOT / ".claude" / "settings.json",
+        )
+    )
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def translate_path(self, path):
+        real = super().translate_path(path)
+        resolved = os.path.normcase(os.path.realpath(real))
+        for blocked in self._BLOCKED_PATHS:
+            if resolved == blocked or resolved.startswith(blocked + os.sep):
+                return os.path.join(real, "__blocked_sensitive_path__")
+        return real
 
     # ----- routing -----
     def do_GET(self):  # noqa: N802 (stdlib signature)
@@ -3684,7 +3790,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             raw = self.rfile.read(length).decode("utf-8")
             return json.loads(raw) if raw else {}
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            self._json(400, {"error": "invalid JSON", "detail": str(e)})
+            # Don't leak parser internals to the client. Log the real reason
+            # server-side so operators can still diagnose malformed bodies.
+            print(f"[serve] bad JSON body: {e}", flush=True)
+            self._json(400, {"error": "invalid JSON", "detail": "invalid JSON in request body"})
             return None
 
     def _json(self, status: int, payload: dict) -> None:
@@ -3703,8 +3812,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _handle_list(self, qs: dict[str, list[str]]) -> None:
         rel = (qs.get("path", [""])[0] or "").lstrip("/").replace("\\", "/")
         target = (ROOT / rel).resolve()
+        # Compare against ``ROOT.resolve()``: a bare ``ROOT`` is unresolved, so
+        # a symlink/junction *inside* the repo pointing outside would slip past
+        # because ``target`` is followed through the symlink while ``ROOT`` is
+        # not. The other path-checking sites in this file already use the
+        # resolved form (see ``_handle_file_read``); this is the last holdout.
         try:
-            target.relative_to(ROOT)
+            target.relative_to(ROOT.resolve())
         except ValueError:
             self._json(403, {"error": "path outside repo root"})
             return
@@ -4138,115 +4252,126 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             shutil.rmtree(tmp_parent, ignore_errors=True)
 
     def _handle_workflow_update(self) -> None:
-        if self._is_template_repo():
-            self._json(200, {
-                "success": False,
-                "error": "is_template_repo",
-                "message": (
-                    "Refusing to self-update: this dashboard is being served "
-                    "from a checkout of the template itself. Use `git pull` "
-                    "on this checkout, then run "
-                    "`bash update-workflow.sh <other-project>` from here."
-                ),
-                "output": "",
-            })
+        # Non-blocking acquire: if another client already triggered a workflow
+        # update, refuse this one with 409 instead of stacking subprocesses
+        # that would interleave file writes against the same tree.
+        if not _WORKFLOW_UPDATE_LOCK.acquire(blocking=False):
+            self._json(409, {"error": "workflow update already in progress"})
             return
-
-        bash_path = self._find_bash()
-        if not bash_path:
-            self._json(200, {
-                "success": False,
-                "error": "bash_not_found",
-                "message": (
-                    "bash not found. Install Git for Windows (which bundles "
-                    "bash) or ensure a POSIX bash is on PATH."
-                ),
-                "output": "",
-            })
-            return
-
-        tmp_parent = tempfile.mkdtemp(prefix="aiwt-update-")
-        clone_dir = os.path.join(tmp_parent, "template")
         try:
-            rc, _out, err = self._clone_template(clone_dir)
-            if rc != 0:
+            if self._is_template_repo():
                 self._json(200, {
                     "success": False,
-                    "error": "clone_failed",
-                    "message": "Could not clone the workflow template upstream.",
-                    "output": err.strip(),
-                })
-                return
-
-            rc_sha, sha_out, _ = self._run_subprocess(
-                ["git", "-C", clone_dir, "rev-parse", "HEAD"], timeout=10
-            )
-            upstream_sha = sha_out.strip() if rc_sha == 0 else ""
-
-            update_script = os.path.join(clone_dir, "update-workflow.sh")
-            if not os.path.isfile(update_script):
-                self._json(200, {
-                    "success": False,
-                    "error": "missing_script",
-                    "message": "Upstream checkout has no update-workflow.sh.",
+                    "error": "is_template_repo",
+                    "message": (
+                        "Refusing to self-update: this dashboard is being served "
+                        "from a checkout of the template itself. Use `git pull` "
+                        "on this checkout, then run "
+                        "`bash update-workflow.sh <other-project>` from here."
+                    ),
                     "output": "",
                 })
                 return
 
-            rc_u, out_u, err_u = self._run_subprocess(
-                [bash_path, update_script, str(ROOT)],
-                timeout=180,
-            )
-            output = out_u
-            if err_u:
-                output = (output + "\n" + err_u).strip() if output else err_u.strip()
-            output = output.strip()
-
-            if rc_u != 0:
+            bash_path = self._find_bash()
+            if not bash_path:
                 self._json(200, {
                     "success": False,
-                    "error": "update_script_failed",
-                    "message": "update-workflow.sh exited with a non-zero status.",
-                    "output": output,
-                    "exit_code": rc_u,
+                    "error": "bash_not_found",
+                    "message": (
+                        "bash not found. Install Git for Windows (which bundles "
+                        "bash) or ensure a POSIX bash is on PATH."
+                    ),
+                    "output": "",
                 })
                 return
 
-            # update-workflow.sh prints "Updated <path>" / "Created <path>" per
-            # file it touched. Anything under .ai/dashboard/ means the running
-            # serve.py / static assets just got overwritten — the user needs to
-            # restart so the new code takes effect.
-            restart_needed = False
-            for line in output.splitlines():
-                if line.startswith(("Updated ", "Created ")) and "/.ai/dashboard/" in line.replace("\\", "/"):
-                    restart_needed = True
-                    break
+            tmp_parent = tempfile.mkdtemp(prefix="aiwt-update-")
+            clone_dir = os.path.join(tmp_parent, "template")
+            try:
+                rc, _out, err = self._clone_template(clone_dir)
+                if rc != 0:
+                    self._json(200, {
+                        "success": False,
+                        "error": "clone_failed",
+                        "message": "Could not clone the workflow template upstream.",
+                        "output": err.strip(),
+                    })
+                    return
 
-            if upstream_sha:
-                try:
-                    WORKFLOW_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-                    _write_text_lf(WORKFLOW_VERSION_FILE, upstream_sha + "\n")
-                except OSError as e:
-                    output = (output + f"\n[warn] could not write {WORKFLOW_VERSION_FILE}: {e}").strip()
+                rc_sha, sha_out, _ = self._run_subprocess(
+                    ["git", "-C", clone_dir, "rev-parse", "HEAD"], timeout=10
+                )
+                upstream_sha = sha_out.strip() if rc_sha == 0 else ""
 
-            self._json(200, {
-                "success": True,
-                "message": "Workflow updated.",
-                "output": output,
-                "upstream_sha": upstream_sha,
-                "restart_dashboard": restart_needed,
-            })
+                update_script = os.path.join(clone_dir, "update-workflow.sh")
+                if not os.path.isfile(update_script):
+                    self._json(200, {
+                        "success": False,
+                        "error": "missing_script",
+                        "message": "Upstream checkout has no update-workflow.sh.",
+                        "output": "",
+                    })
+                    return
+
+                rc_u, out_u, err_u = self._run_subprocess(
+                    [bash_path, update_script, str(ROOT)],
+                    timeout=180,
+                )
+                output = out_u
+                if err_u:
+                    output = (output + "\n" + err_u).strip() if output else err_u.strip()
+                output = output.strip()
+
+                if rc_u != 0:
+                    self._json(200, {
+                        "success": False,
+                        "error": "update_script_failed",
+                        "message": "update-workflow.sh exited with a non-zero status.",
+                        "output": output,
+                        "exit_code": rc_u,
+                    })
+                    return
+
+                # update-workflow.sh prints "Updated <path>" / "Created <path>" per
+                # file it touched. Anything under .ai/dashboard/ means the running
+                # serve.py / static assets just got overwritten — the user needs to
+                # restart so the new code takes effect.
+                restart_needed = False
+                for line in output.splitlines():
+                    if line.startswith(("Updated ", "Created ")) and "/.ai/dashboard/" in line.replace("\\", "/"):
+                        restart_needed = True
+                        break
+
+                if upstream_sha:
+                    try:
+                        WORKFLOW_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+                        _write_text_lf(WORKFLOW_VERSION_FILE, upstream_sha + "\n")
+                    except OSError as e:
+                        output = (output + f"\n[warn] could not write {WORKFLOW_VERSION_FILE}: {e}").strip()
+
+                self._json(200, {
+                    "success": True,
+                    "message": "Workflow updated.",
+                    "output": output,
+                    "upstream_sha": upstream_sha,
+                    "restart_dashboard": restart_needed,
+                })
+            finally:
+                shutil.rmtree(tmp_parent, ignore_errors=True)
         finally:
-            shutil.rmtree(tmp_parent, ignore_errors=True)
+            _WORKFLOW_UPDATE_LOCK.release()
 
     def _handle_system_info(self) -> None:
         try:
             improver_enabled = bool(_load_improver_config().get("enabled"))
-        except Exception:
+        except Exception as e:
+            print(f"[serve] system_info: improver config load failed: {e}", flush=True)
             improver_enabled = False
         try:
             host, port = self.server.server_address[0], self.server.server_address[1]
-        except Exception:
+        except Exception as e:
+            print(f"[serve] system_info: server_address read failed: {e}", flush=True)
             host, port = "127.0.0.1", PORT
         self._json(200, {
             "host": host,
@@ -4701,6 +4826,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
             except OSError as e:
+                print(f"[serve] failed to write proposal {pj} (reject): {e}", flush=True)
                 self._json(500, {"error": "write failed", "detail": str(e)})
                 return
             _audit_improvement(obj.get("skill") or "", "rejected",
@@ -4753,8 +4879,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             obj["installed_path"] = target_rel
             try:
                 pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-            except OSError:
-                pass  # file is already on disk; audit it anyway
+            except OSError as e:
+                # SKILL.md already on disk; status stays "pending" in the
+                # proposal file. Audit still runs so the ledger reflects truth.
+                print(f"[serve] failed to write proposal {pj} (installed draft): {e}", flush=True)
             _audit_improvement(slug, "installed",
                                f"draft installed -> {target_rel}",
                                proposal_id, None,
@@ -4801,94 +4929,112 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """Phase 5: dispatch an LLM to draft a SKILL.md from a suggestion
         cluster. Saves the result as a ``kind=draft`` proposal — never
         writes into ``.claude/skills/`` directly."""
-        # Find the cluster (clusters are computed on demand, no persistence).
-        clusters = _detect_skill_suggestions()
-        cluster = next((c for c in clusters if c.get("id") == cluster_id), None)
-        if not cluster:
-            self._json(404, {"error": "cluster not found", "id": cluster_id})
+        # Global cap on concurrent draft/suggest subprocesses — both this
+        # endpoint and /api/agents/suggest share the same `claude -p` / `codex`
+        # binary and each can pin a request thread for `timeout_seconds`
+        # (default 120s). Without the cap, N concurrent clients exhaust the
+        # thread pool. Reply 429 with Retry-After so the UI can back off.
+        if not _SUGGESTION_SEMAPHORE.acquire(blocking=False):
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Retry-After", "30")
+            body = json.dumps({"error": "too many concurrent draft requests; try again later"}).encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
-        cfg = _load_improver_config()
-        if not shutil.which(cfg["tool"]):
-            self._json(503, {"error": f"`{cfg['tool']}` CLI not on PATH"})
-            return
-
-        samples = "\n".join(f"- {s}" for s in (cluster.get("sample_tasks") or []))
-        tokens = ", ".join(cluster.get("top_tokens") or [])
-        skills = ", ".join(cluster.get("skills_invoked") or []) or "(none recorded)"
-        prompt = (
-            "You are drafting a NEW project skill (SKILL.md) for a repeated "
-            "pattern of work detected in the user's recent jobs.\n\n"
-            f"## Pattern fingerprint\n- Repetitions: {cluster.get('size')}\n"
-            f"- Top tokens: {tokens}\n"
-            f"- Skills invoked across cluster: {skills}\n"
-            f"- Suggested slug: `{cluster.get('suggested_name')}`\n\n"
-            f"## Sample tasks\n{samples}\n\n"
-            "## Required output\n"
-            "Return ONLY a JSON object on a single line — no prose, no fences.\n"
-            "Schema:\n"
-            '  {"name": "<lowercase-slug>", "description": "<one sentence trigger>", '
-            '"new_content": "<full SKILL.md content with --- frontmatter>"}\n'
-            "The SKILL.md must start with YAML frontmatter (name, description), then "
-            "be a short, opinionated guide to executing this pattern. Keep it under "
-            "~40 lines."
-        )
-        # Same stdin trick as the improver: long argv prompts fail silently on Windows.
-        tool_bin = shutil.which(cfg["tool"]) or cfg["tool"]
         try:
-            proc = subprocess.run(
-                [tool_bin, "-p", "--model", cfg["model"]],
-                cwd=str(ROOT), input=prompt,
-                capture_output=True, text=True,
-                timeout=int(cfg.get("timeout_seconds", 120)),
-                encoding="utf-8", errors="replace",
-            )
-        except (subprocess.TimeoutExpired, OSError) as e:
-            self._json(500, {"error": "subprocess error", "detail": str(e)})
-            return
-        if proc.returncode != 0:
-            self._json(500, {"error": f"exit {proc.returncode}",
-                             "stderr": (proc.stderr or "")[:300]})
-            return
-        parsed = _parse_improver_output(proc.stdout or "")
-        if not parsed or not isinstance(parsed.get("new_content"), str):
-            self._json(500, {"error": "draft output unparseable",
-                             "stdout_tail": (proc.stdout or "")[-300:]})
-            return
+            # Find the cluster (clusters are computed on demand, no persistence).
+            clusters = _detect_skill_suggestions()
+            cluster = next((c for c in clusters if c.get("id") == cluster_id), None)
+            if not cluster:
+                self._json(404, {"error": "cluster not found", "id": cluster_id})
+                return
+            cfg = _load_improver_config()
+            if not shutil.which(cfg["tool"]):
+                self._json(503, {"error": f"`{cfg['tool']}` CLI not on PATH"})
+                return
 
-        # Persist as a kind=draft proposal.
-        SKILL_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
-        ts_dt = _dt.datetime.now(_dt.timezone.utc)
-        slug_in = parsed.get("name") or cluster.get("suggested_name") or "new-skill"
-        slug = re.sub(r"[^a-z0-9]+", "-", slug_in.lower()).strip("-") or "new-skill"
-        pid = f"_new-{slug}-{ts_dt.strftime('%Y%m%d-%H%M%S')}"
-        new_content = parsed["new_content"]
-        payload = {
-            "id": pid,
-            "kind": "draft",
-            "skill": slug,
-            "suggested_name": slug,
-            "skill_path": None,
-            "target_path": f".claude/skills/{slug}/SKILL.md",
-            "ts": ts_dt.isoformat(timespec="seconds"),
-            "cluster_id": cluster_id,
-            "cluster_size": cluster.get("size"),
-            "description": parsed.get("description", ""),
-            "change_summary": parsed.get("description", "")
-                              or f"Draft from cluster of {cluster.get('size')} jobs",
-            "rationale": f"Detected pattern across {cluster.get('size')} repeated jobs",
-            "diff_lines": len(new_content.splitlines()),
-            "status": "pending",
-            "applied_at": None,
-            "applied_via": None,
-        }
-        (SKILL_PROPOSALS_DIR / f"{pid}.json").write_text(
-            json.dumps(payload, indent=2), encoding="utf-8")
-        (SKILL_PROPOSALS_DIR / f"{pid}.old.md").write_text("", encoding="utf-8")
-        (SKILL_PROPOSALS_DIR / f"{pid}.new.md").write_text(new_content, encoding="utf-8")
-        _audit_improvement(slug, "pending",
-                           f"draft from cluster {cluster_id}",
-                           pid, None, payload["diff_lines"], source="manual")
-        self._json(201, payload)
+            samples = "\n".join(f"- {s}" for s in (cluster.get("sample_tasks") or []))
+            tokens = ", ".join(cluster.get("top_tokens") or [])
+            skills = ", ".join(cluster.get("skills_invoked") or []) or "(none recorded)"
+            prompt = (
+                "You are drafting a NEW project skill (SKILL.md) for a repeated "
+                "pattern of work detected in the user's recent jobs.\n\n"
+                f"## Pattern fingerprint\n- Repetitions: {cluster.get('size')}\n"
+                f"- Top tokens: {tokens}\n"
+                f"- Skills invoked across cluster: {skills}\n"
+                f"- Suggested slug: `{cluster.get('suggested_name')}`\n\n"
+                f"## Sample tasks\n{samples}\n\n"
+                "## Required output\n"
+                "Return ONLY a JSON object on a single line — no prose, no fences.\n"
+                "Schema:\n"
+                '  {"name": "<lowercase-slug>", "description": "<one sentence trigger>", '
+                '"new_content": "<full SKILL.md content with --- frontmatter>"}\n'
+                "The SKILL.md must start with YAML frontmatter (name, description), then "
+                "be a short, opinionated guide to executing this pattern. Keep it under "
+                "~40 lines."
+            )
+            # Same stdin trick as the improver: long argv prompts fail silently on Windows.
+            tool_bin = shutil.which(cfg["tool"]) or cfg["tool"]
+            try:
+                proc = subprocess.run(
+                    [tool_bin, "-p", "--model", cfg["model"]],
+                    cwd=str(ROOT), input=prompt,
+                    capture_output=True, text=True,
+                    timeout=int(cfg.get("timeout_seconds", 120)),
+                    encoding="utf-8", errors="replace",
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                self._json(500, {"error": "subprocess error", "detail": str(e)})
+                return
+            if proc.returncode != 0:
+                self._json(500, {"error": f"exit {proc.returncode}",
+                                 "stderr": (proc.stderr or "")[:300]})
+                return
+            parsed = _parse_improver_output(proc.stdout or "")
+            if not parsed or not isinstance(parsed.get("new_content"), str):
+                self._json(500, {"error": "draft output unparseable",
+                                 "stdout_tail": (proc.stdout or "")[-300:]})
+                return
+
+            # Persist as a kind=draft proposal.
+            SKILL_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+            ts_dt = _dt.datetime.now(_dt.timezone.utc)
+            slug_in = parsed.get("name") or cluster.get("suggested_name") or "new-skill"
+            slug = re.sub(r"[^a-z0-9]+", "-", slug_in.lower()).strip("-") or "new-skill"
+            pid = f"_new-{slug}-{ts_dt.strftime('%Y%m%d-%H%M%S')}"
+            new_content = parsed["new_content"]
+            payload = {
+                "id": pid,
+                "kind": "draft",
+                "skill": slug,
+                "suggested_name": slug,
+                "skill_path": None,
+                "target_path": f".claude/skills/{slug}/SKILL.md",
+                "ts": ts_dt.isoformat(timespec="seconds"),
+                "cluster_id": cluster_id,
+                "cluster_size": cluster.get("size"),
+                "description": parsed.get("description", ""),
+                "change_summary": parsed.get("description", "")
+                                  or f"Draft from cluster of {cluster.get('size')} jobs",
+                "rationale": f"Detected pattern across {cluster.get('size')} repeated jobs",
+                "diff_lines": len(new_content.splitlines()),
+                "status": "pending",
+                "applied_at": None,
+                "applied_via": None,
+            }
+            (SKILL_PROPOSALS_DIR / f"{pid}.json").write_text(
+                json.dumps(payload, indent=2), encoding="utf-8")
+            (SKILL_PROPOSALS_DIR / f"{pid}.old.md").write_text("", encoding="utf-8")
+            (SKILL_PROPOSALS_DIR / f"{pid}.new.md").write_text(new_content, encoding="utf-8")
+            _audit_improvement(slug, "pending",
+                               f"draft from cluster {cluster_id}",
+                               pid, None, payload["diff_lines"], source="manual")
+            self._json(201, payload)
+        finally:
+            _SUGGESTION_SEMAPHORE.release()
 
     # ----- Agent suggestions (agent-improver "Suggest-new-agents" mode) -----
     #
@@ -4910,60 +5056,76 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         agents based on recent git + recent jobs + existing agents. Persists
         zero or more {pid}.json + .body.md proposals. Returns the count and
         the new proposal ids so the UI can refresh the list."""
-        cfg = _load_improver_config()
-        tool_bin = shutil.which(cfg["tool"])
-        if not tool_bin:
-            self._json(503, {"error": f"`{cfg['tool']}` CLI not on PATH"})
+        # Shares the rate-limit budget with _handle_suggestion_draft above
+        # (same CLI binary, same long subprocess timeout). 429 + Retry-After
+        # when the global budget is saturated.
+        if not _SUGGESTION_SEMAPHORE.acquire(blocking=False):
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Retry-After", "30")
+            body = json.dumps({"error": "too many concurrent draft requests; try again later"}).encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
-        existing = _load_editable_agent_names()
-        recent_tasks = _recent_job_tasks()
-        git_log = _git_log_excerpt()
-        prompt = _build_agent_suggester_prompt(git_log, recent_tasks, existing)
-        argv = [tool_bin, "-p", "--model", cfg["model"]]
-        improver_sid: str | None = None
-        if cfg["tool"] == "claude":
-            improver_sid = str(uuid.uuid4())
-            argv += ["--session-id", improver_sid]
         try:
+            cfg = _load_improver_config()
+            tool_bin = shutil.which(cfg["tool"])
+            if not tool_bin:
+                self._json(503, {"error": f"`{cfg['tool']}` CLI not on PATH"})
+                return
+            existing = _load_editable_agent_names()
+            recent_tasks = _recent_job_tasks()
+            git_log = _git_log_excerpt()
+            prompt = _build_agent_suggester_prompt(git_log, recent_tasks, existing)
+            argv = [tool_bin, "-p", "--model", cfg["model"]]
+            improver_sid: str | None = None
+            if cfg["tool"] == "claude":
+                improver_sid = str(uuid.uuid4())
+                argv += ["--session-id", improver_sid]
             try:
-                proc = subprocess.run(
-                    argv,
-                    cwd=str(ROOT), input=prompt,
-                    capture_output=True, text=True,
-                    timeout=int(cfg.get("timeout_seconds", 120)),
-                    encoding="utf-8", errors="replace",
-                )
-            except (subprocess.TimeoutExpired, OSError) as e:
-                self._json(500, {"error": "subprocess error", "detail": str(e)})
-                return
-            if proc.returncode != 0:
-                self._json(500, {"error": f"exit {proc.returncode}",
-                                 "stderr": (proc.stderr or "")[:300]})
-                return
-            suggestions = _parse_agent_suggestions_output(proc.stdout or "")
-            if suggestions is None:
-                self._json(500, {"error": "suggester output unparseable",
-                                 "stdout_tail": (proc.stdout or "")[-300:]})
-                return
-            signal_summary = {
-                "commits": len([l for l in (git_log or "").splitlines() if l.strip()]),
-                "jobs": len(recent_tasks),
-                "existing": len(existing),
-            }
-            if not suggestions:
-                self._json(200, {"count": 0, "proposal_ids": [],
-                                 "note": "no suggestions",
+                try:
+                    proc = subprocess.run(
+                        argv,
+                        cwd=str(ROOT), input=prompt,
+                        capture_output=True, text=True,
+                        timeout=int(cfg.get("timeout_seconds", 120)),
+                        encoding="utf-8", errors="replace",
+                    )
+                except (subprocess.TimeoutExpired, OSError) as e:
+                    self._json(500, {"error": "subprocess error", "detail": str(e)})
+                    return
+                if proc.returncode != 0:
+                    self._json(500, {"error": f"exit {proc.returncode}",
+                                     "stderr": (proc.stderr or "")[:300]})
+                    return
+                suggestions = _parse_agent_suggestions_output(proc.stdout or "")
+                if suggestions is None:
+                    self._json(500, {"error": "suggester output unparseable",
+                                     "stdout_tail": (proc.stdout or "")[-300:]})
+                    return
+                signal_summary = {
+                    "commits": len([l for l in (git_log or "").splitlines() if l.strip()]),
+                    "jobs": len(recent_tasks),
+                    "existing": len(existing),
+                }
+                if not suggestions:
+                    self._json(200, {"count": 0, "proposal_ids": [],
+                                     "note": "no suggestions",
+                                     "signal_summary": signal_summary})
+                    return
+                ids: list[str] = []
+                for s in suggestions:
+                    pid = _persist_agent_proposal(s, source_signal=signal_summary)
+                    if pid:
+                        ids.append(pid)
+                self._json(200, {"count": len(ids), "proposal_ids": ids,
                                  "signal_summary": signal_summary})
-                return
-            ids: list[str] = []
-            for s in suggestions:
-                pid = _persist_agent_proposal(s, source_signal=signal_summary)
-                if pid:
-                    ids.append(pid)
-            self._json(200, {"count": len(ids), "proposal_ids": ids,
-                             "signal_summary": signal_summary})
+            finally:
+                _purge_claude_transcript(improver_sid)
         finally:
-            _purge_claude_transcript(improver_sid)
+            _SUGGESTION_SEMAPHORE.release()
 
     def _handle_agent_proposals_list(self) -> None:
         """GET /api/agents/proposals — compact summary of every proposal on
@@ -5043,6 +5205,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
             except OSError as e:
+                print(f"[serve] failed to write proposal {pj} (agent reject): {e}", flush=True)
                 self._json(500, {"error": "write failed", "detail": str(e)})
                 return
             self._json(200, {"ok": True, "id": proposal_id, "status": "rejected"})
@@ -5163,24 +5326,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not re.fullmatch(r"[a-zA-Z0-9_:\-.]+", skill):
             self._json(400, {"error": "invalid skill name"})
             return
-        rows: list[dict] = []
-        try:
-            if IMPROVEMENTS_LEDGER.is_file():
-                with IMPROVEMENTS_LEDGER.open("r", encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line.startswith("{"):
-                            continue
-                        try:
-                            o = json.loads(line)
-                        except (json.JSONDecodeError, ValueError):
-                            continue
-                        if o.get("skill") == skill:
-                            rows.append(o)
-        except OSError as e:
-            self._json(500, {"error": str(e)})
-            return
-        rows.sort(key=lambda r: r.get("ts") or "", reverse=True)
+        rows = [o for o in _load_jsonl_cached(IMPROVEMENTS_LEDGER) if o.get("skill") == skill]
+        # Sort a copy — never mutate the cached list, the next caller would see
+        # rows in reverse-chronological order without going through this filter.
+        rows = sorted(rows, key=lambda r: r.get("ts") or "", reverse=True)
         self._json(200, {"skill": skill, "improvements": rows})
 
     def _handle_skills_metrics(self, qs: dict[str, list[str]]) -> None:
@@ -5423,6 +5572,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json(200, summary)
 
     def _handle_pty_create(self, body: dict) -> None:
+        if not _origin_allowed(self.headers):
+            self._json(403, {"error": "origin not allowed"})
+            return
         shell = body.get("shell")
         if shell is not None and not isinstance(shell, str):
             self._json(400, {"error": "shell must be a string"})
@@ -5960,6 +6112,23 @@ def _patch_phase_block(text: str, phase: str, updates: dict[str, str | None]) ->
     return out
 
 
+class _ThreadedServer(socketserver.ThreadingTCPServer):
+    """Threaded HTTP server with daemon worker threads.
+
+    Without ``daemon_threads = True``, in-flight request threads survive
+    Ctrl+C (e.g. a 120s improver subprocess.run blocks shutdown). Users
+    typically Ctrl+C a second time which kills threads mid-write to the
+    JSONL ledgers, corrupting them. With daemon threads the process exits
+    cleanly on Ctrl+C and threads are torn down with the process.
+
+    ``allow_reuse_address`` lets the dashboard restart immediately after
+    Ctrl+C without waiting for the TIME_WAIT socket window to expire.
+    """
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def main() -> None:
     # Replay the on-disk job ledger so sessions, costs and history
     # survive `python serve.py` restarts.
@@ -5979,7 +6148,7 @@ def main() -> None:
     candidates = [PORT + i for i in range(20)] + [0]
     for candidate in candidates:
         try:
-            httpd = socketserver.ThreadingTCPServer(("127.0.0.1", candidate), Handler)
+            httpd = _ThreadedServer(("127.0.0.1", candidate), Handler)
             bound = httpd.server_address[1]
             break
         except OSError as e:
