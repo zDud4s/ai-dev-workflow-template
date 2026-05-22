@@ -1045,6 +1045,12 @@
     .terms-grid.layout-split > .term-pane { order: 0; }
     .terms-grid.layout-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: var(--s-3); }
     .terms-grid.layout-grid > .term-pane { order: 0; }
+    /* Grid items default to align-self:stretch — that makes a collapsed
+       pane in the same row as an expanded one balloon to the expanded
+       pane's height, producing a phantom "empty body" rectangle. Force
+       collapsed panes to keep their natural (head-only) height instead. */
+    .terms-grid.layout-split  > .term-pane.collapsed,
+    .terms-grid.layout-grid   > .term-pane.collapsed { align-self: start; }
     /* Segmented layout selector — three icon buttons sharing a single
        outer border. Height tuned to sit on the same baseline as .btn. */
     .term-layout-group { display: inline-flex; gap: 0; border: 1px solid var(--border-soft); background: var(--surf-1); height: 38px; }

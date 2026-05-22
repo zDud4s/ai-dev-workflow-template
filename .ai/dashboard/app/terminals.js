@@ -102,26 +102,31 @@
       el.classList.remove("busy", "waiting", "ready", "ended");
       if (cls) el.classList.add(cls);
       t._activityCls = cls || "";
-      // Surface "waiting" at the pane level so CSS can float these rows
-      // to the top of the status-bar list — the operator can scan from
-      // the top and see what needs their attention first.
-      t.pane.classList.toggle("is-waiting", cls === "waiting");
+      // "Waiting" on the pane (NOT the chip) means "operator's turn has
+      // come up" — it floats the row to the top of list mode and keeps
+      // it expanded across layout switches. Mirror panes (kind === "transcript")
+      // are read-only IDE espelhos that idle as "waiting" perpetually,
+      // so propagating it would hog the top of the list and force them
+      // expanded as huge empty rectangles in list mode. The chip stays
+      // ("waiting" text) so the activity is still visible.
+      const operatorWaiting = cls === "waiting" && t.kind !== "transcript";
+      t.pane.classList.toggle("is-waiting", operatorWaiting);
       // If the pane is collapsed and we're showing fresh activity, mark
       // it so the row gets an accent edge until the operator opens it.
       if (t.pane.classList.contains("collapsed") && cls === "busy") {
         t.pane.classList.add("has-update");
       }
-      // Auto-expand on the transition INTO waiting — that's the cue the
-      // operator's turn has come up. Fires once per transition (not on
-      // every redraw), so manually re-collapsing during a long idle is
-      // sticky until the pane goes busy again.
-      if (cls === "waiting" && prevCls !== "waiting"
+      // Auto-expand on the transition INTO operator-waiting — that's
+      // the cue the operator's turn has come up. Fires once per
+      // transition (not on every redraw), so manually re-collapsing
+      // during a long idle is sticky until the pane goes busy again.
+      if (operatorWaiting && prevCls !== "waiting"
           && t.pane.classList.contains("collapsed")) {
         termSetCollapsed(t, false);
       }
     }
 
-    function termSetCollapsed(t, collapsed) {
+    function termSetCollapsed(t, collapsed, opts) {
       if (!t || !t.pane) return;
       t.pane.classList.toggle("collapsed", !!collapsed);
       const btn = t.pane.querySelector(".expand-btn");
@@ -136,9 +141,17 @@
             try { t.body.scrollTop = t.body.scrollHeight; } catch (_) {}
           });
         }
-        // Bring the pane into view if it's offscreen.
-        try { t.pane.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
+        // Bring the pane into view if it's offscreen. Suppressed for
+        // bulk callers (layout switch) — otherwise every pane in the
+        // grid races to scrollIntoView and the viewport jumps to
+        // whichever one resolved last.
+        if (!opts || !opts.silent) {
+          try { t.pane.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
+        }
       }
+      // Collapsed/expanded state is part of what we persist so the
+      // next F5 restores the same layout the operator left.
+      persistOpenPanes();
     }
 
     function termToggleCollapsed(t) {
@@ -147,7 +160,29 @@
     }
 
     function termCollapseAll() {
-      for (const t of TERMS.values()) termSetCollapsed(t, true);
+      // Drafts are skipped — they have no expand button, so collapsing
+      // them would hide the composer with no way to bring it back.
+      for (const t of TERMS.values()) {
+        if (t.isDraft) continue;
+        termSetCollapsed(t, true);
+      }
+    }
+
+    // True when the pane has meaningful rendered content. Used by layout
+    // switching to decide whether to auto-expand: a pane with content is
+    // worth a column slot in split/grid; an empty pane just becomes a
+    // dark rectangle, so it stays collapsed until the operator opens it.
+    //
+    // We anchor on .msg.user / .bash-cmd specifically because those carry
+    // OPERATOR-AUTHORED text that's always rendered. .msg.assistant alone
+    // is NOT enough — it matches the thinking-placeholder and the empty
+    // in-progress assistant block during streaming, both of which have
+    // no visible text and produce the "expanded empty rectangle" bug
+    // when split/grid switching evaluates them.
+    function termPaneHasContent(t) {
+      if (!t || !t.body) return false;
+      if (t.kind === "terminal") return true;
+      return t.body.querySelector(".msg.user, .bash-cmd") !== null;
     }
 
     // ----- layout control -----
@@ -157,7 +192,8 @@
     // Persisted in localStorage; read at open-time and on every switch.
     var TERM_LAYOUTS = ["list", "split", "grid"];
     function termGetLayout() {
-      const v = localStorage.getItem("dash.termLayout");
+      let v = null;
+      try { v = localStorage.getItem("dash.termLayout"); } catch (_) { /* private mode */ }
       return TERM_LAYOUTS.includes(v) ? v : "list";
     }
     function termApplyLayout(mode) {
@@ -173,20 +209,33 @@
     }
     function termSetLayout(mode) {
       const next = TERM_LAYOUTS.includes(mode) ? mode : "list";
-      localStorage.setItem("dash.termLayout", next);
+      try { localStorage.setItem("dash.termLayout", next); } catch (_) { /* private mode */ }
       termApplyLayout(next);
-      // Sync existing panes to the new mode's default. List collapses
-      // non-waiting panes; split/grid expand everything (legacy "see
-      // every pane at once" view).
+      // Whatever the new layout is, collapse every pane to a clean
+      // status-row baseline. This avoids every flavour of the "phantom
+      // empty body" bug: panes opened expanded by termOpen* in split
+      // mode, the grid-stretch issue, content-detection false positives,
+      // and stale state from the previous layout. The operator then
+      // clicks the panes they actually want to see — explicit and
+      // predictable. Drafts are skipped (no expand button means there's
+      // no way back). Silent flag stops scrollIntoView from racing.
       for (const t of TERMS.values()) {
-        if (next === "list") {
-          const keepOpen = t.pane.classList.contains("is-waiting")
-                        || t.pane.classList.contains("needs-action");
-          termSetCollapsed(t, !keepOpen);
-        } else {
-          termSetCollapsed(t, false);
-        }
+        if (t.isDraft) continue;
+        termSetCollapsed(t, true, { silent: true });
       }
+      // xterm.js panes compute their (cols, rows) from the body's
+      // pixel size. Switching layout changes the grid template, which
+      // in turn changes pane widths — fit() catches the cases where
+      // the ResizeObserver coalesces or fires before the new layout
+      // has settled. Defer two frames so the new grid template + any
+      // collapse-class changes have both applied.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        for (const t of TERMS.values()) {
+          if (t.kind === "terminal" && t._fitAddon && !t.pane.classList.contains("collapsed")) {
+            try { t._fitAddon.fit(); } catch (_) {}
+          }
+        }
+      }));
     }
 
     async function termRefreshPicker(jobs) {
@@ -2680,8 +2729,14 @@
         toolUseEls: new Map(),
       };
       TERMS.set(paneKey, t);
-      // IDE mirror panes follow the same layout setting.
-      if (termGetLayout() === "list") pane.classList.add("collapsed");
+      // IDE mirror panes ALWAYS start collapsed regardless of layout.
+      // They're passive observers — until the mirrored session emits
+      // anything worth seeing, the body is empty and would otherwise
+      // show as a huge dark rectangle in split/grid mode (the original
+      // bug). Activity events still pulse the head row via has-update
+      // so the operator notices when there's new IDE traffic and can
+      // click to expand.
+      pane.classList.add("collapsed");
       termInitAutoFollow(t);
       pane.querySelector(".close-btn").addEventListener("click", (e) => {
         e.stopPropagation();
