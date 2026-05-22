@@ -5,6 +5,15 @@
     // ----- Skills catalog -----
     var _skillsState = { all: [], sources: {}, filter: "all", query: "" };
 
+    // pillTool (owned by core.js) interpolates its `tool` argument directly
+    // into a CSS class fragment. If the catalog/API ever returns an
+    // attacker-controlled tool string, that fragment becomes an injection
+    // vector. Defensively whitelist known-safe values before passing them
+    // through. Anything unrecognised collapses to a safe sentinel.
+    function _safeTool(t) {
+      return ({ "claude": "claude", "codex": "codex", "gemini": "gemini" }[t] || "unknown");
+    }
+
     // Pre-render skeleton placeholders so the page does not snap from
     // empty to fully-populated. The skeleton shapes match the real
     // card layout so there is no layout shift when data lands.
@@ -68,7 +77,7 @@
       const total = _skillsState.all.length;
       const src = _skillsState.sources;
       const card = (label, count, tool, path, exists) => {
-        const pill = pillTool(tool);
+        const pill = pillTool(_safeTool(tool));
         const status = exists ? "" : `<div class="val" style="color:var(--warn);font-size:11px">missing on disk</div>`;
         return `<div class="card">
           <h3>${escape(label)} ${pill}</h3>
@@ -132,7 +141,7 @@
         return;
       }
       grid.innerHTML = filtered.map((s) => {
-        const tool = pillTool(s.tool);
+        const tool = pillTool(_safeTool(s.tool));
         const sourcePill = `<span class="pill" title="${escape(s.path)}">${escape(s.source_label || s.source)}</span>`;
         return `<div class="card skill-card" data-source="${escape(s.source)}" data-name="${escape(s.name)}" title="Click for details">
           <h3>${escape(s.name)} ${tool}</h3>
@@ -151,9 +160,16 @@
 
     // ----- Skill detail modal -----
     var _currentSkillKey = null;
+    // Monotonic counter that ticks on every openSkillDetail entry. Even if
+    // two openers somehow race past the _currentSkillKey check (e.g. same
+    // source+name clicked twice, or a key collision under a future scheme),
+    // the epoch comparison guarantees the LATER call always wins. Strictly
+    // tighter than the key comparison alone.
+    var _skillDetailEpoch = 0;
 
     async function openSkillDetail(source, name) {
       const key = `${source}::${name}`;
+      const epoch = ++_skillDetailEpoch;
       _currentSkillKey = key;
       const cached = _skillsState.all.find(
         (x) => x.source === source && x.name === name
@@ -188,6 +204,13 @@
       $("#skill-detail-meta").innerHTML =
         meta.map((s) => `<span>${s}</span>`).join("") + rationaleHtml;
 
+      // Pre-await guard: if a later click has already updated
+      // _currentSkillKey, abandon this opener so we don't waste a fetch
+      // and don't risk racing the newer opener's render path. The epoch
+      // check is the authoritative gate — newer clicks always win.
+      if (epoch !== _skillDetailEpoch) return;
+      if (_currentSkillKey !== key) return;
+
       // Kick off the three fetches in parallel.
       const [content, metrics, hist] = await Promise.allSettled([
         fetch(`/api/skills/content?source=${encodeURIComponent(source)}&name=${encodeURIComponent(name)}`, { cache: "no-store" }).then((r) => r.json()),
@@ -196,6 +219,8 @@
       ]);
 
       // Bail if the user already navigated to a different skill mid-flight.
+      // Epoch comparison wins even if two clicks somehow produce the same key.
+      if (epoch !== _skillDetailEpoch) return;
       if (_currentSkillKey !== key) return;
 
       // SKILL.md content — render as markdown if marked is loaded.
@@ -203,7 +228,7 @@
         const text = content.value.content;
         const el = $("#skill-detail-content");
         try {
-          el.innerHTML = marked.parse(text);
+          el.innerHTML = DOMPurify.sanitize(marked.parse(text));
         } catch (_) {
           el.textContent = text;
         }
@@ -305,7 +330,11 @@
           (p.kind === "draft" && p.status === "accepted")
         );
         $("#proposals-count").textContent = visible.length;
-        if (!visible.length) { block.style.display = "none"; return; }
+        if (!visible.length) {
+          wrap.innerHTML = "";  // belt-and-braces: clear stale content
+          block.style.display = "none";
+          return;
+        }
         block.style.display = "";
         wrap.innerHTML = visible.map(renderProposalCard).join("");
         wrap.querySelectorAll(".proposal-open").forEach((b) => {
@@ -419,11 +448,16 @@
     }
 
     async function decideProposal(decision) {
-      if (!_currentProposalId) return;
+      // Snapshot the proposal id at entry. If the user closes the modal and
+      // opens a DIFFERENT proposal before our request resolves, we must NOT
+      // flip the new modal's buttons or overwrite its messages. The network
+      // call still completes (proposal was accepted/rejected server-side),
+      // but the visual feedback target is gone — drop the UI update.
+      const propId = _currentProposalId;
+      if (!propId) return;
       $("#proposal-accept").disabled = true;
       $("#proposal-reject").disabled = true;
       $("#proposal-msg").textContent = decision + "ing…";
-      const propId = _currentProposalId;
       try {
         const r = await fetch(
           `/api/skills/proposals/${encodeURIComponent(propId)}/${decision}`,
@@ -431,12 +465,22 @@
         );
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+        // Stale-modal guard: user navigated away while we awaited.
+        if (propId !== _currentProposalId) {
+          // Still refresh background data so the proposal list reflects the
+          // server-side state change, but don't touch the current modal.
+          await loadSkillProposals();
+          await loadSkills();
+          return;
+        }
         $("#proposal-msg").textContent = data.note || (decision + "ed");
         setMsg("#proposal-msg", "ok", `Proposal ${decision}ed`, 4000);
         await loadSkillProposals();
         await loadSkills();  // refresh metrics + summary in case a skill changed
         setTimeout(closeProposalModal, 600);
       } catch (e) {
+        // Same guard on error path — don't flip a different modal's buttons.
+        if (propId !== _currentProposalId) return;
         $("#proposal-msg").textContent = "failed: " + e.message;
         setMsg("#proposal-msg", "err", `Proposal ${decision} failed: ${e.message}`);
         $("#proposal-accept").disabled = false;
@@ -444,12 +488,42 @@
       }
     }
 
+    // Hard cap on LCS materialisation. Above this, an (n+1)*(m+1) Int32Array
+    // grows past tolerable memory for an in-browser diff modal (e.g. two
+    // 5k-line files = 25M cells = ~100MB on Int32). Beyond the cap we drop
+    // to a non-LCS fallback that just dumps both sides side-by-side so the
+    // modal still renders something useful instead of blowing up the tab.
+    var LCS_LINE_CAP = 2000;
+
+    function _diffFallbackForLargeFiles(a, b) {
+      // Non-LCS fallback for files past LCS_LINE_CAP. We don't try to align
+      // lines — that's what the LCS pass is for, and it's the thing we're
+      // opting out of. Instead we show a clear banner explaining the bailout
+      // and emit raw old/new line dumps so reviewers can still scan content.
+      const out = [];
+      out.push(
+        `<span class="diff-hunk-sep">(diff too large for LCS — ${a.length} lines old, ${b.length} lines new; showing raw old/new)</span>`
+      );
+      a.forEach((s) => {
+        out.push(`<span class="diff-line diff-del">${escape("- " + s)}</span>`);
+      });
+      b.forEach((s) => {
+        out.push(`<span class="diff-line diff-add">${escape("+ " + s)}</span>`);
+      });
+      return out.join("");
+    }
+
     function renderUnifiedDiff(oldText, newText) {
       // Lightweight LCS-based diff for visual clarity — handles small SKILL.md.
       const a = (oldText || "").split("\n");
       const b = (newText || "").split("\n");
+      // Bail out before allocating the LCS table for unreasonably large files.
+      // The .length > 2000 check on either side keeps the worst-case table
+      // around 4M cells (~16MB Int32), which is tolerable.
+      if (a.length > LCS_LINE_CAP || b.length > LCS_LINE_CAP) {
+        return _diffFallbackForLargeFiles(a, b);
+      }
       const lcs = lcsTable(a, b);
-      const lines = [];
       let i = a.length, j = b.length;
       const seq = [];
       while (i > 0 && j > 0) {
@@ -460,18 +534,92 @@
       while (i > 0) { seq.push({ t: "del", s: a[i - 1] }); i--; }
       while (j > 0) { seq.push({ t: "add", s: b[j - 1] }); j--; }
       seq.reverse();
-      // Compact contexts longer than ~3 lines.
+
+      // Compact ctx regions using standard `diff -u` hunk semantics:
+      //   - first ctx region (no prior change):  keep only LAST 3 lines
+      //     (leading context for the upcoming change).
+      //   - trailing ctx region (no next change): keep only FIRST 3 lines
+      //     (trailing context for the previous change).
+      //   - interior ctx region: if length <= 6, keep all; else keep first 3
+      //     (trailing context for previous change), emit a hunk separator
+      //     describing the omitted span, then keep last 3 (leading context
+      //     for the next change).
+      // This guarantees every change has up to 3 lines of context on each
+      // side and never silently telescopes distant edits together.
+      const CONTEXT = 3;
+      const CTX_THRESHOLD = CONTEXT * 2;  // ctxRun > 6 triggers the split
+
+      // Group the seq into runs so we can reason about ctx regions as
+      // a whole instead of per-line. Each group is { t, lines: [] }.
+      const groups = [];
+      for (const ent of seq) {
+        const last = groups[groups.length - 1];
+        if (last && last.t === ent.t) {
+          last.lines.push(ent.s);
+        } else {
+          groups.push({ t: ent.t, lines: [ent.s] });
+        }
+      }
+
       const out = [];
-      let ctxRun = 0;
-      seq.forEach((ent, idx) => {
-        if (ent.t === "ctx") {
-          ctxRun++;
-          if (ctxRun > 3 && idx < seq.length - 3) return;
-        } else { ctxRun = 0; }
-        const cls = ent.t === "add" ? "diff-add" : ent.t === "del" ? "diff-del" : "diff-ctx";
-        const prefix = ent.t === "add" ? "+ " : ent.t === "del" ? "- " : "  ";
-        out.push(`<span class="diff-line ${cls}">${escape(prefix + ent.s)}</span>`);
+      const emit = (t, s) => {
+        const cls = t === "add" ? "diff-add" : t === "del" ? "diff-del" : "diff-ctx";
+        const prefix = t === "add" ? "+ " : t === "del" ? "- " : "  ";
+        out.push(`<span class="diff-line ${cls}">${escape(prefix + s)}</span>`);
+      };
+      const emitSep = (n) => {
+        out.push(`<span class="diff-hunk-sep">… ${n} unchanged lines …</span>`);
+      };
+
+      groups.forEach((g, idx) => {
+        if (g.t !== "ctx") {
+          g.lines.forEach((s) => emit(g.t, s));
+          return;
+        }
+        const isFirst = (idx === 0);
+        const isLast = (idx === groups.length - 1);
+        const len = g.lines.length;
+
+        if (isFirst && isLast) {
+          // Diff is entirely identical — show nothing? Better: show all,
+          // it's likely empty anyway. Cap at CTX_THRESHOLD for sanity.
+          if (len <= CTX_THRESHOLD) {
+            g.lines.forEach((s) => emit("ctx", s));
+          } else {
+            // No changes anywhere — collapse the middle with a separator.
+            g.lines.slice(0, CONTEXT).forEach((s) => emit("ctx", s));
+            emitSep(len - CTX_THRESHOLD);
+            g.lines.slice(-CONTEXT).forEach((s) => emit("ctx", s));
+          }
+        } else if (isFirst) {
+          // Leading region for the very first change: keep last CONTEXT lines.
+          if (len <= CONTEXT) {
+            g.lines.forEach((s) => emit("ctx", s));
+          } else {
+            emitSep(len - CONTEXT);
+            g.lines.slice(-CONTEXT).forEach((s) => emit("ctx", s));
+          }
+        } else if (isLast) {
+          // Trailing region after the last change: keep first CONTEXT lines.
+          if (len <= CONTEXT) {
+            g.lines.forEach((s) => emit("ctx", s));
+          } else {
+            g.lines.slice(0, CONTEXT).forEach((s) => emit("ctx", s));
+            emitSep(len - CONTEXT);
+          }
+        } else {
+          // Interior region: trailing ctx for previous change + leading
+          // ctx for next change. If the region is short, render it all.
+          if (len <= CTX_THRESHOLD) {
+            g.lines.forEach((s) => emit("ctx", s));
+          } else {
+            g.lines.slice(0, CONTEXT).forEach((s) => emit("ctx", s));
+            emitSep(len - CTX_THRESHOLD);
+            g.lines.slice(-CONTEXT).forEach((s) => emit("ctx", s));
+          }
+        }
       });
+
       return out.join("");
     }
 
