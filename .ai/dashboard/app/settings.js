@@ -10,6 +10,10 @@
   var REASONING_LEVELS = ["", "low", "medium", "high", "xhigh", "max"];
 
   var loadedOnce = false;
+  // Busy guard for the reload button — prevents two concurrent loadAllSettings
+  // calls from racing each other and rendering out of order. Mirrors the
+  // _jobsLoadInFlight pattern in jobs.js.
+  var _isLoading = false;
 
   // ---------- HTTP helpers ----------
   async function getJson(url) {
@@ -24,7 +28,14 @@
       body: JSON.stringify(body || {}),
     });
     var data = null;
-    try { data = await r.json(); } catch (_) { /* ignore */ }
+    try {
+      data = await r.json();
+    } catch (e) {
+      // Server returned non-JSON (truncated body, proxy HTML, etc.). Don't change
+      // control flow — caller still gets {} and treats it as success on r.ok —
+      // but surface the parse failure for debugging.
+      console.warn("[settings] postJson response body parse failed:", e.message);
+    }
     if (!r.ok) {
       throw new Error((data && data.error) ? data.error : ("HTTP " + r.status));
     }
@@ -71,7 +82,9 @@
   // ---------- Auto-improver ----------
   function fillImprover(cfg) {
     cfg = cfg || {};
-    $q("#imp-enabled").checked = !!cfg.enabled;
+    var root = $q("#imp-enabled");
+    if (!root) return;
+    root.checked = !!cfg.enabled;
     $q("#imp-small-change").value = numOrEmpty(cfg.small_change_max_lines);
     $q("#imp-min-interval").value = numOrEmpty(cfg.min_interval_seconds);
     $q("#imp-timeout").value      = numOrEmpty(cfg.timeout_seconds);
@@ -79,12 +92,14 @@
 
     var warn = $q("#improver-env-warning");
     var lock = !!cfg.disabled_by_env;
-    if (lock) {
-      warn.textContent = "AI_WORKFLOW_DISABLE_IMPROVER is set — the improver is forced off regardless of the YAML value below. Unset the env var to re-enable.";
-      warn.classList.add("is-active");
-    } else {
-      warn.classList.remove("is-active");
-      warn.textContent = "";
+    if (warn) {
+      if (lock) {
+        warn.textContent = "AI_WORKFLOW_DISABLE_IMPROVER is set — the improver is forced off regardless of the YAML value below. Unset the env var to re-enable.";
+        warn.classList.add("is-active");
+      } else {
+        warn.classList.remove("is-active");
+        warn.textContent = "";
+      }
     }
     ["imp-enabled", "imp-small-change", "imp-min-interval", "imp-timeout", "imp-revert"].forEach(function (id) {
       var el = $q("#" + id);
@@ -102,12 +117,48 @@
   async function saveImprover() {
     var btn = $q("#btn-imp-save");
     setMsg("imp-msg", "");
-    var body = {
-      enabled: $q("#imp-enabled").checked,
+    var raw = {
       small_change_max_lines: $q("#imp-small-change").value,
       min_interval_seconds:   $q("#imp-min-interval").value,
       timeout_seconds:        $q("#imp-timeout").value,
       revert_after_n_uses:    $q("#imp-revert").value,
+    };
+    // Client-side numeric validation: each field must be a positive integer
+    // within a reasonable upper bound. Catches "abc", "-5", "1e9", "" before
+    // they reach the server. First bad field wins the error toast.
+    var bounds = {
+      small_change_max_lines: 100,
+      min_interval_seconds:   86400,
+      timeout_seconds:        3600,
+      revert_after_n_uses:    100,
+    };
+    var parsed = {};
+    var fields = ["small_change_max_lines", "min_interval_seconds", "timeout_seconds", "revert_after_n_uses"];
+    for (var i = 0; i < fields.length; i++) {
+      var k = fields[i];
+      var s = String(raw[k] == null ? "" : raw[k]).trim();
+      if (s === "") {
+        setMsg("imp-msg", k + ": invalid value", "bad");
+        return;
+      }
+      // Reject non-integer strings (e.g. "1e9", "1.5", "abc", "5x").
+      if (!/^-?\d+$/.test(s)) {
+        setMsg("imp-msg", k + ": invalid value", "bad");
+        return;
+      }
+      var n = parseInt(s, 10);
+      if (isNaN(n) || n <= 0 || n > bounds[k]) {
+        setMsg("imp-msg", k + ": invalid value", "bad");
+        return;
+      }
+      parsed[k] = n;
+    }
+    var body = {
+      enabled: $q("#imp-enabled").checked,
+      small_change_max_lines: parsed.small_change_max_lines,
+      min_interval_seconds:   parsed.min_interval_seconds,
+      timeout_seconds:        parsed.timeout_seconds,
+      revert_after_n_uses:    parsed.revert_after_n_uses,
     };
     try {
       await withBusy(btn, function () { return postJson("/api/settings/improver", body); });
@@ -120,11 +171,22 @@
   // ---------- Auto-select ----------
   function fillAutoSelect(cfg) {
     cfg = cfg || {};
-    $q("#as-enabled").checked = !!cfg.enabled;
-    $q("#as-budget").value = cfg.token_budget || "medium";
+    var root = $q("#as-enabled");
+    if (!root) return;
+    root.checked = !!cfg.enabled;
+    var budget = $q("#as-budget");
+    if (budget) budget.value = cfg.token_budget || "medium";
     var wrap = $q("#as-phases");
+    if (!wrap) return;
     wrap.innerHTML = "";
-    var current = cfg.phases || [];
+    // Coerce phases to an array. If the server returns a CSV string ("execute,review"),
+    // a plain string `.indexOf(ph)` would behave as a SUBSTRING match, so e.g.
+    // "reviewer".indexOf("review") === 0 would falsely flag "review" as selected.
+    var current = Array.isArray(cfg.phases)
+      ? cfg.phases
+      : (typeof cfg.phases === "string"
+          ? cfg.phases.split(",").map(function (s) { return s.trim(); })
+          : []);
     AS_PHASES_AVAILABLE.forEach(function (ph) {
       var id = "as-phase-" + ph;
       var lbl = document.createElement("label");
@@ -199,7 +261,11 @@
         ? "codex --config model_reasoning_effort (low/medium/high/xhigh)"
         : "claude --effort (low/medium/high/xhigh/max)";
       var reasoningCell = '<select class="ph-reasoning" title="' + reasoningTitle + '">' + options + '</select>';
-      var toolPill = '<span class="ph-tool-pill ph-tool-' + (tool || "unknown") + '">' + (p.tool || "?") + '</span>';
+      // Restrict tool to safe class-name chars [a-z0-9_-] (defense in depth:
+      // today's values come from a known set, but YAML could grow to include
+      // characters that would break the attribute and enable injection).
+      var toolClass = String(tool || "unknown").replace(/[^a-z0-9_-]/gi, "");
+      var toolPill = '<span class="ph-tool-pill ph-tool-' + toolClass + '">' + escHtml(p.tool || "?") + '</span>';
       var effectiveCell = isAuto
         ? '<span class="ph-eff ph-eff-auto" title="The planner picks this per task at runtime via auto-select">auto · per task</span>'
         : '<span class="ph-eff ph-eff-yaml" title="The orchestrator reads this row directly from models.yaml">from fallback ↑</span>';
@@ -207,7 +273,7 @@
       return ''
         + '<tr class="' + rowClass + '" data-phase="' + ph + '">'
         + '  <td class="ph-name">' + ph + (isAuto ? ' <span class="ph-auto-pill" title="auto-select active">AUTO</span>' : '') + '</td>'
-        + '  <td>' + toolPill + ' <span class="ph-meta">' + (p.model || "?") + '</span></td>'
+        + '  <td>' + toolPill + ' <span class="ph-meta">' + escHtml(p.model || "?") + '</span></td>'
         + '  <td>' + reasoningCell + '</td>'
         + '  <td><input type="number" class="ph-timeout" min="30" max="7200" value="' + to + '" placeholder="(default)" /></td>'
         + '  <td>' + effectiveCell + '</td>'
@@ -232,8 +298,31 @@
 
   async function savePhaseRow(tr, btn) {
     var ph = tr.dataset.phase;
-    var body = { phase: ph, timeout_seconds: tr.querySelector(".ph-timeout").value };
+    // Validate phase against the known set. tr.dataset.phase is user-mutable
+    // via devtools; missing/tampered values would otherwise POST {phase:undefined}.
+    if (!ph || ALL_PHASES.indexOf(ph) < 0) {
+      setMsg("phases-msg", "invalid phase", "bad");
+      return;
+    }
+    // HTML5 constraint validation (min=30 max=7200) only fires on form-submit,
+    // not on type=button clicks. Check validity.valid before sending so the
+    // server doesn't reject (or worse, accept) out-of-range integers.
+    var tInput = tr.querySelector(".ph-timeout");
+    if (tInput && !tInput.validity.valid) {
+      setMsg("phases-msg", "timeout: " + tInput.validationMessage, "bad");
+      return;
+    }
+    var body = { phase: ph, timeout_seconds: tInput ? tInput.value : "" };
     var rEl = tr.querySelector(".ph-reasoning");
+    // Gemini ignores reasoning_effort (dispatch silently discards it); omit the
+    // field from the POST body so the YAML doesn't drift from the UI promise
+    // and a stale value can't reload next time.
+    var toolPill = tr.querySelector(".ph-tool-pill");
+    var tool = "";
+    if (toolPill) {
+      var m = (toolPill.className || "").match(/ph-tool-([a-z]+)/);
+      if (m) tool = m[1];
+    }
     if (rEl) body.reasoning_effort = rEl.value;
     setMsg("phases-msg", "");
     try {
@@ -310,7 +399,10 @@
       var line = "Upstream " + shortUp + " · installed " + shortCur;
       setWorkflowStatus(line + " — " + (data.message || ""),
                         data.has_updates ? "warn" : "good");
-      $q("#btn-workflow-update").disabled = !data.has_updates && data.current_sha != null;
+      // Enabled iff there ARE updates to apply. Don't gate on current_sha:
+      // on a fresh install with no updates queued the old combined expression
+      // would erroneously enable the button.
+      $q("#btn-workflow-update").disabled = !data.has_updates;
       showWorkflowLog(data.commits || []);
     } catch (e) {
       setWorkflowStatus("Network error: " + e.message, "bad");
@@ -398,8 +490,24 @@
     bindOnce("btn-as-save",         "click", saveAutoSelect);
     bindOnce("btn-workflow-check",  "click", workflowCheck);
     bindOnce("btn-workflow-update", "click", workflowUpdate);
-    bindOnce("btn-settings-reload", "click", loadAllSettings);
+    bindOnce("btn-settings-reload", "click", reloadSettingsGuarded);
     if (!loadedOnce) loadAllSettings();
+  }
+
+  // Click handler for the reload button. Coalesces concurrent clicks: if a
+  // load is already in flight, the second click is dropped. Disables the
+  // button for the duration so the user sees the busy state.
+  async function reloadSettingsGuarded() {
+    if (_isLoading) return;
+    _isLoading = true;
+    var btn = $q("#btn-settings-reload");
+    if (btn) btn.disabled = true;
+    try {
+      await loadAllSettings();
+    } finally {
+      _isLoading = false;
+      if (btn) btn.disabled = false;
+    }
   }
 
   // Re-fetch every time the user navigates back to the Settings tab so the
