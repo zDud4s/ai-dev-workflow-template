@@ -1429,6 +1429,33 @@
       border-left: 2px solid var(--border-strong);
     }
 
+    /* ---------------- Real terminal (PTY) panes ----------------
+       xterm.js needs a sized container so the FitAddon can compute
+       (cols, rows). The chat composer + attach tray are absent on
+       these panes — bytes go straight from xterm into the WebSocket. */
+    .term-pane.term-pty .term-pty-body {
+      flex: 1 1 auto;
+      min-height: 280px;
+      background: #0b0f14;
+      padding: 4px;
+      overflow: hidden;
+    }
+    .term-pane.term-pty:not(.collapsed) {
+      min-height: 360px;
+      max-height: 70vh;
+    }
+    .term-pane.term-pty.pinned:not(.collapsed) {
+      max-height: 85vh;
+      min-height: 480px;
+    }
+    /* xterm renders inside .xterm; let it claim the full body. */
+    .term-pane.term-pty .xterm {
+      height: 100%;
+      width: 100%;
+    }
+    .term-pane.term-pty .xterm .xterm-viewport { background: transparent !important; }
+    .term-pane.term-pty .term-head .pin-btn.active { color: var(--accent); }
+
     /* ---------------- Chat-mode rendering ----------------
        Real-chat layout: user bubbles align right, assistant bubbles align
        left, system/result notes sit centered as meta strips. Cyber-HUD

@@ -10,6 +10,13 @@
   <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;600;700;800;900&family=Hanken+Grotesk:ital,wght@0,300..800;1,300..800&family=JetBrains+Mono:ital,wght@0,300..700;1,300..700&display=swap" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+  <!-- xterm.js powers the "Shell" terminal panes (kind=terminal). The
+       core lib renders ANSI/VT100, the fit addon snaps cols/rows to the
+       pane size, and the web-links addon makes URLs clickable. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js"></script>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -492,7 +499,7 @@
         </div>
         <!-- Cluster 1: pane visibility (open more / collapse / auto-show) -->
         <button class="btn" id="term-open">Open</button>
-        <button class="btn" id="term-new" title="Open a new empty terminal — pick tool/model, then send the first message to start the conversation">New terminal</button>
+        <button class="btn" id="term-new" title="New terminal — pick type (AI chat / Shell) and start">New terminal</button>
         <button class="term-icon-btn" id="term-open-all" title="Open all running panes" aria-label="Open all running">
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="4" width="9" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5" y="2" width="9" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
         </button>

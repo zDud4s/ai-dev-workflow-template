@@ -25,16 +25,32 @@ Serves the whole repo as static files (read-only) plus a small JSON API:
     POST /api/jobs/<id>/input  {text}           ->  write a line to the
                                                     subprocess stdin
     POST /api/jobs/<id>/cancel                  ->  terminate the subprocess
+
+    POST /api/ptys           {shell, cwd?,      ->  spawn a real shell session
+                              cols?, rows?}         in a PTY (cross-platform)
+    GET  /api/ptys                              ->  list active PTY sessions
+    GET  /api/ptys/<id>                         ->  PTY session metadata
+    GET  /api/ptys/<id>/io                      ->  WebSocket: bidirectional
+                                                    byte stream + resize control
+    POST /api/ptys/<id>/kill                    ->  terminate the shell
+
+Optional dependency (Windows only): ``pywinpty>=2.0`` for real PTY support
+via ConPTY. POSIX uses the stdlib ``pty`` module. /api/ptys returns 503
+on Windows when pywinpty isn't installed.
 """
 from __future__ import annotations
 
+import base64
 import datetime as _dt
+import hashlib
 import http.server
 import json
 import os
+import queue as _stdqueue
 import re
 import shutil
 import socketserver
+import struct
 import subprocess
 import sys
 import tempfile
@@ -44,6 +60,12 @@ import urllib.parse
 import uuid
 from collections import deque
 from pathlib import Path
+
+# PTY helper (cross-platform). The Terminals page can spawn real shell
+# sessions in addition to the existing chat-claude / chat-codex panes;
+# this module wraps POSIX `pty.fork` and Windows `pywinpty.PtyProcess`
+# behind one interface.
+import pty_session as _pty_session  # noqa: E402 — sibling module
 
 PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
 ROOT = Path(__file__).resolve().parents[2]  # repo root
@@ -758,6 +780,320 @@ JOB_KINDS = {
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 JOBS_MAX = 50  # cap memory; oldest finished entries get evicted
+
+
+# ----- PTY sessions (real shell terminals via WebSocket) ----------------
+#
+# Separate from JOBS because the lifecycle, transport, and rendering are
+# completely different: PTY sessions move raw bytes over WS rather than
+# stream-json events over SSE. Each entry mirrors the JOBS shape just
+# enough for the dashboard UI to list / open / close them.
+PTYS: dict[str, dict] = {}
+PTYS_LOCK = threading.Lock()
+PTYS_MAX = 20
+
+# Cap on the per-session ring buffer used for catch-up when a client
+# (re)attaches to a long-running PTY. 256 KB keeps a full screen of
+# scrollback for any reasonable terminal size while bounding memory.
+PTY_RING_BYTES = 256 * 1024
+
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_accept_key(client_key: str) -> str:
+    raw = (client_key + WS_GUID).encode("ascii")
+    return base64.b64encode(hashlib.sha1(raw).digest()).decode("ascii")
+
+
+class _WsClosed(Exception):
+    """Raised by WebSocket recv/send when the peer has disconnected."""
+
+
+class WebSocket:
+    """Minimal RFC6455 server endpoint.
+
+    Frames are sent unfragmented (FIN=1 always), payload up to 2^63
+    bytes. Receives single-frame messages and pings; replies to pings
+    automatically. Control flow:
+
+        ws = WebSocket.accept(handler, expected_path)
+        try:
+            while True:
+                opcode, data = ws.recv()
+                # opcode 0x1 = text, 0x2 = binary, 0x8 = close
+                ...
+        except _WsClosed:
+            ...
+        finally:
+            ws.close()
+    """
+
+    OPCODE_CONT  = 0x0
+    OPCODE_TEXT  = 0x1
+    OPCODE_BIN   = 0x2
+    OPCODE_CLOSE = 0x8
+    OPCODE_PING  = 0x9
+    OPCODE_PONG  = 0xA
+
+    def __init__(self, handler):
+        self._handler = handler
+        self._rfile = handler.rfile
+        self._wfile = handler.wfile
+        # ``self.connection`` is the raw socket; we don't read from it
+        # directly but tracking it lets us shutdown on close.
+        self._sock = getattr(handler, "connection", None)
+        self._write_lock = threading.Lock()
+        self.closed = False
+
+    @classmethod
+    def accept(cls, handler) -> "WebSocket | None":
+        """Complete the RFC6455 handshake. Returns a WebSocket on success,
+        or sends an HTTP error and returns ``None`` on failure."""
+        h = handler.headers
+        if h.get("Upgrade", "").lower() != "websocket":
+            handler.send_error(400, "Expected WebSocket upgrade")
+            return None
+        if "upgrade" not in h.get("Connection", "").lower():
+            handler.send_error(400, "Expected Connection: Upgrade")
+            return None
+        key = h.get("Sec-WebSocket-Key", "").strip()
+        if not key:
+            handler.send_error(400, "Missing Sec-WebSocket-Key")
+            return None
+        accept = _ws_accept_key(key)
+        # Write the 101 response manually so we don't pick up "Server"
+        # / "Date" headers from the base handler.
+        try:
+            handler.wfile.write(
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: " + accept.encode("ascii") + b"\r\n"
+                b"\r\n"
+            )
+            handler.wfile.flush()
+        except OSError:
+            return None
+        return cls(handler)
+
+    def recv(self) -> tuple[int, bytes]:
+        b0 = self._rfile.read(1)
+        if not b0:
+            raise _WsClosed()
+        b0 = b0[0]
+        opcode = b0 & 0x0F
+        b1 = self._rfile.read(1)
+        if not b1:
+            raise _WsClosed()
+        b1 = b1[0]
+        masked = bool(b1 & 0x80)
+        length = b1 & 0x7F
+        if length == 126:
+            ext = self._rfile.read(2)
+            if len(ext) < 2:
+                raise _WsClosed()
+            length = struct.unpack(">H", ext)[0]
+        elif length == 127:
+            ext = self._rfile.read(8)
+            if len(ext) < 8:
+                raise _WsClosed()
+            length = struct.unpack(">Q", ext)[0]
+        mask = self._rfile.read(4) if masked else None
+        if masked and (mask is None or len(mask) < 4):
+            raise _WsClosed()
+        payload = b""
+        if length:
+            payload = self._rfile.read(length)
+            if len(payload) < length:
+                raise _WsClosed()
+        if mask:
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        # Auto-handle pings (reply with pong) and close frames so callers
+        # only deal with text/binary data.
+        if opcode == self.OPCODE_PING:
+            self._send_frame(self.OPCODE_PONG, payload)
+            return self.recv()
+        if opcode == self.OPCODE_CLOSE:
+            self.closed = True
+            raise _WsClosed()
+        return opcode, payload
+
+    def send_binary(self, data: bytes) -> None:
+        self._send_frame(self.OPCODE_BIN, data)
+
+    def send_text(self, text: str) -> None:
+        self._send_frame(self.OPCODE_TEXT, text.encode("utf-8", errors="replace"))
+
+    def _send_frame(self, opcode: int, data: bytes) -> None:
+        if self.closed:
+            raise _WsClosed()
+        header = bytearray([0x80 | (opcode & 0x0F)])
+        length = len(data)
+        if length < 126:
+            header.append(length)
+        elif length < 65536:
+            header.append(126)
+            header += struct.pack(">H", length)
+        else:
+            header.append(127)
+            header += struct.pack(">Q", length)
+        with self._write_lock:
+            try:
+                self._wfile.write(bytes(header))
+                if data:
+                    self._wfile.write(data)
+                self._wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                self.closed = True
+                raise _WsClosed()
+
+    def close(self, code: int = 1000) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            payload = struct.pack(">H", code)
+            self._send_frame(self.OPCODE_CLOSE, payload)
+        except (_WsClosed, OSError):
+            pass
+        try:
+            if self._sock is not None:
+                self._sock.shutdown(2)  # SHUT_RDWR
+        except OSError:
+            pass
+
+
+# ----- PTY lifecycle helpers ----------------------------------------
+
+def _pty_spawn(shell: str | None, cwd: str | None, cols: int, rows: int) -> dict:
+    """Create a new PTY session and start its reader thread.
+
+    Returns the session dict (registered in PTYS). Raises ImportError if
+    the platform PTY backend is unavailable (e.g. pywinpty missing on
+    Windows) so the HTTP layer can map it to a 503."""
+    argv = _pty_session.resolve_shell(shell)
+    target_cwd = cwd or str(ROOT)
+    pty = _pty_session.Pty.spawn(argv, cwd=target_cwd, cols=cols, rows=rows)
+    pty_id = str(uuid.uuid4())
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    entry = {
+        "id": pty_id,
+        "kind": "terminal",
+        "shell": shell or "auto",
+        "argv": argv,
+        "cwd": target_cwd,
+        "cols": cols,
+        "rows": rows,
+        "pid": pty.pid,
+        "created_at": now,
+        "status": "running",
+        "exit_code": None,
+        "_pty": pty,
+        "_ring": bytearray(),     # accumulated output bytes, capped
+        "_subscribers": [],       # list of queue.Queue[bytes|None]
+        "_lock": threading.Lock(),
+    }
+    with PTYS_LOCK:
+        PTYS[pty_id] = entry
+    t = threading.Thread(target=_pty_reader_loop, args=(pty_id,), daemon=True)
+    t.start()
+    _evict_old_ptys()
+    return entry
+
+
+def _pty_reader_loop(pty_id: str) -> None:
+    """Background reader: pulls bytes off the PTY master and broadcasts
+    them to every WS subscriber. Buffers a tail in the ring so a late
+    attach can catch up. Exits when the child closes its end."""
+    with PTYS_LOCK:
+        entry = PTYS.get(pty_id)
+    if not entry:
+        return
+    pty = entry["_pty"]
+    while True:
+        chunk = pty.read(4096)
+        if not chunk:
+            # EOF — child closed its end of the master. Mark the session
+            # done so the UI can show "ended" and prevent further writes.
+            with entry["_lock"]:
+                entry["status"] = "ended"
+                # Push the EOF sentinel to every subscriber so each WS
+                # loop can wake up and close.
+                for q in entry["_subscribers"]:
+                    try:
+                        q.put_nowait(None)
+                    except _stdqueue.Full:
+                        pass
+            return
+        with entry["_lock"]:
+            buf = entry["_ring"]
+            buf += chunk
+            if len(buf) > PTY_RING_BYTES:
+                # Drop the oldest bytes once we exceed the cap. Anchored at
+                # the cap so we don't memcpy on every read.
+                del buf[: len(buf) - PTY_RING_BYTES]
+            entry["_ring"] = buf
+            subs = list(entry["_subscribers"])
+        for q in subs:
+            try:
+                q.put_nowait(chunk)
+            except _stdqueue.Full:
+                # Slow consumer: drop the chunk for that subscriber. Their
+                # ring catch-up on reconnect handles missed bytes.
+                pass
+
+
+def _pty_kill(pty_id: str) -> bool:
+    with PTYS_LOCK:
+        entry = PTYS.get(pty_id)
+    if not entry:
+        return False
+    pty = entry.get("_pty")
+    try:
+        pty.kill()
+    except Exception:
+        pass
+    with entry["_lock"]:
+        entry["status"] = "ended"
+        for q in entry["_subscribers"]:
+            try:
+                q.put_nowait(None)
+            except _stdqueue.Full:
+                pass
+    return True
+
+
+def _pty_summary(entry: dict) -> dict:
+    return {
+        "id": entry["id"],
+        "kind": entry["kind"],
+        "shell": entry["shell"],
+        "argv": list(entry.get("argv") or []),
+        "cwd": entry.get("cwd"),
+        "cols": entry.get("cols"),
+        "rows": entry.get("rows"),
+        "pid": entry.get("pid"),
+        "status": entry.get("status"),
+        "created_at": entry.get("created_at"),
+    }
+
+
+def _evict_old_ptys() -> None:
+    """Bound the PTY registry by killing the oldest *ended* sessions when
+    we cross PTYS_MAX. Running sessions are never evicted."""
+    with PTYS_LOCK:
+        if len(PTYS) <= PTYS_MAX:
+            return
+        ended = [
+            (entry["created_at"], pid)
+            for pid, entry in PTYS.items()
+            if entry.get("status") != "running"
+        ]
+        ended.sort()
+        to_drop = len(PTYS) - PTYS_MAX
+        for _, pid in ended[:to_drop]:
+            PTYS.pop(pid, None)
+
 
 
 def _load_improver_config() -> dict:
@@ -3254,6 +3590,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if m:
             self._handle_job_get(m.group(1), urllib.parse.parse_qs(parsed.query))
             return
+        # PTY (real shell) sessions live alongside chat jobs; same shape.
+        if parsed.path == "/api/ptys":
+            self._handle_ptys_list()
+            return
+        m = re.fullmatch(r"/api/ptys/([0-9a-f-]+)/io", parsed.path)
+        if m:
+            self._handle_pty_ws(m.group(1))
+            return
+        m = re.fullmatch(r"/api/ptys/([0-9a-f-]+)", parsed.path)
+        if m:
+            self._handle_pty_get(m.group(1))
+            return
         super().do_GET()
 
     def do_POST(self):  # noqa: N802
@@ -3281,6 +3629,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_improver_update(body)
         elif parsed.path == "/api/settings/auto_select":
             self._handle_auto_select_update(body)
+        elif parsed.path == "/api/ptys":
+            self._handle_pty_create(body)
         else:
             m = re.fullmatch(r"/api/jobs/([0-9a-f-]+)/cancel", parsed.path)
             if m:
@@ -3289,6 +3639,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             m = re.fullmatch(r"/api/jobs/([0-9a-f-]+)/input", parsed.path)
             if m:
                 self._handle_job_input(m.group(1), body)
+                return
+            m = re.fullmatch(r"/api/ptys/([0-9a-f-]+)/kill", parsed.path)
+            if m:
+                self._handle_pty_kill(m.group(1))
                 return
             m = re.fullmatch(r"/api/jobs/([0-9a-f-]+)/interrupt", parsed.path)
             if m:
@@ -5038,6 +5392,188 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(200, {"ok": True})
         else:
             self._json(409, {"error": "job not running or not found"})
+
+    # ----- PTY endpoints (real shell sessions) --------------------------
+
+    def _handle_ptys_list(self) -> None:
+        with PTYS_LOCK:
+            out = [_pty_summary(e) for e in PTYS.values()]
+        out.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+        self._json(200, {"ptys": out})
+
+    def _handle_pty_get(self, pty_id: str) -> None:
+        with PTYS_LOCK:
+            entry = PTYS.get(pty_id)
+            summary = _pty_summary(entry) if entry else None
+        if not summary:
+            self._json(404, {"error": "pty not found"})
+            return
+        self._json(200, summary)
+
+    def _handle_pty_create(self, body: dict) -> None:
+        shell = body.get("shell")
+        if shell is not None and not isinstance(shell, str):
+            self._json(400, {"error": "shell must be a string"})
+            return
+        cwd_raw = body.get("cwd")
+        if cwd_raw is not None and not isinstance(cwd_raw, str):
+            self._json(400, {"error": "cwd must be a string"})
+            return
+        # Constrain ``cwd`` to inside the repo so the dashboard can't be
+        # used as a generic remote shell over the LAN. Empty/None falls
+        # back to the repo root.
+        cwd = None
+        if cwd_raw:
+            try:
+                resolved = (ROOT / cwd_raw).resolve()
+                resolved.relative_to(ROOT.resolve())
+                if not resolved.is_dir():
+                    self._json(404, {"error": f"cwd not found or not a directory: {cwd_raw}"})
+                    return
+                cwd = str(resolved)
+            except (ValueError, OSError):
+                self._json(403, {"error": "cwd must be inside the repo"})
+                return
+        try:
+            cols = int(body.get("cols") or 80)
+            rows = int(body.get("rows") or 24)
+        except (TypeError, ValueError):
+            self._json(400, {"error": "cols/rows must be integers"})
+            return
+        cols = max(20, min(500, cols))
+        rows = max(5,  min(200, rows))
+        try:
+            entry = _pty_spawn(shell, cwd, cols, rows)
+        except ImportError as e:
+            # Windows without pywinpty installed.
+            self._json(503, {"error": str(e)})
+            return
+        except FileNotFoundError as e:
+            self._json(503, {"error": f"shell not found: {e}"})
+            return
+        except Exception as e:
+            self._json(500, {"error": f"failed to spawn PTY: {e}"})
+            return
+        self._json(201, _pty_summary(entry))
+
+    def _handle_pty_kill(self, pty_id: str) -> None:
+        if _pty_kill(pty_id):
+            self._json(200, {"ok": True})
+        else:
+            self._json(404, {"error": "pty not found"})
+
+    def _handle_pty_ws(self, pty_id: str) -> None:
+        """WebSocket endpoint: bidirectional byte stream + JSON control
+        messages. Frames:
+          * binary  -> bytes written to the PTY master (keystrokes)
+          * text    -> JSON control: {"type":"resize","cols":N,"rows":M}
+        Server -> client:
+          * binary  -> bytes read off the PTY master
+          * text    -> JSON: {"type":"exit"} on EOF
+        """
+        with PTYS_LOCK:
+            entry = PTYS.get(pty_id)
+        if not entry:
+            self.send_error(404, "pty not found")
+            return
+        ws = WebSocket.accept(self)
+        if ws is None:
+            return  # handshake already sent its own error
+        q: _stdqueue.Queue = _stdqueue.Queue(maxsize=4096)
+        # Catch-up: dump the ring buffer first so the client sees existing
+        # output even if it attached after the session started.
+        with entry["_lock"]:
+            if entry["_ring"]:
+                try:
+                    ws.send_binary(bytes(entry["_ring"]))
+                except _WsClosed:
+                    return
+            entry["_subscribers"].append(q)
+            ended = entry.get("status") == "ended"
+        if ended:
+            try:
+                ws.send_text(json.dumps({"type": "exit"}))
+            except _WsClosed:
+                pass
+            ws.close()
+            with entry["_lock"]:
+                try: entry["_subscribers"].remove(q)
+                except ValueError: pass
+            return
+
+        # Stop event so the writer thread can clean up when the reader
+        # bails (or vice versa).
+        stop = threading.Event()
+
+        def pump_outbound():
+            try:
+                while not stop.is_set():
+                    try:
+                        chunk = q.get(timeout=15)
+                    except _stdqueue.Empty:
+                        # Heartbeat ping keeps proxies / browsers happy.
+                        try:
+                            ws._send_frame(WebSocket.OPCODE_PING, b"")
+                        except _WsClosed:
+                            return
+                        continue
+                    if chunk is None:
+                        try:
+                            ws.send_text(json.dumps({"type": "exit"}))
+                        except _WsClosed:
+                            pass
+                        return
+                    try:
+                        ws.send_binary(chunk)
+                    except _WsClosed:
+                        return
+            finally:
+                stop.set()
+
+        writer = threading.Thread(target=pump_outbound, daemon=True)
+        writer.start()
+
+        try:
+            while not stop.is_set():
+                try:
+                    opcode, data = ws.recv()
+                except _WsClosed:
+                    break
+                if opcode == WebSocket.OPCODE_BIN:
+                    pty = entry.get("_pty")
+                    if pty is not None:
+                        try:
+                            pty.write(data)
+                        except Exception:
+                            break
+                elif opcode == WebSocket.OPCODE_TEXT:
+                    # Control message (resize, etc.) JSON-encoded.
+                    try:
+                        msg = json.loads(data.decode("utf-8", errors="replace"))
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if msg.get("type") == "resize":
+                        try:
+                            cols = max(20, min(500, int(msg.get("cols") or 80)))
+                            rows = max(5,  min(200, int(msg.get("rows") or 24)))
+                        except (TypeError, ValueError):
+                            continue
+                        pty = entry.get("_pty")
+                        if pty is not None:
+                            try:
+                                pty.resize(cols, rows)
+                            except Exception:
+                                pass
+                        with entry["_lock"]:
+                            entry["cols"] = cols
+                            entry["rows"] = rows
+        finally:
+            stop.set()
+            with entry["_lock"]:
+                try: entry["_subscribers"].remove(q)
+                except ValueError: pass
+            try: ws.close()
+            except Exception: pass
 
     def _handle_job_input(self, job_id: str, body: dict) -> None:
         with JOBS_LOCK:

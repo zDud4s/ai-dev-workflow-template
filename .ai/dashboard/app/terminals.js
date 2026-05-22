@@ -5,6 +5,87 @@
     // Each entry: { jobId, source, pane, body, input, sendBtn, status, task }
     var TERMS = new Map();
 
+    // ----- pane persistence (survives F5) -----
+    //
+    // Each open pane (chat job, PTY, IDE transcript mirror) is logged to
+    // localStorage with just enough metadata to re-attach on next page
+    // load: pane key + kind + collapsed/pinned flags. Everything else is
+    // re-fetched server-side on restore — the job/PTY itself is owned by
+    // the server process and outlives the browser tab. Drafts (work-in-
+    // progress, not yet POSTed) and dispatch trackers (re-spawned by
+    // their parent stream) are intentionally excluded.
+    var PERSIST_KEY = "dash.openPanes.v1";
+    var _persistTimer = null;
+    function persistOpenPanes() {
+      // Debounce so a burst of mutations (open + collapse + scroll) only
+      // serialises once.
+      if (_persistTimer) return;
+      _persistTimer = setTimeout(() => {
+        _persistTimer = null;
+        const entries = [];
+        for (const [id, t] of TERMS.entries()) {
+          if (!t) continue;
+          if (t.isDraft) continue;
+          if (t.kind === "dispatch") continue;
+          entries.push({
+            id,
+            kind: t.kind,
+            collapsed: t.pane && t.pane.classList.contains("collapsed") || false,
+            pinned: t.pane && t.pane.classList.contains("pinned") || false,
+          });
+        }
+        try { localStorage.setItem(PERSIST_KEY, JSON.stringify({ panes: entries })); }
+        catch (_) { /* quota exceeded? give up silently */ }
+      }, 250);
+    }
+
+    async function restoreOpenPanes() {
+      let saved;
+      try {
+        const raw = localStorage.getItem(PERSIST_KEY);
+        saved = raw ? JSON.parse(raw) : null;
+      } catch (_) { return; }
+      if (!saved || !Array.isArray(saved.panes) || !saved.panes.length) return;
+      for (const entry of saved.panes) {
+        if (!entry || !entry.id || !entry.kind) continue;
+        if (TERMS.has(entry.id)) continue;
+        try {
+          if (entry.kind === "transcript") {
+            const sid = String(entry.id).replace(/^ide:/, "");
+            if (!sid) continue;
+            termOpenTranscript(sid);
+            // The mirror pane is auto-bookmarked too so the next F5 re-opens.
+            if (typeof AUTO_OPENED_ONCE !== "undefined") AUTO_OPENED_ONCE.add(entry.id);
+          } else if (entry.kind === "terminal") {
+            const r = await fetch("/api/ptys/" + encodeURIComponent(entry.id), { cache: "no-store" });
+            if (!r.ok) continue;
+            const meta = await r.json();
+            // Skip dead PTYs — the shell has exited; nothing to attach.
+            if (meta.status && meta.status !== "running") continue;
+            termOpenPty(entry.id, meta, null);
+          } else if (entry.kind === "chat" || entry.kind === "chat-codex") {
+            const r = await fetch("/api/jobs/" + encodeURIComponent(entry.id), { cache: "no-store" });
+            if (!r.ok) continue;
+            const meta = await r.json();
+            termOpen(entry.id, meta);
+            if (typeof AUTO_OPENED_ONCE !== "undefined") AUTO_OPENED_ONCE.add(entry.id);
+          }
+          // Apply per-pane UI state after attach.
+          const t = TERMS.get(entry.id);
+          if (t && t.pane) {
+            if (entry.pinned) {
+              t.pane.classList.add("pinned");
+              const btn = t.pane.querySelector(".pin-btn");
+              if (btn) { btn.classList.add("active"); btn.textContent = "unpin"; }
+            }
+            if (entry.collapsed) {
+              termSetCollapsed(t, true);
+            }
+          }
+        } catch (_) { /* one pane failed; keep going */ }
+      }
+    }
+
     // ----- status-bar helpers -----
     // Each pane opens collapsed (one-line status row). The body+composer
     // only render when the operator expands it explicitly OR when input is
@@ -204,22 +285,79 @@
       ).join("");
     }
 
+    // Shell options for the "New shell" draft pane. "auto" lets the
+    // server pick the platform default (pwsh / cmd on Windows, $SHELL
+    // or zsh / bash on POSIX). The explicit ids are passed through to
+    // /api/ptys as the ``shell`` field and resolved server-side.
+    var DRAFT_SHELLS = [
+      { id: "auto",       label: "Auto (platform default)" },
+      { id: "bash",       label: "bash" },
+      { id: "zsh",        label: "zsh" },
+      { id: "fish",       label: "fish" },
+      { id: "pwsh",       label: "PowerShell 7+ (pwsh)" },
+      { id: "powershell", label: "Windows PowerShell" },
+      { id: "cmd",        label: "Command Prompt (cmd)" },
+      { id: "sh",         label: "sh" },
+    ];
+
+    function termDraftShellOptions(selected) {
+      return DRAFT_SHELLS.map((s) =>
+        `<option value="${escape(s.id)}"${s.id === selected ? " selected" : ""}>${escape(s.label)}</option>`
+      ).join("");
+    }
+
+    // Type dropdown: how to present the AI session.
+    //   "ai"        -> stream-json chat pane (current chat-pane flow)
+    //   "shell:<x>" -> open a real PTY (shell <x>) AND launch the chosen
+    //                  tool with the chosen model inside it, then type
+    //                  the first message into the running AI so the
+    //                  operator sees the full TUI experience.
+    function termDraftTypeOptionsHtml(selected) {
+      const opts = [`<option value="ai"${"ai" === selected ? " selected" : ""}>AI chat (direct)</option>`];
+      const shellHtml = DRAFT_SHELLS.map((s) => {
+        const v = "shell:" + s.id;
+        return `<option value="${escape(v)}"${v === selected ? " selected" : ""}>${escape(s.label)}</option>`;
+      }).join("");
+      opts.push(`<optgroup label="Run AI inside a real terminal">${shellHtml}</optgroup>`);
+      return opts.join("");
+    }
+
+    // Build the argv/command line that launches the chosen AI tool in
+    // a shell, taking the model into account. Both binaries accept the
+    // prompt as a positional arg in interactive mode, but we'd rather
+    // send the message AFTER launch so the operator sees the TUI come
+    // up first — this returns just the launcher; the message follows.
+    //
+    // For Claude we also pin a ``--session-id`` so the caller can
+    // pre-mark that uuid as already-handled in AUTO_OPENED_ONCE — this
+    // prevents the IDE-transcript auto-opener from spawning a duplicate
+    // mirror pane the moment claude writes its first JSONL line.
+    function termDraftLaunchCommand(tool, model, sessionId) {
+      const safeModel = String(model || "").replace(/"/g, "");
+      if (tool === "codex") {
+        return `codex -m ${safeModel}`;
+      }
+      const sid = sessionId ? ` --session-id ${sessionId}` : "";
+      return `claude${sid} --model ${safeModel}`;
+    }
+
     function termOpenDraft() {
       _draftCounter += 1;
       const draftId = "draft:" + Date.now() + ":" + _draftCounter;
       const grid = $("#terms-grid");
       if (!grid) return;
 
-      // Default tool/model. The picker is editable before the first send.
+      // Defaults. Editable before sending.
       const defaultTool = "claude";
       const defaultModel = (DRAFT_MODELS_BY_TOOL[defaultTool] || [""])[0] || "claude-sonnet-4-6";
+      const defaultType = "ai";
 
       const pane = document.createElement("div");
       pane.className = "term-pane term-draft focus";
       pane.dataset.jobId = draftId;
       pane.innerHTML = `
         <div class="term-head">
-          <span class="pill status-pill" title="not yet started — picks tool + model first">draft</span>
+          <span class="pill status-pill" title="not yet started — pick tool, model and type">draft</span>
           <span class="task">New terminal</span>
           <span class="activity waiting" title="will start when you send the first message">unsent</span>
           <span class="id">${escape(draftId.slice(-6))}</span>
@@ -241,10 +379,17 @@
               ${termDraftModelOptions(defaultTool, defaultModel)}
             </select>
           </label>
-          <span class="draft-hint">Conversation starts when you send the first message.</span>
+          <label class="draft-field">
+            <span class="draft-label">Type</span>
+            <select class="draft-type">
+              ${termDraftTypeOptionsHtml(defaultType)}
+            </select>
+          </label>
+          <span class="draft-hint draft-hint-ai">Conversation starts when you send the first message.</span>
+          <span class="draft-hint draft-hint-shell" hidden>Opens a real PTY, runs the chosen tool inside, then types your first message into the running TUI.</span>
         </div>
         <div class="term-body chat" tabindex="0">
-          <div class="msg system draft-placeholder">Pick a tool and model above, then type your first message below. The job is created on send.</div>
+          <div class="msg system draft-placeholder">Pick tool, model and type, then send your first message.</div>
         </div>
         <div class="attach-tray" style="display:none"></div>
         <div class="term-foot">
@@ -259,6 +404,10 @@
       const sendBtn = pane.querySelector(".send-btn");
       const toolSel = pane.querySelector(".draft-tool");
       const modelSel = pane.querySelector(".draft-model");
+      const typeSel = pane.querySelector(".draft-type");
+      const hintAi = pane.querySelector(".draft-hint-ai");
+      const hintShell = pane.querySelector(".draft-hint-shell");
+      const placeholder = body.querySelector(".draft-placeholder");
 
       // Auto-grow the textarea exactly like real panes do.
       const autosize = () => {
@@ -279,16 +428,40 @@
       };
       TERMS.set(draftId, t);
 
-      // Repopulate the model list when the tool changes — claude models
-      // are useless if the user picked codex and vice versa.
+      // Parse the Type select value: "ai" | "shell:<name>".
+      const parseType = () => {
+        const v = typeSel.value || "ai";
+        if (v === "ai") return { kind: "ai" };
+        const [k, ...rest] = v.split(":");
+        return { kind: k, id: rest.join(":") };
+      };
+
+      const refreshType = () => {
+        const isShell = parseType().kind === "shell";
+        hintAi.hidden = isShell;
+        hintShell.hidden = !isShell;
+        if (isShell) {
+          sendBtn.textContent = "open & send";
+          if (placeholder) placeholder.textContent = "Opens the shell, runs the tool with the chosen model, then types your first message into the TUI.";
+        } else {
+          sendBtn.textContent = "start";
+          if (placeholder) placeholder.textContent = "Pick tool, model and type, then send your first message.";
+        }
+      };
+      typeSel.addEventListener("change", refreshType);
+
+      // Tool change repopulates the Model list (claude vs codex models).
       toolSel.addEventListener("change", () => {
         const tool = toolSel.value;
         const list = DRAFT_MODELS_BY_TOOL[tool] || [];
         modelSel.innerHTML = termDraftModelOptions(tool, list[0] || "");
       });
 
-      // Image paste / drop reuses the real-pane plumbing.
+      // Image paste / drop reuses the real-pane plumbing (AI chat only —
+      // shell-mode messages are typed into the TUI and don't accept
+      // multimodal input from the dashboard composer).
       input.addEventListener("paste", (e) => {
+        if (parseType().kind !== "ai") return;
         const items = e.clipboardData?.items || [];
         for (const it of items) {
           if (it.kind === "file" && it.type.startsWith("image/")) {
@@ -302,6 +475,7 @@
       pane.addEventListener("drop", (e) => {
         e.preventDefault();
         pane.classList.remove("dragover");
+        if (parseType().kind !== "ai") return;
         for (const f of e.dataTransfer.files || []) {
           if (f.type.startsWith("image/")) termPasteImage(t, f);
         }
@@ -320,33 +494,93 @@
       });
 
       const startConversation = async () => {
+        const tool = toolSel.value;
+        const model = modelSel.value;
+        const typeSelected = parseType();
         const text = input.value.trim();
+        if (!model) {
+          setMsg("#term-msg", "err", "Pick a model before sending.", 4000);
+          return;
+        }
+
+        if (typeSelected.kind === "shell") {
+          // Shell-with-AI path: spawn the PTY, then launch the chosen
+          // tool inside it with the chosen model, then type the user's
+          // message into the running TUI.
+          const shell = typeSelected.id || "auto";
+          sendBtn.disabled = true;
+          typeSel.disabled = true;
+          toolSel.disabled = true;
+          modelSel.disabled = true;
+          sendBtn.textContent = "opening…";
+          try {
+            const res = await postJson("/api/ptys", { shell, cols: 100, rows: 30 });
+            TERMS.delete(draftId);
+            pane.remove();
+            // For Claude: pre-allocate the session-id so we can mark it
+            // as already-handled BEFORE the IDE-transcript auto-opener
+            // notices the new JSONL file. Without this, opening
+            // Type=shell + Tool=Claude spawns a second pane mirroring
+            // the same session.
+            let preSessionId = null;
+            if (tool === "claude") {
+              preSessionId = (window.crypto && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : ("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+                    const r = Math.random() * 16 | 0;
+                    const v = c === "x" ? r : (r & 0x3 | 0x8);
+                    return v.toString(16);
+                  }));
+              if (typeof AUTO_OPENED_ONCE !== "undefined") {
+                AUTO_OPENED_ONCE.add("ide:" + preSessionId);
+              }
+            }
+            // Build the sequence the PTY runs once the prompt appears:
+            //   1. Launch the tool with the model flag.
+            //   2. After a beat (TUI warm-up), type the first message
+            //      so the operator sees it land inside the running AI.
+            const launchCmd = termDraftLaunchCommand(tool, model, preSessionId);
+            const steps = [{ text: launchCmd, delay: 300 }];
+            if (text) steps.push({ text: text, delay: 3000 });
+            termOpenPty(res.id, res, steps);
+          } catch (err) {
+            sendBtn.disabled = false;
+            typeSel.disabled = false;
+            toolSel.disabled = false;
+            modelSel.disabled = false;
+            sendBtn.textContent = "open & send";
+            const note = document.createElement("div");
+            note.className = "msg system";
+            note.style.color = "var(--bad)";
+            note.textContent = "[open shell failed: " + err.message + "]";
+            body.appendChild(note);
+            setMsg("#term-msg", "err", "Open shell failed: " + err.message, 4000);
+          }
+          return;
+        }
+
+        // AI chat (direct) path: POST /api/jobs with stream-json.
         const attached = t.attached || { images: [], files: [] };
         if (!text && !attached.images.length && !attached.files.length) {
           input.focus();
           return;
         }
-        const tool = toolSel.value;
-        const model = modelSel.value;
-        if (!model) {
-          setMsg("#term-msg", "err", "Pick a model before sending.", 4000);
-          return;
-        }
         const kind = tool === "codex" ? "chat-codex" : "chat";
         sendBtn.disabled = true;
+        typeSel.disabled = true;
         toolSel.disabled = true;
         modelSel.disabled = true;
         sendBtn.textContent = "starting…";
         try {
           const payload = { kind, task: text, model };
           const res = await postJson("/api/jobs", payload);
-          // Tear down the draft pane — the real one takes its place.
           TERMS.delete(draftId);
           pane.remove();
           termOpen(res.id, res);
           await loadJobs();
         } catch (err) {
           sendBtn.disabled = false;
+          typeSel.disabled = false;
           toolSel.disabled = false;
           modelSel.disabled = false;
           sendBtn.textContent = "start";
@@ -596,10 +830,18 @@
     function termClose(jobId) {
       const t = TERMS.get(jobId);
       if (!t) return;
+      // PTY panes own additional resources (xterm instance, ResizeObserver,
+      // server-side shell) that the generic close path doesn't know about.
+      // Delegate so the cleanup is symmetric with the dedicated close-btn.
+      if (t.kind === "terminal") {
+        termClosePty(jobId);
+        return;
+      }
       try { t.source.close(); } catch (_) {}
       t.pane.remove();
       TERMS.delete(jobId);
       termRenderEmptyState();
+      persistOpenPanes();
       loadJobs();
     }
 
@@ -769,6 +1011,9 @@
         t.jobId = res.id;
         t.pane.dataset.jobId = res.id;
         TERMS.set(res.id, t);
+        // Re-persist immediately so a F5 between turns won't lose the
+        // pane (the old job id would 404).
+        persistOpenPanes();
         const idEl = t.pane.querySelector(".id");
         if (idEl) idEl.textContent = res.id.slice(0, 8);
         const sp = t.pane.querySelector(".status-pill");
@@ -1823,6 +2068,298 @@
       t.body.appendChild(pre);
     }
 
+    // ----- PTY (real shell) panes -----
+    //
+    // Created by termOpenDraft when the operator picks Tool=Shell. A
+    // pane hosts an xterm.js instance bound bidirectionally to the
+    // server's PTY master via WebSocket (/api/ptys/<id>/io). All
+    // chat-bubble plumbing is bypassed: bytes in, bytes out.
+
+    // Reused per pane: when xterm/ResizeObserver aren't available
+    // (older browsers, blocked CDN) the pane shows an inline error
+    // instead of silently appearing broken.
+    function termPtyMissingDeps() {
+      return typeof Terminal === "undefined" || typeof FitAddon === "undefined";
+    }
+
+    function termPtyWsUrl(ptyId) {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      return `${proto}//${location.host}/api/ptys/${encodeURIComponent(ptyId)}/io`;
+    }
+
+    function termOpenPty(ptyId, meta, initialCommand) {
+      if (TERMS.has(ptyId)) return;
+      const grid = $("#terms-grid");
+      if (!grid) return;
+      const shellLabel = (meta?.argv && meta.argv[0]) || meta?.shell || "shell";
+      const shortShell = String(shellLabel).split(/[\\/]/).pop() || shellLabel;
+      const pane = document.createElement("div");
+      pane.className = "term-pane term-pty focus";
+      pane.dataset.jobId = ptyId;
+      pane.innerHTML = `
+        <div class="term-head">
+          <span class="pill running status-pill" title="PTY ${escape(ptyId)}">connecting</span>
+          <span class="task" title="${escape(meta?.cwd || "")}">${escape(shortShell)} · ${escape(meta?.cwd || "")}</span>
+          <span class="activity" title="current activity in this pane">connecting…</span>
+          <span class="id">${escape(ptyId.slice(0, 8))}</span>
+          <span class="actions">
+            <button class="expand-btn" title="Show or hide this terminal">expand</button>
+            <button class="pin-btn" title="Maximise / restore this pane">pin</button>
+            <button class="kill-btn danger" title="Terminate the shell (SIGTERM)">kill</button>
+            <button class="close-btn" title="Close this pane (and kill the shell)">close</button>
+          </span>
+        </div>
+        <div class="term-body term-pty-body" tabindex="0"></div>
+      `;
+      grid.appendChild(pane);
+
+      const body = pane.querySelector(".term-body");
+      const t = {
+        jobId: ptyId,
+        pane, body,
+        input: null, sendBtn: null,
+        source: null,            // WebSocket goes in here
+        task: meta?.cwd || "",
+        kind: "terminal",
+        shell: meta?.shell || "auto",
+        attached: { images: [], files: [] },
+      };
+      TERMS.set(ptyId, t);
+
+      if (termGetLayout() === "list") pane.classList.add("collapsed");
+
+      pane.addEventListener("click", () => {
+        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
+        pane.classList.add("focus");
+      });
+      pane.querySelector(".term-head").addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        termToggleCollapsed(t);
+      });
+      pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        termToggleCollapsed(t);
+      });
+      pane.querySelector(".pin-btn")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        pane.classList.toggle("pinned");
+        const btn = pane.querySelector(".pin-btn");
+        btn.classList.toggle("active", pane.classList.contains("pinned"));
+        btn.textContent = pane.classList.contains("pinned") ? "unpin" : "pin";
+        // Re-fit xterm to the new pane size on the next frame.
+        requestAnimationFrame(() => t._fitAddon && t._fitAddon.fit());
+      });
+      pane.querySelector(".close-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        termClosePty(ptyId);
+      });
+      pane.querySelector(".kill-btn").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        try {
+          await postJson(`/api/ptys/${ptyId}/kill`, {});
+        } catch (err) {
+          setMsg("#term-msg", "err", "Kill failed: " + err.message, 4000);
+        }
+      });
+
+      if (termPtyMissingDeps()) {
+        body.innerHTML = `<div class="msg system" style="color:var(--bad);padding:12px">
+          xterm.js failed to load (CDN blocked?). Reload the page or check your network.
+        </div>`;
+        return;
+      }
+
+      // ----- xterm.js instance -----
+      const term = new Terminal({
+        cursorBlink: true,
+        fontFamily: "var(--ff-mono), JetBrains Mono, Menlo, Consolas, monospace",
+        fontSize: 13,
+        scrollback: 5000,
+        convertEol: false,
+        // Match the dashboard's dark palette so the terminal doesn't feel pasted-in.
+        theme: {
+          background: "#0b0f14",
+          foreground: "#d8dee9",
+          cursor: "#88c0d0",
+          selectionBackground: "#3b4252",
+          black: "#3b4252",
+          red:   "#bf616a",
+          green: "#a3be8c",
+          yellow:"#ebcb8b",
+          blue:  "#81a1c1",
+          magenta:"#b48ead",
+          cyan:  "#88c0d0",
+          white: "#e5e9f0",
+          brightBlack: "#4c566a",
+          brightRed:   "#bf616a",
+          brightGreen: "#a3be8c",
+          brightYellow:"#ebcb8b",
+          brightBlue:  "#81a1c1",
+          brightMagenta:"#b48ead",
+          brightCyan:  "#8fbcbb",
+          brightWhite: "#eceff4",
+        },
+      });
+      const fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      if (typeof WebLinksAddon !== "undefined") {
+        try { term.loadAddon(new WebLinksAddon.WebLinksAddon()); } catch (_) {}
+      }
+      term.open(body);
+      t._term = term;
+      t._fitAddon = fit;
+      // First fit after the next frame so layout has finished.
+      const initialFit = () => {
+        try { fit.fit(); } catch (_) {}
+      };
+      requestAnimationFrame(initialFit);
+
+      // ----- WebSocket -----
+      const ws = new WebSocket(termPtyWsUrl(ptyId));
+      ws.binaryType = "arraybuffer";
+      t.source = ws;
+      const decoder = new TextDecoder("utf-8", { fatal: false });
+      const statusPill = pane.querySelector(".status-pill");
+
+      ws.onopen = () => {
+        statusPill.classList.remove("queued");
+        statusPill.textContent = "live";
+        termSetActivity(t, "live", "busy");
+        // Sync the server PTY to our actual rendered geometry.
+        sendResize();
+        // ``initialCommand`` accepts three shapes:
+        //   string     -> sent once, followed by Enter
+        //   array      -> sequence of { text, delay, appendCR? } steps
+        //   {text,...} -> single object treated as a one-step sequence
+        const steps = Array.isArray(initialCommand)
+          ? initialCommand
+          : (initialCommand
+              ? (typeof initialCommand === "string"
+                  ? [{ text: initialCommand }]
+                  : [initialCommand])
+              : []);
+        // Steps go as BINARY frames: text frames are reserved for JSON
+        // control messages (resize, etc.) and would be silently dropped
+        // by the server's parser. \r at the end fires Enter.
+        const enc = new TextEncoder();
+        const runStep = (i) => {
+          if (i >= steps.length) return;
+          const s = steps[i] || {};
+          const text = s.text != null ? String(s.text) : "";
+          const appendCR = s.appendCR !== false;
+          const payload = appendCR ? text + "\r" : text;
+          if (ws.readyState === WebSocket.OPEN && payload) {
+            try { ws.send(enc.encode(payload)); } catch (_) {}
+          }
+          if (i + 1 < steps.length) {
+            const nextDelay = Math.max(0, Number(steps[i + 1].delay) || 0);
+            setTimeout(() => runStep(i + 1), nextDelay);
+          }
+        };
+        if (steps.length) {
+          const firstDelay = Math.max(0, Number(steps[0].delay) || 0);
+          setTimeout(() => runStep(0), firstDelay);
+        }
+        term.focus();
+      };
+
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          // Control frame from server (JSON).
+          let msg;
+          try { msg = JSON.parse(ev.data); } catch (_) { return; }
+          if (msg.type === "exit") {
+            statusPill.textContent = "ended";
+            statusPill.classList.add("done");
+            termSetActivity(t, "ended", "ended");
+            pane.classList.add("dead");
+          }
+          return;
+        }
+        // Binary frame: raw bytes from the PTY master.
+        const text = decoder.decode(ev.data instanceof ArrayBuffer ? ev.data : new Uint8Array(ev.data));
+        term.write(text);
+      };
+
+      ws.onerror = () => {
+        statusPill.textContent = "disconnected";
+        statusPill.classList.add("warn");
+        termSetActivity(t, "disconnected", "ended");
+      };
+
+      ws.onclose = () => {
+        if (!pane.classList.contains("dead")) {
+          statusPill.textContent = "closed";
+          termSetActivity(t, "closed", "ended");
+          pane.classList.add("dead");
+        }
+      };
+
+      // ----- keystroke pipe (xterm -> ws) -----
+      term.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          // Send as binary so the server treats it as raw bytes, not
+          // a JSON control message.
+          ws.send(new TextEncoder().encode(data));
+        }
+      });
+
+      // ----- resize plumbing -----
+      let lastCols = 0, lastRows = 0;
+      const sendResize = () => {
+        try { fit.fit(); } catch (_) {}
+        const cols = term.cols, rows = term.rows;
+        if (!cols || !rows) return;
+        if (cols === lastCols && rows === lastRows) return;
+        lastCols = cols; lastRows = rows;
+        if (ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: "resize", cols, rows }));
+          } catch (_) {}
+        }
+      };
+      term.onResize(({ cols, rows }) => {
+        if (cols === lastCols && rows === lastRows) return;
+        lastCols = cols; lastRows = rows;
+        if (ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: "resize", cols, rows }));
+          } catch (_) {}
+        }
+      });
+      if (typeof ResizeObserver !== "undefined") {
+        const ro = new ResizeObserver(() => sendResize());
+        ro.observe(body);
+        t._resizeObserver = ro;
+      } else {
+        window.addEventListener("resize", sendResize);
+      }
+      // Also re-fit when the pane is expanded after being collapsed.
+      const origToggle = pane.querySelector(".expand-btn");
+      if (origToggle) {
+        origToggle.addEventListener("click", () => requestAnimationFrame(sendResize));
+      }
+
+      termRenderEmptyState();
+      persistOpenPanes();
+    }
+
+    function termClosePty(ptyId) {
+      const t = TERMS.get(ptyId);
+      if (!t) return;
+      try { t._resizeObserver && t._resizeObserver.disconnect(); } catch (_) {}
+      try { t.source && t.source.close(); } catch (_) {}
+      // Fire-and-forget kill on the server side too so we don't leak shells.
+      try {
+        fetch(`/api/ptys/${ptyId}/kill`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      } catch (_) {}
+      try { t._term && t._term.dispose(); } catch (_) {}
+      t.pane.remove();
+      TERMS.delete(ptyId);
+      termRenderEmptyState();
+      persistOpenPanes();
+    }
+
     function termOpen(jobId, meta) {
       if (TERMS.has(jobId)) return;
       const grid = $("#terms-grid");
@@ -2070,6 +2607,7 @@
       if (kind === "chat-codex") termCodexBeginTurn(t);
 
       termRenderEmptyState();
+      persistOpenPanes();
     }
 
     // ----- IDE transcript mirror panes -----
@@ -2250,6 +2788,7 @@
       };
       termRenderEmptyState();
       termRefreshTranscriptPicker();
+      persistOpenPanes();
     }
 
     function termHandleTranscriptChunk(t, chunk) {
@@ -2550,5 +3089,10 @@
       });
       // Initial picker fill (single unified source).
       termRefreshTranscriptPicker();
+      // Restore panes that were open at the last unload. Fires once on
+      // boot; rebuilds chat / PTY / IDE-transcript panes from
+      // localStorage by re-fetching their server-side state. Drafts and
+      // dispatch trackers are intentionally NOT restored.
+      restoreOpenPanes();
     });
 
