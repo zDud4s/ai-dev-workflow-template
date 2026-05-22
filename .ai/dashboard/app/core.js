@@ -4,7 +4,16 @@
     var $ = (sel) => document.querySelector(sel);
     var $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-    marked.setOptions({ gfm: true, breaks: false });
+    // `marked.setOptions` runs at script-parse time. If the CDN script that
+    // defines `marked` failed to load, accessing it here throws synchronously
+    // and aborts the rest of core.js — every later module fails to load and
+    // the dashboard renders blank. Guard the call so a missing markdown
+    // library degrades gracefully instead of nuking the whole UI.
+    if (typeof marked !== "undefined") {
+      marked.setOptions({ gfm: true, breaks: false });
+    } else {
+      console.warn("[dashboard] marked library not loaded; markdown rendering disabled");
+    }
 
     // ----- nav switching -----
     $$("nav button").forEach((btn) => {
@@ -21,14 +30,19 @@
       });
     });
 
-    // Restore last opened view across reloads.
-    (function restoreView() {
+    // Restore last opened view across reloads. The click handler above
+    // calls into loadJobs / termRefreshTranscriptPicker / loadTimeline /
+    // loadAutoSelect — all defined in later <script> tags. Running this
+    // at core.js parse time crashes with "loadJobs is not defined"
+    // (pageerror in the console) and leaves the dashboard half-loaded.
+    // Defer to DOMContentLoaded so every app/*.js has finished hoisting.
+    document.addEventListener("DOMContentLoaded", function restoreView() {
       let saved = null;
       try { saved = localStorage.getItem("dash.view"); } catch (_) { /* ignore */ }
       if (!saved || saved === "overview") return;
       const btn = document.querySelector(`nav button[data-view="${saved}"]`);
       if (btn) btn.click();
-    })();
+    });
 
     // ----- form button wiring -----
     document.addEventListener("DOMContentLoaded", () => {
@@ -75,9 +89,12 @@
       });
       document.addEventListener("keydown", (e) => {
         if (e.key !== "Escape") return;
-        if (!$("#proposal-modal").hidden) closeProposalModal();
-        else if (!$("#skill-detail-modal").hidden) closeSkillDetail();
-        else if (!$("#agent-detail-modal").hidden) closeAgentDetail();
+        const propModal = $("#proposal-modal");
+        if (propModal && !propModal.hidden) { closeProposalModal(); return; }
+        const skillModal = $("#skill-detail-modal");
+        if (skillModal && !skillModal.hidden) { closeSkillDetail(); return; }
+        const agentModal = $("#agent-detail-modal");
+        if (agentModal && !agentModal.hidden) { closeAgentDetail(); return; }
       });
       // Density toggle: persist preference in localStorage and apply on boot.
       const applyDensity = (mode) => {
@@ -96,19 +113,48 @@
     });
 
     // ----- fetch helpers -----
+    // 30s AbortController guards every request — a hung server otherwise
+    // stalls dashboard load forever (spinner spins indefinitely).
     async function getText(path) {
-      const r = await fetch("/" + path.replace(/^\/+/, ""), { cache: "no-store" });
-      if (!r.ok) throw new Error(path + " -> HTTP " + r.status);
-      return r.text();
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
+      try {
+        const r = await fetch("/" + path.replace(/^\/+/, ""), { cache: "no-store", signal: ctrl.signal });
+        if (!r.ok) throw new Error(path + " -> HTTP " + r.status);
+        return await r.text();
+      } catch (err) {
+        if (err && err.name === "AbortError") throw new Error(path + " -> timeout after 30s");
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
     }
     async function getYaml(path) {
       return jsyaml.load(await getText(path));
     }
     async function listDir(path) {
-      const r = await fetch("/api/list?path=" + encodeURIComponent(path), { cache: "no-store" });
-      if (!r.ok) return [];
-      const data = await r.json();
-      return data.entries || [];
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
+      try {
+        const r = await fetch("/api/list?path=" + encodeURIComponent(path), { cache: "no-store", signal: ctrl.signal });
+        if (!r.ok) {
+          // Non-2xx: log so operators see issues, but return [] so chained
+          // callers like `.then(xs => xs.filter(...))` don't blow up cold boot.
+          console.warn("[dashboard] listDir " + path + " -> HTTP " + r.status);
+          return [];
+        }
+        const data = await r.json();
+        return data.entries || [];
+      } catch (err) {
+        if (err && err.name === "AbortError") {
+          console.warn("[dashboard] listDir " + path + " -> timeout after 30s");
+          return [];
+        }
+        console.warn("[dashboard] listDir " + path + " -> " + (err && err.message ? err.message : err));
+        return [];
+      } finally {
+        clearTimeout(timer);
+      }
     }
 
     // ----- renderers -----
@@ -183,6 +229,7 @@
     }
 
     function renderOverview(project, models, memoryEntries, plansCount, specsCount) {
+      if (!$("#overview-cards")) return;
       const stack = (project.stack || []).join(", ") || "—";
       const pms = (project.package_managers || []).join(", ") || "—";
       const dispatchMode = models.dispatch_mode || "manual";
@@ -226,7 +273,7 @@
     }
 
     async function loadTokenUsage() {
-      if (!document.getElementById("ov-claude-total")) return;
+      if (!$("#ov-claude-total")) return;
       try {
         const r = await fetch("/api/usage/total", { cache: "no-store" });
         if (!r.ok) return;
@@ -318,6 +365,7 @@
     }
 
     function renderActivity(plans, specs) {
+      if (!$("#overview-activity")) return;
       const items = [
         ...plans.map((p) => ({ kind: "plan", name: p })),
         ...specs.map((s) => ({ kind: "spec", name: s })),
@@ -334,6 +382,7 @@
     }
 
     function renderModels(models) {
+      if (!$("#dispatch-toggle") || !$("#models-table")) return;
       const mode = models.dispatch_mode || "manual";
       const session = models.session || {};
       const dispatchCards = $("#dispatch-cards");
@@ -366,7 +415,7 @@
           <td class="mono" data-field="model">${escape(cfg.model || "—")}</td>
           <td data-field="mode">${showMode ? (cfg.mode ? `<span class="pill warn">${cfg.mode}</span>` : `<span class="pill" style="color:var(--fg-dim)">auto</span>`) : "—"}</td>
           <td><span class="pill ${pillCls}">${resolved}</span></td>
-          <td style="text-align:right"><button class="btn secondary" style="padding:3px 10px;font-size:11px" onclick="editPhaseRow('${ph}')">Edit</button></td>
+          <td style="text-align:right"><button class="btn secondary" style="padding:3px 10px;font-size:11px" data-edit-phase="${escape(ph)}">Edit</button></td>
         </tr>`;
       }).join("");
       const modelsTable = $("#models-table");
@@ -376,9 +425,24 @@
         <tbody>${rows}</tbody>
       </table>`;
       _modelsCache = models;
+      // Wire ONE delegated click listener on the models table for Edit/Save
+      // buttons (idempotent via module flag — canonical pattern from jobs.js).
+      // Avoids inline onclick="" handlers which are a latent XSS pattern.
+      if (!_modelsTableDelegationWired) {
+        modelsTable.addEventListener("click", (e) => {
+          const editBtn = e.target.closest("[data-edit-phase]");
+          if (editBtn) { editPhaseRow(editBtn.dataset.editPhase); return; }
+          const saveBtn = e.target.closest("[data-save-phase]");
+          if (saveBtn) { savePhaseRow(saveBtn.dataset.savePhase); return; }
+          const cancelBtn = e.target.closest("[data-phase-cancel]");
+          if (cancelBtn) { loadAll(); return; }
+        });
+        _modelsTableDelegationWired = true;
+      }
     }
 
     var _modelsCache = null;
+    var _modelsTableDelegationWired = false;
 
     // Mirror the comments at the top of .ai/models.yaml.
     // Catalog of available models per tool. Listed newest-first within each family.
@@ -408,6 +472,7 @@
     }
 
     function editPhaseRow(phase) {
+      if (!$("#models-table")) return;
       const tr = document.querySelector(`#models-table tr[data-phase="${phase}"]`);
       if (!tr) return;
       const cfg = (_modelsCache && _modelsCache[phase]) || {};
@@ -444,8 +509,8 @@
           </select>` : "—"}
         </td>
         <td style="text-align:right;white-space:nowrap">
-          <button class="btn" style="padding:3px 10px;font-size:11px" onclick="savePhaseRow('${phase}')">Save</button>
-          <button class="btn secondary" style="padding:3px 10px;font-size:11px" onclick="loadAll()">Cancel</button>
+          <button class="btn" style="padding:3px 10px;font-size:11px" data-save-phase="${escape(phase)}">Save</button>
+          <button class="btn secondary" style="padding:3px 10px;font-size:11px" data-phase-cancel="1">Cancel</button>
         </td>
       `;
       // When tool changes, repopulate the model dropdown for that tool.
@@ -458,6 +523,7 @@
     }
 
     async function savePhaseRow(phase) {
+      if (!$("#pe-tool")) return;
       const tool = $("#pe-tool")?.value;
       const model = $("#pe-model")?.value.trim();
       const showMode = phase !== "session";
@@ -480,6 +546,7 @@
     }
 
     function renderProject(project, rawText) {
+      if (!$("#project-stack")) return;
       const cmds = project.commands || {};
       const cmdRows = Object.entries(cmds).map(([k, v]) => {
         const arr = Array.isArray(v) ? v : [v];
@@ -509,10 +576,13 @@
       raw.textContent = rawText;
     }
 
-    function renderMarkdown(el, text) {
-      if (el && el.dataset) delete el.dataset.skeletoned;
-      el.innerHTML = marked.parse(text || "");
-    }
+function renderMarkdown(el, text) {
+  // Bail if the caller passed a missing element — `el.innerHTML = ...` would
+  // otherwise throw and stop whichever loader chain invoked us.
+  if (!el) return;
+  if (el.dataset) delete el.dataset.skeletoned;
+  el.innerHTML = DOMPurify.sanitize(marked.parse(text || ""));
+}
 
     function countMemoryEntries(text) {
       const m = text.match(/^- \d{4}-\d{2}-\d{2}/gm);
@@ -521,6 +591,9 @@
 
     function buildList(containerSel, items, onSelect) {
       const el = $(containerSel);
+      // Caller may run before the target container is in the DOM (or against
+      // a stripped page). Bail rather than crashing on dataset access.
+      if (!el) return;
       delete el.dataset.skeletoned;
       if (!items.length) {
         el.innerHTML = `<div class="empty">Empty</div>`;
@@ -594,9 +667,13 @@
     var TOASTS = new Map();   // channel -> { el, timer }
 
     function _toastRoot() {
-      let root = document.getElementById("toast-root");
-      if (root) return root;
-      root = document.createElement("div");
+      // index.html declares <div id="toast-root"> already, so on the normal
+      // dashboard page this short-circuit returns immediately. The
+      // createElement fallback below only runs in unusual injection scenarios
+      // (tests, embeds, stripped shells of the page) where the host HTML
+      // omitted the root.
+      if ($("#toast-root")) return $("#toast-root");
+      const root = document.createElement("div");
       root.id = "toast-root";
       root.setAttribute("aria-live", "polite");
       document.body.appendChild(root);
@@ -657,6 +734,7 @@
 
     // ----- Memory form -----
     async function submitMemory() {
+      if (!$("#mem-submit")) return;
       const btn = $("#mem-submit");
       const topic = $("#mem-topic").value.trim();
       const fact = $("#mem-fact").value.trim();
@@ -680,6 +758,7 @@
 
     // ----- Decisions form -----
     async function submitDecision() {
+      if (!$("#dec-submit")) return;
       const btn = $("#dec-submit");
       const payload = {
         date: $("#dec-date").value || undefined,
