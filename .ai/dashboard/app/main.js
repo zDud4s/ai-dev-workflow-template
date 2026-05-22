@@ -78,11 +78,13 @@
           renderMarkdown($("#packets-doc"), await getText(".ai/packets/" + name));
         });
 
-        await loadEvents();
-        await loadJobs();
-        await loadSessions();
-        await loadSkills();
-        await loadAgents();
+        await Promise.all([
+          loadEvents(),
+          loadJobs(),
+          loadSessions(),
+          loadSkills(),
+          loadAgents(),
+        ]);
 
         $("#meta").textContent = `updated ${new Date().toLocaleTimeString()}`;
       } catch (err) {

@@ -136,7 +136,14 @@
       const r = await fetch("/api/auto-select?min_samples=" + threshold, { cache: "no-store" });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
-      const { groups = [], samples = 0, dropped_candidates: dropped = 0 } = data;
+      const groups = data.groups || [];
+      // `??` (not `||`) for numeric counters so a legitimate 0 from the API
+      // is preserved rather than tripping the falsy fallback. For samples /
+      // dropped the fallback is itself 0 so the user-visible result matches,
+      // but using `??` keeps the intent (only substitute for null/undefined)
+      // explicit and matches the style of `effective` below.
+      const samples = data.samples ?? 0;
+      const dropped = data.dropped_candidates ?? 0;
       const effective = data.min_samples ?? threshold;
       const lastRecord = formatLastRecord(data.last_record_ts);
       const cnt = $("#count-auto-select");
@@ -168,7 +175,7 @@
       meta.textContent = "load failed";
       delete root.dataset.skeletoned;
       root.innerHTML =
-        `<div class="tl-empty">Failed to load: ${escape(String(err))}.</div>`;
+        `<div class="tl-empty">Failed to load: ${escape(err && err.message ? err.message : String(err))}.</div>`;
       if (typeof window.setMsg === "function") {
         window.setMsg("#auto-select-load", "err", "Auto-select load failed: " + err);
       }

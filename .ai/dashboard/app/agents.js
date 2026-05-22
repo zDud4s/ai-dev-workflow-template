@@ -239,7 +239,7 @@
         const data = await r.json();
         const text = data.content || "";
         const el = $("#agent-detail-content");
-        try { el.innerHTML = marked.parse(text); }
+        try { el.innerHTML = DOMPurify.sanitize(marked.parse(text)); }
         catch (_) { el.textContent = text; }
         if (data.truncated) {
           el.insertAdjacentHTML("beforeend",
@@ -277,8 +277,15 @@
         const visible = (data.proposals || []).filter(
           (p) => (p.status || "pending") === "pending"
         );
-        countEl.textContent = visible.length;
-        if (!visible.length) { block.style.display = "none"; return; }
+        // Guard countEl: the block/wrap can exist without the count badge
+        // (e.g. partial DOM during teardown), so unconditionally writing
+        // textContent would throw on null.
+        if (countEl) countEl.textContent = visible.length;
+        if (!visible.length) {
+          wrap.innerHTML = "";  // belt-and-braces: clear stale content
+          block.style.display = "none";
+          return;
+        }
         block.style.display = "";
         wrap.innerHTML = visible.map(renderAgentProposalCard).join("");
         wrap.querySelectorAll(".agent-prop-open").forEach((b) => {
@@ -286,7 +293,7 @@
         });
       } catch (e) {
         wrap.innerHTML = `<div class="err">${escape(e.message)}</div>`;
-        countEl.textContent = "!";
+        if (countEl) countEl.textContent = "!";
         block.style.display = "";
         setMsg("#agent-suggest-msg", "err", "Proposals load failed: " + e.message);
       }
@@ -318,18 +325,22 @@
       if (!btn) return;
       btn.disabled = true;
       btn.textContent = "Thinking…";
-      msg.textContent = "";
+      // Guard msg too: the button can exist without the inline message slot
+      // (e.g. partial DOM), so unguarded msg.textContent writes would throw.
+      if (msg) msg.textContent = "";
       try {
         const r = await fetch("/api/agents/suggest", { method: "POST" });
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
         const n = data.count || 0;
-        msg.textContent = n > 0
-          ? `${n} new suggestion${n === 1 ? "" : "s"}`
-          : (data.note || "no suggestions");
+        if (msg) {
+          msg.textContent = n > 0
+            ? `${n} new suggestion${n === 1 ? "" : "s"}`
+            : (data.note || "no suggestions");
+        }
         await loadAgentProposals();
       } catch (e) {
-        msg.textContent = "failed: " + e.message;
+        if (msg) msg.textContent = "failed: " + e.message;
         setMsg("#agent-suggest-msg", "err", "Suggest failed: " + e.message);
       } finally {
         btn.disabled = false;
@@ -383,7 +394,7 @@
           : "";
         metaEl.innerHTML = meta + rationale + triggers;
         const body = p.body || "";
-        try { bodyEl.innerHTML = marked.parse(body); }
+        try { bodyEl.innerHTML = DOMPurify.sanitize(marked.parse(body)); }
         catch (_) { bodyEl.textContent = body; }
         const isFinal = ["accepted", "applied", "installed", "rejected"].includes(p.status);
         acceptBtn.disabled = isFinal;
@@ -401,14 +412,18 @@
     }
 
     async function decideAgentProposal(decision) {
-      if (!_currentAgentProposalId) return;
+      // Snapshot at entry so async work can detect if the user navigated
+      // to a different proposal mid-flight. Without this, the modal that
+      // is now showing proposal B could get UI mutations (button enable,
+      // close, etc.) intended for the original proposal A.
+      var propId = _currentAgentProposalId;
+      if (!propId) return;
       const acceptBtn = $("#agent-proposal-accept");
       const rejectBtn = $("#agent-proposal-reject");
       const msgEl = $("#agent-proposal-msg");
       acceptBtn.disabled = true;
       rejectBtn.disabled = true;
       msgEl.textContent = decision + "ing…";
-      const propId = _currentAgentProposalId;
       try {
         const r = await fetch(
           `/api/agents/proposals/${encodeURIComponent(propId)}/${decision}`,
@@ -416,6 +431,7 @@
         );
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+        if (propId !== _currentAgentProposalId) return;  // user navigated away
         msgEl.textContent = decision === "accept"
           ? `installed at ${shortPath(data.target_path || data.installed_path || ".claude/agents/")}`
           : "rejected";
@@ -425,8 +441,10 @@
           // The new agent should appear in the catalog now.
           await loadAgents();
         }
+        if (propId !== _currentAgentProposalId) return;  // re-check after extra awaits
         setTimeout(closeAgentProposalModal, 700);
       } catch (e) {
+        if (propId !== _currentAgentProposalId) return;  // same guard on error path
         msgEl.textContent = "failed: " + e.message;
         setMsg("#agent-proposal-msg", "err", `Proposal ${decision} failed: ${e.message}`);
         acceptBtn.disabled = false;
