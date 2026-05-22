@@ -28,6 +28,7 @@ mkdir -p "$TARGET_DIR/.agents/skills/maintenance"
 mkdir -p "$TARGET_DIR/.agents/skills/rescue"
 mkdir -p "$TARGET_DIR/.agents/skills/orchestrate"
 mkdir -p "$TARGET_DIR/.agents/skills/claude"
+mkdir -p "$TARGET_DIR/.agents/skills/codex"
 
 copy_if_missing() {
   local src="$1"
@@ -84,15 +85,18 @@ copy_if_missing "$SCRIPT_DIR/.claude/skills/agent-improver/references/agent-temp
 copy_if_missing "$SCRIPT_DIR/.claude/skills/agent-creator/SKILL.md" "$TARGET_DIR/.claude/skills/agent-creator/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/agent-creator/references/agent-template.md" "$TARGET_DIR/.claude/skills/agent-creator/references/agent-template.md"
 
-# Codex-only `claude` skill (no Claude counterpart) — source under .agents/skills/.
+# Cross-tool dispatch skills under .agents/skills/ have no .claude/skills/ counterpart
+# — they describe how a non-Claude host (Codex) invokes the target tool.
+# Each is its own source of truth, not a mirror of anything under .claude/skills/.
 copy_if_missing "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agents/skills/claude/SKILL.md"
+copy_if_missing "$SCRIPT_DIR/.agents/skills/codex/SKILL.md" "$TARGET_DIR/.agents/skills/codex/SKILL.md"
 
 # Project-local mirror of shared skills: .claude/skills/<name>/ -> .agents/skills/<name>/.
 # Keeps Codex's view of skills visible in-repo alongside Claude's. Always synced
 # from .claude/skills/ — edit there, not here. copy_if_different so customizations
 # in .claude/skills/ propagate; direct edits to .agents/skills/<shared>/ are overwritten.
-# `codex` is excluded: Codex does not need a skill describing how to invoke itself
-# (symmetric to Claude not having a `claude` skill).
+# `codex` / `claude` are excluded: cross-tool dispatch skills are NOT mirrored,
+# they are independent files per discovery path (see copy_if_missing block above).
 for skill in bootstrap planner reviewer maintenance rescue orchestrate; do
   copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
 done
@@ -117,6 +121,7 @@ copy_if_different "$SCRIPT_DIR/.ai/dashboard/serve.py" "$TARGET_DIR/.ai/dashboar
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/index.html" "$TARGET_DIR/.ai/dashboard/index.html"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/styles.css" "$TARGET_DIR/.ai/dashboard/styles.css"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/log_event.py" "$TARGET_DIR/.ai/dashboard/log_event.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/pty_session.py" "$TARGET_DIR/.ai/dashboard/pty_session.py"
 # Glob every app/*.js so new modules (settings.js, auto-select.js, future ones)
 # propagate without an explicit list to maintain. index.html references files
 # by name — if any are missing, the dashboard silently 404s and dependent
@@ -442,10 +447,12 @@ merge_claude_settings(
 PY
 
 # Global skill mirror for Codex.
-# Codex only scans ~/.agents/skills/ (no project-local discovery), so every
-# workflow skill must be mirrored there. Source for the mirror is the project's
-# own .agents/skills/ (which itself was synced from .claude/skills/ above), so
-# user customizations in the project propagate to the global discovery path.
+# Codex scans ~/.agents/skills/ exclusively (no project-local discovery), so every
+# workflow skill must be mirrored there. Source for the mirror is the project's own
+# .agents/skills/ (which itself was synced from .claude/skills/ above for shared
+# phase skills, plus the cross-tool dispatch skills which are their own source of
+# truth), so user customizations in the project propagate to the global discovery
+# path.
 AGENTS_SKILLS_HOME="$HOME/.agents/skills"
 mkdir -p "$AGENTS_SKILLS_HOME"
 
@@ -458,7 +465,7 @@ mirror_skill_to_home() {
   echo "Mirrored skill '$name' to $dst_dir/SKILL.md"
 }
 
-for skill in bootstrap planner reviewer maintenance rescue orchestrate claude; do
+for skill in bootstrap planner reviewer maintenance rescue orchestrate claude codex; do
   src="$TARGET_DIR/.agents/skills/$skill/SKILL.md"
   [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
   mirror_skill_to_home "$src" "$skill"

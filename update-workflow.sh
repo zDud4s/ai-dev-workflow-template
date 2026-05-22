@@ -15,7 +15,7 @@ What it updates by default:
   - .ai/memory.md, .ai/decisions.md         (skeleton merge — adds missing ## sections; entries preserved)
   - .ai/project.yaml, .ai/models.yaml       (skeleton merge — adds missing top-level keys; values preserved)
   - .claude/settings.json                   (merge — adds missing workflow permissions/hooks; user entries preserved)
-  - ~/.agents/skills/{orchestrate,planner,reviewer,maintenance,rescue,bootstrap,codex,claude}/SKILL.md
+  - ~/.agents/skills/{orchestrate,planner,reviewer,maintenance,rescue,bootstrap,claude,codex}/SKILL.md
     (global mirror so Codex can discover the same skills)
 
 What it preserves by default:
@@ -75,6 +75,7 @@ mkdir -p "$TARGET_DIR/.agents/skills/maintenance"
 mkdir -p "$TARGET_DIR/.agents/skills/rescue"
 mkdir -p "$TARGET_DIR/.agents/skills/orchestrate"
 mkdir -p "$TARGET_DIR/.agents/skills/claude"
+mkdir -p "$TARGET_DIR/.agents/skills/codex"
 
 copy_if_different() {
   local src="$1"
@@ -116,12 +117,16 @@ copy_if_different "$SCRIPT_DIR/.claude/skills/agent-improver/references/agent-te
 copy_if_different "$SCRIPT_DIR/.claude/skills/agent-creator/SKILL.md" "$TARGET_DIR/.claude/skills/agent-creator/SKILL.md"
 copy_if_different "$SCRIPT_DIR/.claude/skills/agent-creator/references/agent-template.md" "$TARGET_DIR/.claude/skills/agent-creator/references/agent-template.md"
 
-# Codex-only `claude` skill (no Claude counterpart) — source under .agents/skills/.
+# Cross-tool dispatch skills under .agents/skills/ have no .claude/skills/ counterpart
+# — they describe how a non-Claude host (Codex) invokes the target tool.
+# Each is its own source of truth, not a mirror of anything under .claude/skills/.
 copy_if_different "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agents/skills/claude/SKILL.md"
+copy_if_different "$SCRIPT_DIR/.agents/skills/codex/SKILL.md" "$TARGET_DIR/.agents/skills/codex/SKILL.md"
 
 # Project-local mirror of shared skills: .claude/skills/<name>/ -> .agents/skills/<name>/.
 # .claude/skills/ is the source of truth; direct edits in .agents/skills/<shared>/ get overwritten.
-# `codex` is excluded: Codex does not need a skill describing how to invoke itself.
+# `codex` / `claude` are excluded: cross-tool dispatch skills are independent files,
+# not mirrors (see copy_if_different block above).
 for skill in bootstrap planner reviewer maintenance rescue orchestrate; do
   copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
 done
@@ -141,6 +146,7 @@ copy_if_different "$SCRIPT_DIR/.ai/dashboard/serve.py" "$TARGET_DIR/.ai/dashboar
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/index.html" "$TARGET_DIR/.ai/dashboard/index.html"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/styles.css" "$TARGET_DIR/.ai/dashboard/styles.css"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/log_event.py" "$TARGET_DIR/.ai/dashboard/log_event.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/pty_session.py" "$TARGET_DIR/.ai/dashboard/pty_session.py"
 # Glob every app/*.js so new modules (settings.js, auto-select.js, future ones)
 # propagate without an explicit list to maintain. index.html references files
 # by name — if any are missing, the dashboard silently 404s and dependent
@@ -650,7 +656,7 @@ mirror_skill_to_home() {
   copy_if_different "$src" "$dst_dir/SKILL.md"
 }
 
-for skill in bootstrap planner reviewer maintenance rescue orchestrate claude; do
+for skill in bootstrap planner reviewer maintenance rescue orchestrate claude codex; do
   src="$TARGET_DIR/.agents/skills/$skill/SKILL.md"
   [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
   mirror_skill_to_home "$src" "$skill"
