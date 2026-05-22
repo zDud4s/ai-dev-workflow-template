@@ -2786,6 +2786,94 @@
        gradient + icon colour stay consistent across every severity for a
        calm, uniform notification language. */
 
+    /* ---------------- Update available banner ----------------
+       Shown once per page load when /api/workflow/check reports has_updates.
+       Persistent (no auto-dismiss): user either clicks "View update" to jump
+       into Settings, or "×" to suppress this exact upstream sha. Positioned
+       above the toast root so transient messages don't visually compete with
+       a long-lived banner. */
+    .update-banner {
+      position: fixed;
+      top: 16px;
+      left: calc(50% + 136px);
+      transform: translate(-50%, -12px);
+      z-index: 10000;
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      background:
+        linear-gradient(var(--surf-3), var(--surf-3)) padding-box,
+        linear-gradient(90deg, var(--warn), var(--accent)) border-box;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      padding: 10px 10px 10px 14px;
+      font-family: var(--ff-body);
+      font-size: 13px;
+      color: var(--text);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+      max-width: min(640px, calc(100vw - 272px - 64px));
+      opacity: 0;
+      transition: opacity 220ms var(--easing), transform 220ms var(--easing);
+    }
+    .update-banner.in  { opacity: 1; transform: translate(-50%, 0); }
+    .update-banner.out { opacity: 0; transform: translate(-50%, -12px); }
+    .update-banner-ico {
+      flex: 0 0 auto;
+      width: 22px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--warn);
+    }
+    .update-banner-ico svg { display: block; }
+    .update-banner-body {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .update-banner-title { font-weight: 600; }
+    .update-banner-meta {
+      font-family: var(--ff-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .update-banner-action {
+      flex: 0 0 auto;
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-family: var(--ff-body);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 120ms var(--easing), box-shadow 120ms var(--easing);
+    }
+    .update-banner-action:hover {
+      background: var(--accent-bg);
+      box-shadow: var(--accent-glow-soft);
+    }
+    .update-banner-close {
+      flex: 0 0 auto;
+      width: 24px;
+      height: 24px;
+      background: transparent;
+      color: var(--text-dim);
+      border: 1px solid transparent;
+      border-radius: 6px;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      transition: color 120ms var(--easing), border-color 120ms var(--easing);
+    }
+    .update-banner-close:hover {
+      color: var(--text);
+      border-color: var(--border);
+    }
+
     /* ---------------- Settings tab ----------------
        The Settings tab edits .ai/models.yaml live. Sections share a
        two-column grid (label / control), a discreet hint row, and a

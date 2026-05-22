@@ -96,3 +96,109 @@
     }
 
     loadAll();
+
+    // ----- Workflow update notification -----
+    // On dashboard load, ask the backend if a newer template version exists
+    // upstream. If so, surface a persistent banner that links into Settings →
+    // Workflow updates. Cached for 6h in localStorage so a refresh storm doesn't
+    // re-clone the template on every page load; dismissals are pinned to the
+    // upstream sha so the banner re-appears only when a newer version lands.
+    async function checkWorkflowUpdateOnStartup() {
+      // Cache key is versioned so a server-side fix to /api/workflow/check
+      // (e.g. now suppressing has_updates when serving from the template repo
+      // itself, or when no baseline .version is recorded) invalidates stale
+      // client caches that still report has_updates=true.
+      const CACHE_KEY = "dash.updateCheck.v2";
+      const DISMISS_KEY = "dash.updateDismissedSha";
+      const THROTTLE_MS = 6 * 60 * 60 * 1000;
+      // Best-effort cleanup of the previous cache key so it doesn't linger.
+      try { localStorage.removeItem("dash.updateCheck"); } catch (_) { /* ignore */ }
+
+      const now = Date.now();
+      let cached = null;
+      try { cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch (_) { /* ignore */ }
+
+      let data = null;
+      if (cached && cached.data && (now - (cached.ts || 0)) < THROTTLE_MS) {
+        data = cached.data;
+      } else {
+        try {
+          const r = await fetch("/api/workflow/check", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          });
+          if (!r.ok) return;
+          data = await r.json();
+          try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: now, data })); } catch (_) { /* ignore */ }
+        } catch (_) {
+          return;
+        }
+      }
+
+      if (!data || !data.success || !data.has_updates) return;
+      // Defence in depth: even if a future backend returns has_updates=true,
+      // never show the banner when (a) there's no recorded baseline (we have
+      // nothing comparable, "no .version" is not "behind"), or (b) the dashboard
+      // is being served from a checkout of the template repo itself.
+      if (!data.current_sha) return;
+      if (data.is_template_repo) return;
+
+      let dismissed = null;
+      try { dismissed = localStorage.getItem(DISMISS_KEY); } catch (_) { /* ignore */ }
+      if (dismissed && dismissed === data.upstream_sha) return;
+
+      showUpdateBanner(data);
+    }
+
+    function showUpdateBanner(data) {
+      const existing = document.getElementById("update-banner");
+      if (existing) existing.remove();
+
+      const shortUp = String(data.upstream_sha || "").substring(0, 7) || "?";
+      const shortCur = data.current_sha ? String(data.current_sha).substring(0, 7) : "none";
+
+      const el = document.createElement("div");
+      el.id = "update-banner";
+      el.className = "update-banner";
+      el.setAttribute("role", "status");
+      el.innerHTML = ''
+        + '<span class="update-banner-ico" aria-hidden="true">'
+        +   '<svg viewBox="0 0 20 20" width="18" height="18">'
+        +     '<path d="M10 3 L10 13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>'
+        +     '<path d="M5.5 7.5 L10 3 L14.5 7.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+        +     '<line x1="4" y1="16.5" x2="16" y2="16.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>'
+        +   '</svg>'
+        + '</span>'
+        + '<div class="update-banner-body">'
+        +   '<strong class="update-banner-title">New workflow version available</strong>'
+        +   '<span class="update-banner-meta">upstream ' + shortUp + ' · installed ' + shortCur + '</span>'
+        + '</div>'
+        + '<button type="button" class="update-banner-action">View update</button>'
+        + '<button type="button" class="update-banner-close" aria-label="Dismiss until next version" title="Dismiss until next version">×</button>';
+
+      document.body.appendChild(el);
+      requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("in")));
+
+      el.querySelector(".update-banner-action").addEventListener("click", () => {
+        const navBtn = document.querySelector('nav button[data-view="settings"]');
+        if (navBtn) navBtn.click();
+        setTimeout(() => {
+          const target = document.querySelector("#workflow-status");
+          if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 80);
+        dismissUpdateBanner(el);
+      });
+      el.querySelector(".update-banner-close").addEventListener("click", () => {
+        try { localStorage.setItem("dash.updateDismissedSha", data.upstream_sha || ""); } catch (_) { /* ignore */ }
+        dismissUpdateBanner(el);
+      });
+    }
+
+    function dismissUpdateBanner(el) {
+      el.classList.remove("in");
+      el.classList.add("out");
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
+    }
+
+    checkWorkflowUpdateOnStartup();

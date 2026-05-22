@@ -4101,9 +4101,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     })
 
             current_sha = self._read_workflow_version()
-            has_updates = bool(upstream_sha) and current_sha != upstream_sha
+            is_template = self._is_template_repo()
+            # Treat the template checkout as always up-to-date: serving the
+            # dashboard from the template repo itself means HEAD *is* upstream,
+            # so a "newer version available" notice would be a false positive.
+            has_updates = (
+                bool(upstream_sha)
+                and current_sha is not None
+                and current_sha != upstream_sha
+                and not is_template
+            )
 
-            if current_sha is None:
+            if is_template:
+                message = "Serving from the template repo itself — already on HEAD."
+            elif current_sha is None:
                 message = (
                     "No installed workflow version recorded yet — "
                     "apply update to record the current upstream sha."
@@ -4118,6 +4129,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "upstream_sha": upstream_sha,
                 "current_sha": current_sha,
                 "has_updates": has_updates,
+                "is_template_repo": is_template,
                 "template_url": WORKFLOW_TEMPLATE_URL,
                 "commits": commits,
                 "message": message,
