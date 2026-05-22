@@ -37,6 +37,9 @@
     // ----- jobs -----
     var _selectedJobId = null;
     var _jobsTimer = null;
+    var _jobsLoadInFlight = false;
+    var _jobsListDelegationWired = false;
+    var _jobsDocDelegationWired = false;
 
     function statusPill(status) {
       const cls = ["running","queued","cancelling","cancelled","done"].includes(status)
@@ -45,46 +48,89 @@
       return `<span class="pill ${cls}">${escape(status)}</span>`;
     }
 
+    // Module-local: parse an ISO timestamp string, returning NaN for any
+    // invalid / missing input. Avoids NaN-propagation noise spreading
+    // from Date.parse(undefined) or Date.parse("garbage") downstream.
+    function _safeParseDate(s) {
+      if (!s) return NaN;
+      const n = Date.parse(s);
+      return Number.isFinite(n) ? n : NaN;
+    }
+
     async function loadJobs(opts) {
+      if (_jobsLoadInFlight) { _jobsLoadInFlight = "pending"; return; }
+      _jobsLoadInFlight = true;
       opts = opts || {};
       try {
         const r = await fetch("/api/jobs", { cache: "no-store" });
         const data = await r.json();
         const jobs = data.jobs || [];
         $("#count-jobs").textContent = jobs.length;
+        // If the previously selected job vanished (pruned, cleared events,
+        // server restart), clear local state so we don't keep fetching a
+        // dead id and rendering "HTTP 404" into the doc panel.
+        if (_selectedJobId && !jobs.find((j) => j.id === _selectedJobId)) {
+          _selectedJobId = null;
+          const doc = $("#jobs-doc");
+          if (doc) doc.innerHTML = `<div class="empty">(select a job)</div>`;
+        }
         const el = $("#jobs-list");
         delete el.dataset.skeletoned;
         if (!jobs.length) {
           el.innerHTML = `<div class="empty"><strong>No jobs yet.</strong><br><span class="empty-sub">Pick <em>Chat</em> for an interactive Claude/Codex session, or <em>Workflow</em> to run plan/orchestrate in the background.</span></div>`;
         } else {
-          el.innerHTML = jobs.map((j) => {
+          // Build row HTML strings (same template as before).
+          const rows = jobs.map((j) => {
             const taskPreview = (j.task || "").replace(/\s+/g, " ");
             const tool = j.tool || (j.kind === "chat-codex" ? "codex" : "claude");
             const ts = j.created_at ? relativeTime(j.created_at) : "";
             let dur = "";
             if (j.status === "running" && j.started_at) {
-              dur = tlFormatDuration(Date.now() - Date.parse(j.started_at));
+              dur = tlFormatDuration(Date.now() - _safeParseDate(j.started_at));
             } else if (j.ended_at && j.started_at) {
-              dur = tlFormatDuration(Date.parse(j.ended_at) - Date.parse(j.started_at));
+              dur = tlFormatDuration(_safeParseDate(j.ended_at) - _safeParseDate(j.started_at));
             }
             const metaParts = [];
             if (ts) metaParts.push(`<span>${escape(ts)}</span>`);
             if (dur) metaParts.push(`<span>${escape(dur)}</span>`);
-            return `<div class="list-item" data-id="${escape(j.id)}">
-              <div class="job-row-head">${statusPill(j.status)} ${pillTool(tool)} <span class="job-row-kind">${escape((j.kind || "").toUpperCase())}</span></div>
+            const inner = `<div class="job-row-head">${statusPill(j.status)} ${pillTool(tool)} <span class="job-row-kind">${escape((j.kind || "").toUpperCase())}</span></div>
               <div class="sub" style="margin-top:4px;white-space:normal">${escape(taskPreview.slice(0, 80))}${taskPreview.length > 80 ? "…" : ""}</div>
-              ${metaParts.length ? `<div class="job-row-meta">${metaParts.join(" · ")}</div>` : ""}
-            </div>`;
-          }).join("");
+              ${metaParts.length ? `<div class="job-row-meta">${metaParts.join(" · ")}</div>` : ""}`;
+            return { id: j.id, inner };
+          });
+          // Compare current child id sequence with new ids.
+          const existing = Array.from(el.children).filter((c) => c.classList.contains("list-item"));
+          const sameSet = existing.length === rows.length
+            && existing.every((node, i) => node.dataset.id === rows[i].id);
+
+          if (sameSet) {
+            // Update only inner content of each row - preserves the outer DIVs,
+            // their focus/scroll state, and the .active class.
+            rows.forEach((r, i) => { existing[i].innerHTML = r.inner; });
+          } else {
+            // ID set changed (jobs added/removed/reordered) - rebuild.
+            const tpl = document.createElement("template");
+            tpl.innerHTML = rows.map((r) => `<div class="list-item" data-id="${escape(r.id)}">${r.inner}</div>`).join("");
+            el.replaceChildren(...tpl.content.children);
+          }
+
+          // Re-apply active class to the selected row (if any).
           el.querySelectorAll(".list-item").forEach((li) => {
-            if (li.dataset.id === _selectedJobId) li.classList.add("active");
-            li.addEventListener("click", () => {
+            li.classList.toggle("active", li.dataset.id === _selectedJobId);
+          });
+
+          // Wire ONE delegated click listener (idempotent).
+          if (!_jobsListDelegationWired) {
+            el.addEventListener("click", (e) => {
+              const li = e.target.closest(".list-item");
+              if (!li || !el.contains(li)) return;
               _selectedJobId = li.dataset.id;
               el.querySelectorAll(".list-item").forEach((x) => x.classList.remove("active"));
               li.classList.add("active");
               loadJobDetail();
             });
-          });
+            _jobsListDelegationWired = true;
+          }
         }
         // Feed the terminals picker.
         termRefreshPicker(jobs);
@@ -104,12 +150,20 @@
           // Even with nothing running, keep polling on the Terminals view so
           // newly-created chats (e.g. spawned externally) pop into view.
           _jobsTimer = setTimeout(loadJobs, 4000);
+        } else if (runTabActive) {
+          // Background poll at slower cadence so externally-started jobs
+          // appear on the Run tab without requiring a manual reload.
+          _jobsTimer = setTimeout(loadJobs, 15000);
         }
         // Refresh open job's log too
         if (_selectedJobId && runTabActive) loadJobDetail();
       } catch (e) {
         $("#jobs-list").innerHTML = `<div class="err">${escape(e.message)}</div>`;
         setMsg("#jobs-load", "err", "Jobs load failed: " + e.message);
+      } finally {
+        const wasPending = _jobsLoadInFlight === "pending";
+        _jobsLoadInFlight = false;
+        if (wasPending) setTimeout(loadJobs, 0);
       }
     }
 
@@ -127,6 +181,8 @@
         if (j.created_at) timeParts.push(`<span class="job-time-k">created</span> ${escape(j.created_at)}`);
         if (j.started_at) timeParts.push(`<span class="job-time-k">started</span> ${escape(j.started_at)}`);
         if (j.ended_at)   timeParts.push(`<span class="job-time-k">ended</span> ${escape(j.ended_at)}`);
+        const prevLog = $("#job-log");
+        const wasAtBottom = prevLog ? (prevLog.scrollHeight - prevLog.scrollTop - prevLog.clientHeight < 50) : true;
         $("#jobs-doc").innerHTML = `
           <div class="job-head">
             <div class="job-status">${statusPill(j.status)} ${j.exit_code != null ? `<span class="job-exit">exit ${j.exit_code}</span>` : ""} <span class="job-row-kind">${escape((j.kind || "").toUpperCase())}</span></div>
@@ -141,13 +197,24 @@
           <div style="margin-bottom:6px;font-size:11px;color:var(--fg-dim);text-transform:uppercase;letter-spacing:0.5px">log (last 400 lines)</div>
           <pre class="log" id="job-log">${escape(j.log_tail || "(no output yet)")}</pre>
           <div class="form-actions" style="margin-top:10px">
-            ${cancelable ? `<button class="btn danger" onclick="cancelJob('${escape(j.id)}')">Cancel job</button>` : ""}
+            ${cancelable ? `<button class="btn danger" data-job-cancel="${escape(j.id)}">Cancel job</button>` : ""}
             <span class="form-msg" id="job-action-msg"></span>
           </div>
         `;
+        if (!_jobsDocDelegationWired) {
+          const doc = $("#jobs-doc");
+          if (doc) {
+            doc.addEventListener("click", (e) => {
+              const btn = e.target.closest("[data-job-cancel]");
+              if (!btn) return;
+              cancelJob(btn.dataset.jobCancel);
+            });
+            _jobsDocDelegationWired = true;
+          }
+        }
         // Auto-scroll log
         const log = $("#job-log");
-        if (log) log.scrollTop = log.scrollHeight;
+        if (log && wasAtBottom) log.scrollTop = log.scrollHeight;
       } catch (e) {
         $("#jobs-doc").innerHTML = `<div class="err">${escape(e.message)}</div>`;
       }
@@ -190,13 +257,18 @@
           }
         }
         $("#run-task").value = "";
-        await loadJobs();
-        await loadSessions();
-        // Chat jobs are most useful in the Terminals view — jump there and
-        // open the pane(s) right away so the operator can start typing.
-        if (kind === "chat" || kind === "chat-codex") {
+        // Chat jobs are most useful in the Terminals view. Switch tabs
+        // BEFORE refreshing the job list so loadJobs() sees runTab inactive
+        // and skips loadJobDetail() — otherwise we render the doc panel
+        // into a now-hidden Run tab (flash + wasted work + race).
+        const isChat = kind === "chat" || kind === "chat-codex";
+        if (isChat) {
           const navBtn = document.querySelector('nav button[data-view="terminals"]');
           if (navBtn) navBtn.click();
+        }
+        await loadJobs();
+        await loadSessions();
+        if (isChat) {
           termOpen(res.id, res);
           if (compareRes) termOpen(compareRes.id, compareRes);
         }
@@ -257,7 +329,13 @@
           ...ideSessions.map((s) => s.session_id),
         ]);
         if (prev && allIds.has(prev)) sel.value = prev;
-      } catch (_) { /* ignore */ }
+      } catch (e) {
+        // Network failure or malformed response — surface to the console so
+        // operators can diagnose, and drop an "(error)" placeholder into the
+        // dropdown so users don't keep staring at stale options.
+        console.warn("[dashboard] loadSessions failed:", e.message || e);
+        sel.innerHTML = `<option value="">— (error) —</option>`;
+      }
     }
 
     // ----- Run-mode UI helpers -----
@@ -495,16 +573,23 @@
         groups.get(sid).push(e);
       }
       const rows = Array.from(groups.entries()).map(([sid, evs]) => {
-        evs.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+        evs.sort((a, b) => _safeParseDate(a.ts) - _safeParseDate(b.ts));
         const first = evs[0];
         const last = evs[evs.length - 1];
-        const spanMs = Math.max(0, Date.parse(last.ts) - Date.parse(first.ts));
+        const firstMs = _safeParseDate(first.ts);
+        const lastMs = _safeParseDate(last.ts);
+        const spanMs = (Number.isFinite(firstMs) && Number.isFinite(lastMs))
+          ? Math.max(0, lastMs - firstMs)
+          : 0;
         const lastExit = last.exit_code;
         const phases = Array.from(new Set(evs.map((e) => e.phase || "?"))).join(", ");
         const sidShort = sid.slice(0, 8);
-        const tsRel = first.ts ? relativeTime(first.ts) : "";
+        // Guard against missing first.ts -- avoids "Invalid Date" rendering.
+        const tsStr = first.ts || "";
+        const tsRel = tsStr ? relativeTime(tsStr) : "—";
+        const tsAbs = tsStr ? new Date(tsStr).toLocaleTimeString() : "—";
         return `<tr data-sid="${escape(sid)}">
-          <td class="ts" title="${escape(first.ts)}">${escape(tsRel)}<div class="ts-abs">${escape(new Date(first.ts).toLocaleTimeString())}</div></td>
+          <td class="ts" title="${escape(tsStr)}">${escape(tsRel)}<div class="ts-abs">${escape(tsAbs)}</div></td>
           <td class="mono"><a class="link-mini" data-sid="${escape(sid)}" data-action="view-timeline">${escape(sidShort)}</a></td>
           <td><span class="pill">${evs.length}</span> <span class="ev-phases">${escape(phases)}</span></td>
           <td>${escape(tlFormatDuration(spanMs))}</td>
@@ -518,12 +603,18 @@
     }
 
     function _evRenderFlat(filtered) {
-      const rows = filtered.map((e, idx) => {
+      // expandKey shape: `${ts}|${session_id}|${phase}` -- content-stable so
+      // the persisted `_eventsState.expanded` set survives auto-refresh.
+      // Previously used the array index, which shifted as new events
+      // arrived, causing the wrong row to appear expanded after refresh.
+      // Rare collisions on (ts, session_id, phase) are accepted as a much
+      // smaller harm than the per-refresh shift.
+      const rows = filtered.map((e) => {
         const isBad = e.exit_code != null && e.exit_code !== 0;
         const ts = e.ts || "";
         const tsRel = ts ? relativeTime(ts) : "—";
         const tsAbs = ts ? new Date(ts).toLocaleTimeString() : "—";
-        const expandKey = `${ts}|${idx}`;
+        const expandKey = `${ts}|${e.session_id || ""}|${e.phase || ""}`;
         const isOpen = _eventsState.expanded.has(expandKey);
         const sid = e.session_id || "";
         const sidShort = sid ? sid.slice(0, 8) : "—";
@@ -630,9 +721,12 @@
         const text = await r.text();
         const lines = text.split("\n").filter((l) => l.trim());
         const events = [];
+        let _dropped = 0;
         for (const line of lines) {
-          try { events.push(JSON.parse(line)); } catch (_) {}
+          try { events.push(JSON.parse(line)); }
+          catch (_) { _dropped++; }
         }
+        if (_dropped > 0) console.warn("[dashboard] events: dropped " + _dropped + " malformed lines");
         events.reverse();
         _eventsCache = events;
         $("#count-events").textContent = events.length;
