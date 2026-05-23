@@ -33,6 +33,7 @@ import struct
 import sys
 import threading
 import time as _time_mod
+from abc import ABC, abstractmethod
 
 
 # DoS guardrails. The HTTP layer maps Pty.spawn exceptions to 503, so
@@ -99,10 +100,21 @@ def resolve_shell(name: str | None) -> list[str]:
     name that isn't on PATH raises FileNotFoundError so the HTTP layer
     can return 503 with a clear message — silently substituting the
     default shell would surprise the operator (e.g. asking for ``zsh``
-    on Windows and getting PowerShell)."""
+    on Windows and getting PowerShell).
+
+    Security note (PATH-injection hardening): the alias whitelist below
+    restricts user input to seven well-known shell names. For each, we
+    probe ``_TRUSTED_SHELL_PATHS`` (canonical absolute paths) BEFORE
+    ``shutil.which``, so a hostile/early ``PATH`` entry that drops a
+    rogue ``bash.exe`` can't hijack the spawn unless the trusted path
+    is also absent. ``shutil.which`` remains the fallback for non-
+    standard layouts (nix-store, brew, custom installs) but only after
+    the trusted paths are checked. Callers MUST NOT pass arbitrary user
+    input as ``name`` — the alias dict is the trust boundary.
+    """
     if not name or name == "auto":
         return detect_default_shell()
-    name = name.lower().strip()
+    name = name.strip().lower()
     aliases = {
         "bash":       ("bash", "-l"),
         "zsh":        ("zsh", "-l"),
@@ -145,12 +157,19 @@ def is_shell_available(name: str | None) -> bool:
         return False
 
 
-class Pty:
+class Pty(ABC):
     """Platform-agnostic PTY handle.
 
     Construct via :func:`spawn`; the concrete class is selected once at
     spawn time so the rest of the codebase only deals with the common
     methods (``read`` / ``write`` / ``resize`` / ``kill`` / ``alive``).
+
+    The ``pid`` property returns an ``int`` on every platform. POSIX
+    implementations always return a positive process id (the forked
+    child). The Windows implementation returns ``-1`` as a sentinel
+    when the underlying ConPTY process is not yet spawned or has
+    already been killed — callers comparing ``pty.pid > 0`` get a
+    well-defined "no live pid" signal instead of relying on Optional.
     """
 
     # Module-level registry of live PTYs, used to enforce
@@ -159,23 +178,58 @@ class Pty:
     _registry: "dict[int, Pty]" = {}
     _registry_lock = threading.Lock()
 
+    @abstractmethod
     def read(self, n: int = 4096) -> bytes:
+        """Read up to ``n`` bytes from the PTY master.
+
+        Returns ``b""`` on EOF (child closed its end) or on a transient
+        EAGAIN/EWOULDBLOCK condition — callers must distinguish via
+        ``alive()`` if needed. Blocks on platforms with blocking I/O.
+        """
         raise NotImplementedError
 
+    @abstractmethod
     def write(self, data: bytes) -> int:
+        """Write ``data`` to the PTY master.
+
+        Returns the number of bytes accepted. Implementations loop on
+        short writes where the OS supports it (POSIX); zero indicates
+        the PTY is closed.
+        """
         raise NotImplementedError
 
+    @abstractmethod
     def resize(self, cols: int, rows: int) -> None:
+        """Resize the PTY window. Best-effort — silent on transient
+        OS failures (e.g. ConPTY rejecting resize during teardown)."""
         raise NotImplementedError
 
+    @abstractmethod
     def kill(self) -> None:
+        """Terminate the child process and release OS resources.
+
+        Idempotent by design: a second call must NOT touch already-closed
+        fds/handles (which would mask genuine bugs behind EBADF noise).
+        """
         raise NotImplementedError
 
+    @abstractmethod
     def alive(self) -> bool:
+        """Return True iff the child process is still running.
+
+        May proactively reap zombies (POSIX) or flip ``_closed`` to True
+        as a side effect when it detects the child has exited.
+        """
         raise NotImplementedError
 
     @property
+    @abstractmethod
     def pid(self) -> int:
+        """Child process id, or ``-1`` on Windows when no live process.
+
+        POSIX always returns the positive fork-child pid; Windows returns
+        the ConPTY pid when alive and ``-1`` once killed or pre-spawn.
+        """
         raise NotImplementedError
 
     # ----- registry / idle tracking -----
@@ -224,7 +278,15 @@ class Pty:
             try:
                 pty.kill()
             except Exception:
-                pass
+                # Best-effort: a kill failure here shouldn't block cleanup
+                # of the other victims. Log with traceback so operators can
+                # spot a recurring failure pattern (e.g. PtyProcess in a
+                # bad state) instead of silently dropping the diagnostic.
+                _log.warning(
+                    "cleanup_idle: kill() failed for pty id=%s",
+                    id(pty),
+                    exc_info=True,
+                )
             cls._unregister(pty)
         return victims
 
@@ -487,14 +549,42 @@ class _WindowsPty(Pty):
 
         # pywinpty 2.x API: PtyProcess.spawn returns a PtyProcess instance
         # backed by ConPTY. dimensions are (rows, cols).
-        self._proc = PtyProcess.spawn(
-            argv,
-            cwd=cwd,
-            env=env_for_spawn,
-            dimensions=(rows, cols),
-        )
-        self._closed = False
-        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        #
+        # Lifecycle guard: if ``PtyProcess.spawn`` raises (bad argv, ConPTY
+        # init failure, missing entry-point exe, etc.) we must NOT leave a
+        # half-constructed instance — ``Pty.spawn`` would otherwise pass it
+        # to ``_register`` and the registry would gain a corpse with no
+        # ``_proc`` attribute, breaking ``read()``/``kill()`` later. Same
+        # rationale if a downstream assignment (e.g. building the decoder)
+        # somehow raised: tear down ``_proc`` first, then re-raise.
+        self._proc = None  # type: ignore[assignment]
+        self._closed = True  # default-closed until init succeeds
+        try:
+            self._proc = PtyProcess.spawn(
+                argv,
+                cwd=cwd,
+                env=env_for_spawn,
+                dimensions=(rows, cols),
+            )
+            self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            self._closed = False
+        except Exception as exc:
+            _log.warning(
+                "PTY Windows spawn failed: %s", exc, exc_info=True
+            )
+            # If pywinpty handed us a proc before raising downstream, kill
+            # it so we don't leak a ConPTY child. terminate() is best-effort.
+            proc = self._proc
+            self._proc = None
+            if proc is not None:
+                try:
+                    proc.terminate(force=True)
+                except Exception:
+                    _log.debug(
+                        "PTY Windows spawn cleanup: terminate failed",
+                        exc_info=True,
+                    )
+            raise
         _log.info("PTY Windows session spawned: argv=%s cwd=%s", argv, cwd)
 
     def read(self, n=4096) -> bytes:
@@ -518,8 +608,16 @@ class _WindowsPty(Pty):
         if chunk is None:
             return b""
         Pty._touch(self)
+        if isinstance(chunk, bytes):
+            # Already bytes — return directly to avoid a redundant copy
+            # via ``bytes(chunk)`` (no-op wrapper that still allocates).
+            return chunk
+        if isinstance(chunk, bytearray):
+            # bytearray → bytes requires a real copy; do it once here.
+            return bytes(chunk)
         if isinstance(chunk, str):
             return chunk.encode("utf-8", errors="replace")
+        # Defensive fallback for unexpected types from pywinpty.
         return bytes(chunk)
 
     def write(self, data: bytes) -> int:
@@ -547,8 +645,11 @@ class _WindowsPty(Pty):
             # Best-effort: ConPTY occasionally rejects resize during
             # process teardown. Log a diagnostic so operators can spot a
             # genuine failure pattern (vs. the single benign rejection
-            # at shutdown) without crashing the session.
-            _log.warning("PTY Windows resize failed: %s", exc)
+            # at shutdown) without crashing the session. ``exc_info=True``
+            # so the traceback is captured at DEBUG-level handlers.
+            _log.warning(
+                "PTY Windows resize failed: %s", exc, exc_info=True
+            )
 
     def kill(self) -> None:
         # Idempotent: skip if already closed so a double-call doesn't
