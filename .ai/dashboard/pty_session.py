@@ -69,6 +69,84 @@ _TRUSTED_SHELL_PATHS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Trusted directory prefixes for the ``shutil.which`` fallback path.
+# Even when ``_TRUSTED_SHELL_PATHS`` misses (nix-store, brew, custom
+# install layouts), we require ``shutil.which`` to resolve to a binary
+# whose absolute path starts with one of these prefixes — otherwise an
+# attacker who plants a rogue ``bash`` in e.g. ``%TEMP%`` and prepends
+# it to PATH could still hijack the spawn. Keep this list conservative:
+# system bin dirs + Nix/Homebrew/Scoop/Chocolatey/standard Windows
+# install roots. Adding a new layout here is a deliberate trust
+# decision, not an accident.
+_TRUSTED_SHELL_DIRS: tuple[str, ...] = (
+    # POSIX system bins
+    "/bin/",
+    "/sbin/",
+    "/usr/bin/",
+    "/usr/sbin/",
+    "/usr/local/bin/",
+    "/usr/local/sbin/",
+    # macOS Homebrew (Apple Silicon + Intel)
+    "/opt/homebrew/bin/",
+    "/opt/homebrew/sbin/",
+    "/usr/local/Cellar/",
+    # Nix
+    "/nix/store/",
+    "/run/current-system/sw/bin/",
+    # Windows system
+    r"c:\windows\system32\\",
+    r"c:\windows\syswow64\\",
+    # Windows PowerShell 7 / pwsh
+    r"c:\program files\powershell\\",
+    r"c:\program files (x86)\powershell\\",
+    # Windows Git Bash / MSYS2 / Cygwin (canonical install roots)
+    r"c:\program files\git\\",
+    r"c:\program files (x86)\git\\",
+    r"c:\msys64\\",
+    r"c:\cygwin64\\",
+    # Windows Scoop / Chocolatey (user-scoped but well-known)
+    r"c:\programdata\chocolatey\\",
+)
+
+
+def _is_under_trusted_dir(path: str) -> bool:
+    """Return True iff ``path`` lives under one of ``_TRUSTED_SHELL_DIRS``.
+
+    Case-insensitive on Windows; uses ``os.path.normpath`` to collapse
+    ``..`` segments and normalize separators so an attacker can't escape
+    the check with e.g. ``C:\\Windows\\System32\\..\\..\\evil.exe``.
+    """
+    if not path:
+        return False
+    try:
+        norm = os.path.normpath(path)
+    except (TypeError, ValueError):
+        return False
+    if sys.platform == "win32":
+        norm_cmp = norm.lower().replace("/", "\\")
+        if not norm_cmp.endswith("\\"):
+            norm_cmp_dir = norm_cmp + "\\"
+        else:
+            norm_cmp_dir = norm_cmp
+        for prefix in _TRUSTED_SHELL_DIRS:
+            pfx = prefix.lower().replace("/", "\\").rstrip("\\") + "\\"
+            if norm_cmp.startswith(pfx) or norm_cmp_dir.startswith(pfx):
+                return True
+        return False
+    # POSIX: case-sensitive, forward slashes.
+    norm_cmp = norm
+    if not norm_cmp.endswith("/"):
+        norm_cmp_dir = norm_cmp + "/"
+    else:
+        norm_cmp_dir = norm_cmp
+    for prefix in _TRUSTED_SHELL_DIRS:
+        if "\\" in prefix:
+            continue  # Windows-only prefix on POSIX host
+        pfx = prefix.rstrip("/") + "/"
+        if norm_cmp.startswith(pfx) or norm_cmp_dir.startswith(pfx):
+            return True
+    return False
+
 
 def detect_default_shell() -> list[str]:
     """Return the argv for a sensible default shell on this platform.
@@ -108,9 +186,11 @@ def resolve_shell(name: str | None) -> list[str]:
     ``shutil.which``, so a hostile/early ``PATH`` entry that drops a
     rogue ``bash.exe`` can't hijack the spawn unless the trusted path
     is also absent. ``shutil.which`` remains the fallback for non-
-    standard layouts (nix-store, brew, custom installs) but only after
-    the trusted paths are checked. Callers MUST NOT pass arbitrary user
-    input as ``name`` — the alias dict is the trust boundary.
+    standard layouts — but the resolved path is further gated against
+    ``_TRUSTED_SHELL_DIRS`` so an attacker who plants a binary in e.g.
+    ``%TEMP%`` and prepends it to PATH still can't hijack the spawn.
+    Callers MUST NOT pass arbitrary user input as ``name`` — the alias
+    dict is the trust boundary.
     """
     if not name or name == "auto":
         return detect_default_shell()
@@ -139,7 +219,22 @@ def resolve_shell(name: str | None) -> list[str]:
             bin_path = cand
             break
     if not bin_path:
-        bin_path = shutil.which(argv[0])
+        candidate = shutil.which(argv[0])
+        # Trusted-dir gate: reject anything that doesn't live under a
+        # well-known system / package-manager bin directory. Closes the
+        # residual PATH-injection risk without breaking nix / brew /
+        # scoop / system-level installs. If a user has a custom shell
+        # install layout, they must add the prefix to _TRUSTED_SHELL_DIRS
+        # explicitly (deliberate trust decision).
+        if candidate and _is_under_trusted_dir(candidate):
+            bin_path = candidate
+        elif candidate:
+            _log.warning(
+                "resolve_shell: rejecting untrusted PATH resolution for %r: %r "
+                "(not under _TRUSTED_SHELL_DIRS)",
+                name,
+                candidate,
+            )
     if not bin_path:
         raise FileNotFoundError(f"shell {name!r} not on PATH")
     argv[0] = bin_path
@@ -389,6 +484,15 @@ class _PosixPty(Pty):
                 return b""
             if e.errno in (errno.EIO, errno.EBADF):
                 self._closed = True
+                return b""
+            # Unexpected errno — log so operators have a paper trail
+            # instead of silently dropping bytes. Don't flip _closed:
+            # caller can retry via alive() / next read().
+            _log.warning(
+                "PTY read unexpected OSError errno=%s: %s",
+                e.errno,
+                e,
+            )
             return b""
         Pty._touch(self)
         if not data:
