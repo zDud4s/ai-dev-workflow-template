@@ -3172,6 +3172,49 @@
     }
     section.block .git-log .sha { color: var(--accent-hi); }
 
+    /* ---------------- Workflow-update settings panel ----------------
+       Static styling for the "Workflow updates" controls inside
+       #view-settings. Replaces ~5 inline `style="margin-top:…;padding:…"`
+       blocks on `#workflow-status`, `#workflow-restart-warning`,
+       `#workflow-log-wrap`, `#workflow-output` and their inner form-msg
+       label. `display:none` on the three toggled containers stays inline
+       in index.html because settings.js flips it at runtime to show/hide
+       them — keeping it inline avoids fighting CSS specificity from JS. */
+    #view-settings .status-panel {
+      margin-top: var(--s-3);
+      padding: var(--s-3);
+      border: 1px solid var(--border);
+      background: var(--bg-inset);
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+    #view-settings #workflow-restart-warning {
+      margin-top: var(--s-3);
+      padding: var(--s-3);
+      border: 1px solid var(--warn);
+      background: var(--bg-inset);
+      color: var(--warn);
+      font-size: 13px;
+    }
+    #view-settings #workflow-log-wrap { margin-top: var(--s-3); }
+    #view-settings #workflow-log-wrap > .form-msg { margin-bottom: var(--s-2); }
+    #view-settings #workflow-output {
+      margin-top: var(--s-2);
+      padding: var(--s-2);
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      font-family: var(--ff-mono);
+      font-size: 12px;
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow: auto;
+      color: var(--text-dim);
+    }
+    /* Flush variant of .form-actions used right above the workflow
+       status panel so the margin between the buttons and the panel
+       collapses to just the panel's own margin-top. */
+    .form-actions.flush-top { margin-top: 0; }
+
     /* ---------------- Run-tab form layout ----------------
        The Run tab needs a predictable grid rather than the default
        flex-wrap soup, so labels, controls and helper text settle on
@@ -3519,7 +3562,18 @@
     /* Token-driven swatch + button color modifiers (replaces inline style="…var(--…)…" attrs). */
     .tl-swatch-good { background: var(--good); }
     .tl-swatch-bad  { background: var(--bad); }
+    /* Pending / ad-hoc legend swatches — used by the timeline legend so the
+       markup carries no inline style="background:…". Mirrors the .tl-swatch-good
+       / .tl-swatch-bad pair above. */
+    .tl-swatch-pending { background: var(--warn); }
+    .tl-swatch-adhoc   { background: var(--border-strong); opacity: 0.55; }
     .btn-danger-token { color: var(--bad); border-color: var(--bad); }
+    /* Tiny dim-meta utilities. Extracted from a handful of repeated inline
+       style="color:var(--fg-dim);font-size:12px" / 11px attrs scattered across
+       index.html (`#agent-suggest-msg`, `#agent-proposal-msg`). Keeps markup
+       free of presentation while resolving via the same fg-dim token. */
+    .meta-dim    { color: var(--fg-dim); font-size: var(--fs-2); }
+    .meta-dim-sm { color: var(--fg-dim); font-size: var(--fs-1); }
 
     /* ===== Run page rework (packet A) ===== */
     .run-mode-tabs {

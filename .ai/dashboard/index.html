@@ -325,8 +325,8 @@
         <label for="agents-search" class="sr-only">Search agents by name or description</label>
         <input id="agents-search" type="search" placeholder="search name or description…" />
         <span class="meta toolbar-meta-end" id="agents-meta"></span>
-        <button class="refresh" id="btn-suggest-agents" title="Ask the agent-improver to look for patterns and propose new agents" style="white-space:nowrap;flex-shrink:0">Suggest agents</button>
-        <span class="meta" id="agent-suggest-msg" style="color:var(--fg-dim);font-size:11px;flex-shrink:0"></span>
+        <button class="refresh" id="btn-suggest-agents" title="Ask the agent-improver to look for patterns and propose new agents">Suggest agents</button>
+        <span class="meta meta-dim-sm" id="agent-suggest-msg"></span>
       </div>
 
       <section class="block" id="agent-suggestions-block" style="display:none">
@@ -377,7 +377,7 @@
           <div class="proposal-modal-actions">
             <button class="refresh" id="agent-proposal-accept">Accept</button>
             <button class="refresh" id="agent-proposal-reject">Reject</button>
-            <span class="meta" id="agent-proposal-msg" style="color:var(--fg-dim);font-size:12px"></span>
+            <span class="meta meta-dim" id="agent-proposal-msg"></span>
           </div>
         </div>
       </div>
@@ -621,8 +621,8 @@
         <div class="tl-legend">
           <span><span class="tl-swatch tl-swatch-good"></span>success (exit 0)</span>
           <span><span class="tl-swatch tl-swatch-bad"></span>failure (non-zero)</span>
-          <span><span class="tl-swatch" style="background:var(--warn)"></span>pending / unknown exit</span>
-          <span><span class="tl-swatch" style="background:var(--border-strong);opacity:0.55"></span>ad-hoc (phase not detected)</span>
+          <span><span class="tl-swatch tl-swatch-pending"></span>pending / unknown exit</span>
+          <span><span class="tl-swatch tl-swatch-adhoc"></span>ad-hoc (phase not detected)</span>
         </div>
         <div id="timeline-chart" data-skeletoned="1">
           <div class="skeleton-timeline-row"><div><span class="skeleton skeleton-tl-label"></span><span class="skeleton skeleton-tl-meta"></span></div><span class="skeleton skeleton-tl-track"></span></div>
@@ -746,21 +746,27 @@
         <p class="settings-hint">
           Pulls the latest workflow files from the template upstream and applies them to this project (clones the template fresh into a temp directory, then runs <code>update-workflow.sh</code>). This does <strong>not</strong> touch the host project's git history.
         </p>
-        <div class="form-actions" style="margin-top:0">
+        <div class="form-actions flush-top">
           <button class="btn" id="btn-workflow-check">Check for updates</button>
           <button class="btn secondary" id="btn-workflow-update" disabled>Apply update</button>
         </div>
-        <div id="workflow-status" class="status-panel" aria-live="polite" style="margin-top:var(--s-3);padding:var(--s-3);border:1px solid var(--border);background:var(--bg-inset);color:var(--text-dim);font-size:13px">
+        <div id="workflow-status" class="status-panel" aria-live="polite">
           Click <strong>Check for updates</strong> to query the template upstream.
         </div>
-        <div id="workflow-restart-warning" role="status" style="margin-top:var(--s-3);padding:var(--s-3);border:1px solid var(--warn);background:var(--bg-inset);color:var(--warn);font-size:13px;display:none">
+        <!-- display:none is JS-toggled by settings.js (visible only after an
+             update is applied); other styling lives in styles.css. -->
+        <div id="workflow-restart-warning" role="status" style="display:none">
           <strong>Restart required:</strong> <code>.ai/dashboard/</code> was updated. Stop this server (Ctrl+C) and re-run <code>python .ai/dashboard/serve.py</code> for the new version to take effect.
         </div>
-        <div id="workflow-log-wrap" style="margin-top:var(--s-3);display:none">
-          <div class="form-msg" style="margin-bottom:var(--s-2)">Recent template commits — newest first · max 20</div>
+        <!-- display:none is JS-toggled by settings.js after a successful
+             check; other styling lives in styles.css. -->
+        <div id="workflow-log-wrap" style="display:none">
+          <div class="form-msg">Recent template commits — newest first · max 20</div>
           <div id="workflow-log" class="git-log"></div>
         </div>
-        <pre id="workflow-output" style="margin-top:var(--s-2);padding:var(--s-2);background:var(--bg-inset);border:1px solid var(--border);font-family:var(--ff-mono);font-size:12px;white-space:pre-wrap;display:none;max-height:300px;overflow:auto;color:var(--text-dim)"></pre>
+        <!-- display:none is JS-toggled by settings.js when the apply
+             output becomes available; other styling lives in styles.css. -->
+        <pre id="workflow-output" style="display:none"></pre>
       </section>
     </section>
   </main>
