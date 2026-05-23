@@ -334,6 +334,11 @@
     async function loadSkillProposals() {
       const wrap = $("#skills-proposals");
       const block = $("#skills-proposals-block");
+      const countEl = $("#proposals-count");
+      // Bail early when the proposals panel isn't in the DOM — happens during
+      // partial teardown or when the view is rendered without proposals scaffolding.
+      // The caller (loadSkills) fires this best-effort; missing DOM should not throw.
+      if (!wrap || !block) return;
       try {
         const r = await fetch("/api/skills/proposals", { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
@@ -349,7 +354,7 @@
           p.status === "pending" ||
           (p.kind === "draft" && p.status === "accepted")
         );
-        $("#proposals-count").textContent = visible.length;
+        if (countEl) countEl.textContent = visible.length;
         if (!visible.length) {
           wrap.innerHTML = "";  // belt-and-braces: clear stale content
           block.style.display = "none";
@@ -362,7 +367,7 @@
         });
       } catch (e) {
         wrap.innerHTML = `<div class="err">${escape(e.message)}</div>`;
-        $("#proposals-count").textContent = "!";
+        if (countEl) countEl.textContent = "!";
         block.style.display = "";
         setMsg("#skill-proposals-load", "err", "Proposals load failed: " + e.message);
       }
@@ -683,7 +688,9 @@
     }
 
     async function loadSkillSuggestions() {
-      const block = $("#skills-suggestions-block");
+      // `block` was previously read but never used. Removed to silence the
+      // dead-binding smell — the block visibility is managed by
+      // renderSkillSuggestions itself via the count display, not here.
       const wrap = $("#skills-suggestions");
       try {
         const r = await fetch("/api/skills/suggestions", { cache: "no-store" });
@@ -691,8 +698,12 @@
         const data = await r.json();
         renderSkillSuggestions(data.suggestions || []);
       } catch (e) {
-        wrap.innerHTML = `<div class="err">${escape(e.message)}</div>`;
-        $("#suggestions-count").textContent = "!";
+        // Null-guard the error sink: partial-DOM teardown or a missing
+        // suggestions panel would crash an unguarded innerHTML write and
+        // mask the underlying fetch failure from setMsg below.
+        if (wrap) wrap.innerHTML = `<div class="err">${escape(e.message)}</div>`;
+        const countEl = $("#suggestions-count");
+        if (countEl) countEl.textContent = "!";
         setMsg("#skill-suggestions-load", "err", "Suggestions load failed: " + e.message);
       }
     }
