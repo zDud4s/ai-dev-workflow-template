@@ -143,7 +143,7 @@
       grid.innerHTML = filtered.map((s) => {
         const tool = pillTool(_safeTool(s.tool));
         const sourcePill = `<span class="pill" title="${escape(s.path)}">${escape(s.source_label || s.source)}</span>`;
-        return `<div class="card skill-card" data-source="${escape(s.source)}" data-name="${escape(s.name)}" title="Click for details">
+        return `<div class="card skill-card" tabindex="0" role="button" data-source="${escape(s.source)}" data-name="${escape(s.name)}" title="Click for details">
           <h3>${escape(s.name)} ${tool}</h3>
           <div class="desc">${escape(s.description || "—")}</div>
           <div class="path">${escape(s.path)}</div>
@@ -156,7 +156,27 @@
           openSkillDetail(card.dataset.source, card.dataset.name);
         });
       });
+      // Delegated keydown so Enter/Space activate a focused card without
+      // wiring an extra listener per card (and without leaking listeners
+      // every re-render — the grid element itself is stable).
+      if (!_skillsGridKeydownWired) {
+        grid.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          const card = e.target.closest(".skill-card[data-name]");
+          if (!card) return;
+          e.preventDefault();
+          card.click();
+        });
+        _skillsGridKeydownWired = true;
+      }
     }
+
+    // Wired-once flag for the delegated keydown listener on #skills-grid.
+    // Click handlers are rebound per-render (innerHTML wipes the previous
+    // ones), but the keydown listener lives on the grid container itself,
+    // which is NOT replaced by re-renders. Wiring it more than once would
+    // fire the same opener N times per Enter/Space press.
+    var _skillsGridKeydownWired = false;
 
     // ----- Skill detail modal -----
     var _currentSkillKey = null;
@@ -427,10 +447,11 @@
           ["applied", "installed", "rejected", "rolled_back"].includes(p.status);
         $("#proposal-accept").disabled = isFinal;
         $("#proposal-reject").disabled = isFinal;
-        // Button label: clearer for drafts.
-        $("#proposal-accept").textContent = isDraft
-          ? (draftStuck ? "Create skill" : "Create skill")
-          : "Accept";
+        // Button label: clearer for drafts. The previous form ternaried on
+        // draftStuck but both arms produced the same literal — collapsed to
+        // a single branch so future readers don't try to decode an
+        // intentional distinction that never existed.
+        $("#proposal-accept").textContent = isDraft ? "Create skill" : "Accept";
         $("#proposal-msg").textContent = isFinal
           ? `already ${p.status}`
           : (draftStuck

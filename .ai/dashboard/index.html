@@ -31,6 +31,13 @@
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js" crossorigin="anonymous"
     data-integrity-todo="fetch SRI for xterm-addon-web-links@0.9.0 from jsdelivr"></script>
   <link rel="stylesheet" href="styles.css" />
+  <style>
+    /* Visually-hidden label helper for inputs that use placeholder-as-label.
+       Keeps text in the accessibility tree (WCAG 1.3.1 / 3.3.2) while hiding
+       it visually. styles.css is owned by a parallel agent, so this rule
+       lives inline here. */
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+  </style>
 </head>
 <body>
   <header>
@@ -44,32 +51,32 @@
     </div>
   </header>
 
-  <nav id="nav">
-    <div class="section-label">overview</div>
-    <button data-view="overview" class="active">Overview</button>
-    <button data-view="models">Models &amp; dispatch</button>
-    <button data-view="project">Project state</button>
-    <div class="section-label">knowledge</div>
-    <button data-view="memory">Memory <span class="count" id="count-memory">·</span></button>
-    <button data-view="decisions">Decisions</button>
-    <button data-view="skills">Skills <span class="count" id="count-skills">·</span></button>
-    <button data-view="agents">Agents <span class="count" id="count-agents">·</span></button>
-    <div class="section-label">tasks</div>
-    <button data-view="plans">Plans <span class="count" id="count-plans">·</span></button>
-    <button data-view="specs">Specs <span class="count" id="count-specs">·</span></button>
-    <button data-view="packets">Packet templates</button>
-    <div class="section-label">runtime</div>
-    <button data-view="events">Events <span class="count" id="count-events">·</span></button>
-    <button data-view="run">Run <span class="count" id="count-jobs">·</span></button>
-    <button data-view="terminals">Terminals <span class="count" id="count-terminals">·</span></button>
-    <button data-view="timeline">Timeline <span class="count" id="count-timeline">·</span></button>
-    <button data-view="auto-select">Auto-select <span class="count" id="count-auto-select">·</span></button>
-    <div class="section-label">settings</div>
-    <button data-view="settings">Settings</button>
+  <nav id="nav" role="tablist" aria-label="Primary views">
+    <div class="section-label" role="presentation">overview</div>
+    <button id="tab-overview" data-view="overview" class="active" role="tab" aria-controls="view-overview" aria-selected="true">Overview</button>
+    <button id="tab-models" data-view="models" role="tab" aria-controls="view-models" aria-selected="false">Models &amp; dispatch</button>
+    <button id="tab-project" data-view="project" role="tab" aria-controls="view-project" aria-selected="false">Project state</button>
+    <div class="section-label" role="presentation">knowledge</div>
+    <button id="tab-memory" data-view="memory" role="tab" aria-controls="view-memory" aria-selected="false">Memory <span class="count" id="count-memory">·</span></button>
+    <button id="tab-decisions" data-view="decisions" role="tab" aria-controls="view-decisions" aria-selected="false">Decisions</button>
+    <button id="tab-skills" data-view="skills" role="tab" aria-controls="view-skills" aria-selected="false">Skills <span class="count" id="count-skills">·</span></button>
+    <button id="tab-agents" data-view="agents" role="tab" aria-controls="view-agents" aria-selected="false">Agents <span class="count" id="count-agents">·</span></button>
+    <div class="section-label" role="presentation">tasks</div>
+    <button id="tab-plans" data-view="plans" role="tab" aria-controls="view-plans" aria-selected="false">Plans <span class="count" id="count-plans">·</span></button>
+    <button id="tab-specs" data-view="specs" role="tab" aria-controls="view-specs" aria-selected="false">Specs <span class="count" id="count-specs">·</span></button>
+    <button id="tab-packets" data-view="packets" role="tab" aria-controls="view-packets" aria-selected="false">Packet templates</button>
+    <div class="section-label" role="presentation">runtime</div>
+    <button id="tab-events" data-view="events" role="tab" aria-controls="view-events" aria-selected="false">Events <span class="count" id="count-events">·</span></button>
+    <button id="tab-run" data-view="run" role="tab" aria-controls="view-run" aria-selected="false">Run <span class="count" id="count-jobs">·</span></button>
+    <button id="tab-terminals" data-view="terminals" role="tab" aria-controls="view-terminals" aria-selected="false">Terminals <span class="count" id="count-terminals">·</span></button>
+    <button id="tab-timeline" data-view="timeline" role="tab" aria-controls="view-timeline" aria-selected="false">Timeline <span class="count" id="count-timeline">·</span></button>
+    <button id="tab-auto-select" data-view="auto-select" role="tab" aria-controls="view-auto-select" aria-selected="false">Auto-select <span class="count" id="count-auto-select">·</span></button>
+    <div class="section-label" role="presentation">settings</div>
+    <button id="tab-settings" data-view="settings" role="tab" aria-controls="view-settings" aria-selected="false">Settings</button>
   </nav>
 
   <main>
-    <section class="view active" id="view-overview">
+    <section class="view active" id="view-overview" role="tabpanel" aria-labelledby="tab-overview">
       <div class="cards" id="overview-cards" data-skeletoned="1">
         <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-line"></span></div>
         <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-line"></span></div>
@@ -92,7 +99,7 @@
       </section>
     </section>
 
-    <section class="view" id="view-models">
+    <section class="view" id="view-models" role="tabpanel" aria-labelledby="tab-models">
       <section class="block">
         <h2>Dispatch mode</h2>
         <div class="cards" id="dispatch-cards" data-skeletoned="1">
@@ -100,7 +107,7 @@
           <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
           <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
         </div>
-        <div class="form-actions" style="margin-top:8px">
+        <div class="form-actions">
           <button class="btn secondary" id="dispatch-toggle">Toggle dispatch mode</button>
           <span class="form-msg" id="dispatch-msg"></span>
         </div>
@@ -117,7 +124,7 @@
       </section>
     </section>
 
-    <section class="view" id="view-project">
+    <section class="view" id="view-project" role="tabpanel" aria-labelledby="tab-project">
       <section class="block">
         <h2>Stack &amp; commands</h2>
         <div id="project-stack" data-skeletoned="1">
@@ -135,11 +142,11 @@
       </section>
       <section class="block">
         <h2>Raw project.yaml</h2>
-        <pre class="yaml-tree" id="project-raw" data-skeletoned="1"><span class="skeleton-doc-block" style="padding:var(--s-3) 0"><span class="skeleton skeleton-doc-p1"></span><span class="skeleton skeleton-doc-p2"></span><span class="skeleton skeleton-doc-p3"></span><span class="skeleton skeleton-doc-p4"></span></span></pre>
+        <pre class="yaml-tree" id="project-raw" data-skeletoned="1"><span class="skeleton-doc-block"><span class="skeleton skeleton-doc-p1"></span><span class="skeleton skeleton-doc-p2"></span><span class="skeleton skeleton-doc-p3"></span><span class="skeleton skeleton-doc-p4"></span></span></pre>
       </section>
     </section>
 
-    <section class="view" id="view-memory">
+    <section class="view" id="view-memory" role="tabpanel" aria-labelledby="tab-memory">
       <div class="form-card">
         <h3>Add memory entry</h3>
         <div class="form-row">
@@ -171,11 +178,11 @@
       </div>
     </section>
 
-    <section class="view" id="view-decisions">
+    <section class="view" id="view-decisions" role="tabpanel" aria-labelledby="tab-decisions">
       <div class="form-card">
         <h3>Add decision</h3>
         <div class="form-row">
-          <div class="field" style="max-width:140px">
+          <div class="field">
             <label for="dec-date">Date</label>
             <input id="dec-date" class="mono" type="date" />
           </div>
@@ -219,7 +226,7 @@
       </div>
     </section>
 
-    <section class="view" id="view-skills">
+    <section class="view" id="view-skills" role="tabpanel" aria-labelledby="tab-skills">
       <div class="cards" id="skills-summary" data-skeletoned="1">
         <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
         <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
@@ -287,6 +294,7 @@
         <div class="skills-filters" id="skills-filters">
           <button class="refresh skills-filter active" data-source="all">All</button>
         </div>
+        <label for="skills-search" class="sr-only">Search skills by name or description</label>
         <input id="skills-search" type="search" placeholder="search name or description…" />
         <span class="meta" id="skills-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
       </div>
@@ -300,7 +308,7 @@
       </div>
     </section>
 
-    <section class="view" id="view-agents">
+    <section class="view" id="view-agents" role="tabpanel" aria-labelledby="tab-agents">
       <div class="cards" id="agents-summary" data-skeletoned="1">
         <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
         <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
@@ -312,6 +320,7 @@
         <div class="agents-filters" id="agents-filters">
           <button class="refresh agents-filter active" data-source="all">All</button>
         </div>
+        <label for="agents-search" class="sr-only">Search agents by name or description</label>
         <input id="agents-search" type="search" placeholder="search name or description…" />
         <span class="meta" id="agents-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
         <button class="refresh" id="btn-suggest-agents" title="Ask the agent-improver to look for patterns and propose new agents" style="white-space:nowrap;flex-shrink:0">Suggest agents</button>
@@ -373,7 +382,7 @@
 
     </section>
 
-    <section class="view" id="view-plans">
+    <section class="view" id="view-plans" role="tabpanel" aria-labelledby="tab-plans">
       <div class="split">
         <div class="list" id="plans-list" data-skeletoned="1">
           <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
@@ -386,7 +395,7 @@
       </div>
     </section>
 
-    <section class="view" id="view-specs">
+    <section class="view" id="view-specs" role="tabpanel" aria-labelledby="tab-specs">
       <div class="split">
         <div class="list" id="specs-list" data-skeletoned="1">
           <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
@@ -399,7 +408,7 @@
       </div>
     </section>
 
-    <section class="view" id="view-packets">
+    <section class="view" id="view-packets" role="tabpanel" aria-labelledby="tab-packets">
       <div class="split">
         <div class="list" id="packets-list" data-skeletoned="1">
           <div class="skeleton-list-item"><span class="skeleton skeleton-row-h"></span><span class="skeleton skeleton-row-sub"></span></div>
@@ -412,15 +421,15 @@
       </div>
     </section>
 
-    <section class="view" id="view-run">
+    <section class="view" id="view-run" role="tabpanel" aria-labelledby="tab-run">
       <div class="form-card run-form">
         <h3>Trigger a workflow run</h3>
 
         <div class="run-mode-tabs" role="tablist" aria-label="Run mode">
-          <button type="button" class="run-mode-tab active" data-run-mode="chat" role="tab" aria-selected="true">
+          <button type="button" class="run-mode-tab active" data-run-mode="chat" role="tab" aria-controls="run-kind" aria-selected="true">
             Chat <span class="run-mode-sub">interactive session</span>
           </button>
-          <button type="button" class="run-mode-tab" data-run-mode="workflow" role="tab" aria-selected="false">
+          <button type="button" class="run-mode-tab" data-run-mode="workflow" role="tab" aria-controls="run-kind" aria-selected="false">
             Workflow <span class="run-mode-sub">background plan / orchestrate</span>
           </button>
         </div>
@@ -504,7 +513,7 @@
       </div>
     </section>
 
-    <section class="view" id="view-terminals">
+    <section class="view" id="view-terminals" role="tabpanel" aria-labelledby="tab-terminals">
       <div class="terms-toolbar">
         <div class="field picker">
           <label for="term-picker">Open a pane (dashboard job or IDE chat)</label>
@@ -546,7 +555,7 @@
       </div>
     </section>
 
-    <section class="view" id="view-events">
+    <section class="view" id="view-events" role="tabpanel" aria-labelledby="tab-events">
       <div class="events-stats" id="events-stats" data-skeletoned="1">
         <div class="skeleton-events-stats">
           <span class="skeleton skeleton-stat"></span>
@@ -563,6 +572,7 @@
           <option value="ok">✓ ok</option>
           <option value="fail">✗ fail</option>
         </select>
+        <label for="ev-search" class="sr-only">Search command preview</label>
         <input id="ev-search" type="search" placeholder="search command…" aria-label="Search command preview" />
         <select id="ev-range" aria-label="Time range">
           <option value="24h">last 24h</option>
@@ -587,22 +597,25 @@
       </div>
     </section>
 
-    <section class="view" id="view-timeline">
+    <section class="view" id="view-timeline" role="tabpanel" aria-labelledby="tab-timeline">
       <section class="block">
         <h2>Pipeline timeline</h2>
         <div class="toolbar">
           <button class="refresh" data-action="loadTimeline">reload</button>
           <span class="meta" id="timeline-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px"></span>
         </div>
-        <div class="tl-hint">
-          Each row is one Claude Code <strong>session</strong> (a single chat window's worth of work).
-          Bars are subprocess dispatches captured by the <code>PostToolUse</code> hook in
-          <code>.ai/dashboard/log_event.py</code>: <code>claude -p ...</code> and <code>codex exec ...</code> calls.
-          The task line is the first user message of that session; <em>(no transcript)</em> means the session
-          file isn't on disk anymore. Bars labelled <em>(ad-hoc)</em> were model calls that didn't match a
-          formal pipeline phase pattern. Inline-mode phases (when the orchestrator runs a phase in its own
-          session without dispatching) are <strong>not</strong> captured — they leave no subprocess trace.
-        </div>
+        <details class="tl-hint-details">
+          <summary>How to read this timeline</summary>
+          <div class="tl-hint">
+            Each row is one Claude Code <strong>session</strong> (a single chat window's worth of work).
+            Bars are subprocess dispatches captured by the <code>PostToolUse</code> hook in
+            <code>.ai/dashboard/log_event.py</code>: <code>claude -p ...</code> and <code>codex exec ...</code> calls.
+            The task line is the first user message of that session; <em>(no transcript)</em> means the session
+            file isn't on disk anymore. Bars labelled <em>(ad-hoc)</em> were model calls that didn't match a
+            formal pipeline phase pattern. Inline-mode phases (when the orchestrator runs a phase in its own
+            session without dispatching) are <strong>not</strong> captured — they leave no subprocess trace.
+          </div>
+        </details>
         <div class="tl-legend">
           <span><span class="tl-swatch tl-swatch-good"></span>success (exit 0)</span>
           <span><span class="tl-swatch tl-swatch-bad"></span>failure (non-zero)</span>
@@ -618,7 +631,7 @@
       </section>
     </section>
 
-    <section class="view" id="view-auto-select">
+    <section class="view" id="view-auto-select" role="tabpanel" aria-labelledby="tab-auto-select">
       <section class="block">
         <h2>Auto-select rankings</h2>
         <div class="toolbar">
@@ -632,15 +645,18 @@
           </label>
           <span class="meta" id="auto-select-meta" style="margin-left:auto;color:var(--fg-dim);font-size:12px" aria-live="polite"></span>
         </div>
-        <div class="tl-hint">
-          Ranking per <code>(phase, size, risk, budget)</code> tuple, computed from
-          <code>.ai/metrics.jsonl</code> (the orchestrator appends one line per dispatched phase).
-          Candidates with <strong>fewer than <span id="auto-select-threshold-label">3</span> samples</strong> are excluded; groups with no
-          qualifying candidates are omitted. The planner's adaptive scorer ranks with the
-          same formula: <code>0.6·success_rate + 0.2·(1-norm_duration) + 0.2·budget_align</code>.
-          When the planner falls back to the static table (cold-start or guard rail), the line in
-          <code>## Selected models</code> annotates <code>reason="static: …"</code>.
-        </div>
+        <details class="tl-hint-details">
+          <summary>How auto-select ranking works</summary>
+          <div class="tl-hint">
+            Ranking per <code>(phase, size, risk, budget)</code> tuple, computed from
+            <code>.ai/metrics.jsonl</code> (the orchestrator appends one line per dispatched phase).
+            Candidates with <strong>fewer than <span id="auto-select-threshold-label">3</span> samples</strong> are excluded; groups with no
+            qualifying candidates are omitted. The planner's adaptive scorer ranks with the
+            same formula: <code>0.6·success_rate + 0.2·(1-norm_duration) + 0.2·budget_align</code>.
+            When the planner falls back to the static table (cold-start or guard rail), the line in
+            <code>## Selected models</code> annotates <code>reason="static: …"</code>.
+          </div>
+        </details>
         <div id="auto-select-rankings" data-skeletoned="1">
           <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
           <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
@@ -649,7 +665,7 @@
       </section>
     </section>
 
-    <section class="view" id="view-settings">
+    <section class="view" id="view-settings" role="tabpanel" aria-labelledby="tab-settings">
       <div class="settings-toolbar">
         <button class="btn secondary" id="btn-settings-reload">Reload from disk</button>
         <span class="form-msg" id="settings-meta" aria-live="polite"></span>

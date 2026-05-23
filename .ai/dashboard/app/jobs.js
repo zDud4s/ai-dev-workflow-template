@@ -75,6 +75,12 @@
           if (doc) doc.innerHTML = `<div class="empty">(select a job)</div>`;
         }
         const el = $("#jobs-list");
+        // A11Y: announce dynamic list changes politely to screen readers.
+        // Idempotent — set once; subsequent polls won't re-touch attributes.
+        if (el && !el.getAttribute("aria-live")) {
+          el.setAttribute("aria-live", "polite");
+          el.setAttribute("aria-relevant", "additions");
+        }
         delete el.dataset.skeletoned;
         if (!jobs.length) {
           el.innerHTML = `<div class="empty"><strong>No jobs yet.</strong><br><span class="empty-sub">Pick <em>Chat</em> for an interactive Claude/Codex session, or <em>Workflow</em> to run plan/orchestrate in the background.</span></div>`;
@@ -110,7 +116,9 @@
           } else {
             // ID set changed (jobs added/removed/reordered) - rebuild.
             const tpl = document.createElement("template");
-            tpl.innerHTML = rows.map((r) => `<div class="list-item" data-id="${escape(r.id)}">${r.inner}</div>`).join("");
+            // A11Y: tabindex + role="button" so keyboard users can focus
+            // and activate rows (Enter / Space — handled in delegation).
+            tpl.innerHTML = rows.map((r) => `<div class="list-item" data-id="${escape(r.id)}" tabindex="0" role="button">${r.inner}</div>`).join("");
             el.replaceChildren(...tpl.content.children);
           }
 
@@ -119,7 +127,7 @@
             li.classList.toggle("active", li.dataset.id === _selectedJobId);
           });
 
-          // Wire ONE delegated click listener (idempotent).
+          // Wire ONE delegated click + keydown listener (idempotent).
           if (!_jobsListDelegationWired) {
             el.addEventListener("click", (e) => {
               const li = e.target.closest(".list-item");
@@ -128,6 +136,16 @@
               el.querySelectorAll(".list-item").forEach((x) => x.classList.remove("active"));
               li.classList.add("active");
               loadJobDetail();
+            });
+            // A11Y: Enter / Space on a focused .list-item re-triggers the
+            // click handler above. preventDefault on Space avoids the page
+            // scrolling while the row has focus.
+            el.addEventListener("keydown", (e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              const li = e.target.closest(".list-item");
+              if (!li || !el.contains(li)) return;
+              e.preventDefault();
+              li.click();
             });
             _jobsListDelegationWired = true;
           }
@@ -197,7 +215,7 @@
           <div style="margin-bottom:6px;font-size:11px;color:var(--fg-dim);text-transform:uppercase;letter-spacing:0.5px">log (last 400 lines)</div>
           <pre class="log" id="job-log">${escape(j.log_tail || "(no output yet)")}</pre>
           <div class="form-actions" style="margin-top:10px">
-            ${cancelable ? `<button class="btn danger" data-job-cancel="${escape(j.id)}">Cancel job</button>` : ""}
+            ${cancelable ? `<button class="btn danger" data-job-cancel="${escape(j.id)}" aria-label="Cancel job ${escape(j.id)}" title="Cancel this job">Cancel job</button>` : ""}
             <span class="form-msg" id="job-action-msg"></span>
           </div>
         `;

@@ -5,6 +5,12 @@
 
     var _agentsState = { all: [], sources: {}, filter: "all", query: "" };
 
+    // Wired-once flag for the delegated keydown listener on #agents-grid.
+    // Click handlers are rebound per-render (innerHTML replaces them), but
+    // the keydown listener lives on the stable grid container and must
+    // only be attached once or each Enter/Space would fire N openers.
+    var _agentsGridKeydownWired = false;
+
     // Shorten an absolute path by collapsing the project root to "<repo>"
     // and the user's home to "~". Both values are derived dynamically from
     // the .claude/agents paths the backend reports per scope — never
@@ -196,7 +202,7 @@
                 .join("")
             }</div>`
           : "";
-        return `<div class="card skill-card agent-card" data-source="${escape(a.source)}" data-name="${escape(a.name)}" data-path="${escape(a.path)}" title="Click for details">
+        return `<div class="card skill-card agent-card" tabindex="0" role="button" data-source="${escape(a.source)}" data-name="${escape(a.name)}" data-path="${escape(a.path)}" title="Click for details">
           <h3>${escape(a.name)} ${modelPill} ${dupPill}</h3>
           <div class="desc">${escape(a.description || "-")}</div>
           ${toolsRow}
@@ -209,6 +215,18 @@
           openAgentDetail(card.dataset.path, card.dataset.name, card.dataset.source);
         });
       });
+      // Delegated keydown so Enter/Space activate a focused agent card.
+      // Wired once on the stable grid container — see _agentsGridKeydownWired.
+      if (!_agentsGridKeydownWired) {
+        grid.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          const card = e.target.closest(".agent-card[data-name]");
+          if (!card) return;
+          e.preventDefault();
+          card.click();
+        });
+        _agentsGridKeydownWired = true;
+      }
     }
 
     async function openAgentDetail(path, name, source) {
