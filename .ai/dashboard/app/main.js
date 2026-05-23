@@ -75,11 +75,19 @@
           setMsg("#dashboard-load", "err", "models.yaml parse failed: " + (e && e.message ? e.message : e));
         }
 
-        $("#project-name").textContent = project.project_name || "unknown";
+        // Null-guard each count target — if any element is missing from a
+        // stripped markup shell, the unguarded `.textContent = …` previously
+        // aborted the rest of the success chain (renderOverview, loadTokenUsage,
+        // renderActivity, etc. would never run).
+        const projectNameEl = $("#project-name");
+        if (projectNameEl) projectNameEl.textContent = project.project_name || "unknown";
         const memoryCount = countMemoryEntries(memoryText);
-        $("#count-memory").textContent = memoryCount;
-        $("#count-plans").textContent = plans.length;
-        $("#count-specs").textContent = specs.length;
+        const countMemoryEl = $("#count-memory");
+        if (countMemoryEl) countMemoryEl.textContent = memoryCount;
+        const countPlansEl = $("#count-plans");
+        if (countPlansEl) countPlansEl.textContent = plans.length;
+        const countSpecsEl = $("#count-specs");
+        if (countSpecsEl) countSpecsEl.textContent = specs.length;
 
         renderOverview(project, models, memoryCount, plans.length, specs.length);
         loadTokenUsage();

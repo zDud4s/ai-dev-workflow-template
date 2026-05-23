@@ -302,7 +302,12 @@
       if (!$("#ov-claude-total")) return;
       try {
         const r = await fetch("/api/usage/total", { cache: "no-store" });
-        if (!r.ok) return;
+        if (!r.ok) {
+          // Surface the failure so operators can correlate "—" cards with the
+          // underlying 500/404. A silent return was the previous behaviour.
+          console.warn("[dashboard] /api/usage/total -> HTTP " + r.status);
+          return;
+        }
         const u = await r.json();
         const c = u.claude || {};
         document.getElementById("ov-claude-total").textContent = formatTokens(c.all && c.all.total);
@@ -381,7 +386,14 @@
           codexWeekEl.innerHTML = renderCodexWindow(codexRL.secondary);
           if (codexRL.plan_type) metaBits.push(`Codex plan: ${codexRL.plan_type}`);
           if (codexRL.last_event_at) {
-            try { metaBits.push(`Codex seen ${new Date(codexRL.last_event_at).toLocaleString()}`); } catch (_) { /* ignore */ }
+            try {
+              metaBits.push(`Codex seen ${new Date(codexRL.last_event_at).toLocaleString()}`);
+            } catch (e) {
+              // Locale formatting of a bad timestamp shouldn't kill the rest
+              // of the meta strip, but operators should see why the "Codex
+              // seen …" string is missing.
+              console.warn("[dashboard] codex last_event_at format failed: " + (e && e.message ? e.message : e));
+            }
           }
         }
         metaEl.textContent = metaBits.join(" · ");

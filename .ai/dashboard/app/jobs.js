@@ -11,7 +11,11 @@
         await loadEvents();
         setMsg("#events-clear", "ok", "Events log cleared", 4000);
       } catch (e) {
-        $("#events-meta").textContent = "clear failed: " + e.message;
+        // Null-guard #events-meta — if the markup omits this status element,
+        // the unguarded write would mask the underlying error with a fresh
+        // TypeError and the setMsg toast (more visible) wouldn't run.
+        const meta = $("#events-meta");
+        if (meta) meta.textContent = "clear failed: " + e.message;
         setMsg("#events-clear", "err", "Clear failed: " + e.message);
       }
     }
@@ -19,6 +23,11 @@
     // ----- Dispatch mode toggle -----
     async function toggleDispatchMode() {
       const btn = $("#dispatch-toggle");
+      // Bail if the dispatch toggle button is missing — the click handler is
+      // wired via `$("#dispatch-toggle")?.addEventListener` in core.js, but a
+      // bare `toggleDispatchMode()` invocation against a stripped shell would
+      // otherwise null-deref `.dataset` / `.disabled`.
+      if (!btn) return;
       const current = btn.dataset.current || "auto";
       const next = current === "auto" ? "manual" : "auto";
       btn.disabled = true;
@@ -76,7 +85,8 @@
         const r = await fetch("/api/jobs", { cache: "no-store" });
         const data = await r.json();
         const jobs = data.jobs || [];
-        $("#count-jobs").textContent = jobs.length;
+        const countJobsEl = $("#count-jobs");
+        if (countJobsEl) countJobsEl.textContent = jobs.length;
         // If the previously selected job vanished (pruned, cleared events,
         // server restart), clear local state so we don't keep fetching a
         // dead id and rendering "HTTP 404" into the doc panel.
@@ -92,6 +102,11 @@
           el.setAttribute("aria-live", "polite");
           el.setAttribute("aria-relevant", "additions");
         }
+        // Early-return if #jobs-list is missing — every later branch derefs `el`
+        // (`.dataset`, `.innerHTML`, `.children`, `.addEventListener`).
+        // The previous shape only guarded the aria-live block, then null-derefed
+        // `delete el.dataset.skeletoned` on the next line.
+        if (!el) return;
         delete el.dataset.skeletoned;
         if (!jobs.length) {
           el.innerHTML = `<div class="empty"><strong>No jobs yet.</strong><br><span class="empty-sub">Pick <em>Chat</em> for an interactive Claude/Codex session, or <em>Workflow</em> to run plan/orchestrate in the background.</span></div>`;
@@ -170,8 +185,10 @@
 
         // Background poll if any job is running and a relevant tab is visible.
         const anyRunning = jobs.some((j) => j.status === "running" || j.status === "queued" || j.status === "cancelling");
-        const runTabActive = $("#view-run").classList.contains("active");
-        const termsTabActive = $("#view-terminals").classList.contains("active");
+        // Optional chaining so a stripped shell (no #view-run / #view-terminals)
+        // doesn't null-deref `.classList` and abort the polling-scheduler block.
+        const runTabActive = !!$("#view-run")?.classList.contains("active");
+        const termsTabActive = !!$("#view-terminals")?.classList.contains("active");
         if (_jobsTimer) { clearTimeout(_jobsTimer); _jobsTimer = null; }
         if (anyRunning && (runTabActive || termsTabActive)) {
           _jobsTimer = setTimeout(loadJobs, 2000);
@@ -187,7 +204,11 @@
         // Refresh open job's log too
         if (_selectedJobId && runTabActive) loadJobDetail();
       } catch (e) {
-        $("#jobs-list").innerHTML = `<div class="err">${escape(e.message)}</div>`;
+        // Null-guard #jobs-list — a missing element would mask the real
+        // failure with a fresh TypeError and the operator-visible toast
+        // below would never fire.
+        const jobsListEl = $("#jobs-list");
+        if (jobsListEl) jobsListEl.innerHTML = `<div class="err">${escape(e.message)}</div>`;
         setMsg("#jobs-load", "err", "Jobs load failed: " + e.message);
       } finally {
         const wasPending = _jobsLoadInFlight === "pending";
@@ -205,10 +226,14 @@
 
     async function loadJobDetail() {
       if (!_selectedJobId) return;
+      // Every branch derefs #jobs-doc; bail when the run view is stripped so
+      // missing-DOM doesn't bury the actual HTTP error.
+      const docEl = $("#jobs-doc");
+      if (!docEl) return;
       try {
         const r = await fetch("/api/jobs/" + _selectedJobId + "?tail=400", { cache: "no-store" });
         if (!r.ok) {
-          $("#jobs-doc").innerHTML = `<div class="err">HTTP ${r.status}</div>`;
+          docEl.innerHTML = `<div class="err">HTTP ${r.status}</div>`;
           return;
         }
         const j = await r.json();
@@ -219,7 +244,7 @@
         if (j.ended_at)   timeParts.push(`<span class="job-time-k">ended</span> ${escape(j.ended_at)}`);
         const prevLog = $("#job-log");
         const wasAtBottom = prevLog ? (prevLog.scrollHeight - prevLog.scrollTop - prevLog.clientHeight < 50) : true;
-        $("#jobs-doc").innerHTML = `
+        docEl.innerHTML = `
           <div class="job-head">
             <div class="job-status">${statusPill(j.status)} ${j.exit_code != null ? `<span class="job-exit">exit ${j.exit_code}</span>` : ""} <span class="job-row-kind">${escape((j.kind || "").toUpperCase())}</span></div>
             <h3 class="job-task">${escape(j.task || "(no task)")}</h3>
@@ -238,28 +263,33 @@
           </div>
         `;
         if (!_jobsDocDelegationWired) {
-          const doc = $("#jobs-doc");
-          if (doc) {
-            doc.addEventListener("click", (e) => {
-              const btn = e.target.closest("[data-job-cancel]");
-              if (!btn) return;
-              cancelJob(btn.dataset.jobCancel);
-            });
-            _jobsDocDelegationWired = true;
-          }
+          // docEl resolved at function top; null-check already enforced via early-return.
+          docEl.addEventListener("click", (e) => {
+            const btn = e.target.closest("[data-job-cancel]");
+            if (!btn) return;
+            cancelJob(btn.dataset.jobCancel);
+          });
+          _jobsDocDelegationWired = true;
         }
         // Auto-scroll log
         const log = $("#job-log");
         if (log && wasAtBottom) log.scrollTop = log.scrollHeight;
       } catch (e) {
-        $("#jobs-doc").innerHTML = `<div class="err">${escape(e.message)}</div>`;
+        // docEl resolved at top of the function — reuse it here.
+        docEl.innerHTML = `<div class="err">${escape(e.message)}</div>`;
       }
     }
 
     async function submitJob() {
       const btn = $("#run-submit");
-      const kind = $("#run-kind").value;
-      const task = $("#run-task").value.trim();
+      const kindEl = $("#run-kind");
+      const taskEl = $("#run-task");
+      // Bail when any required form element is missing — the previous shape
+      // null-derefed `.value` on a fresh lookup and aborted whichever caller
+      // invoked us.
+      if (!btn || !kindEl || !taskEl) return;
+      const kind = kindEl.value;
+      const task = taskEl.value.trim();
       const sessionPick = ($("#run-resume")?.value || "").trim() || undefined;
       const wantFork = !!$("#run-fork")?.checked;
       const resume_session_id = sessionPick && !wantFork ? sessionPick : undefined;
@@ -292,7 +322,7 @@
             setMsg("#run-msg", "warn", "compare job failed: " + cmpErr.message, 4000);
           }
         }
-        $("#run-task").value = "";
+        taskEl.value = "";
         // Chat jobs are most useful in the Terminals view. Switch tabs
         // BEFORE refreshing the job list so loadJobs() sees runTab inactive
         // and skips loadJobDetail() — otherwise we render the doc panel
@@ -488,13 +518,18 @@
     async function loadTimeline() {
       const meta = $("#timeline-meta");
       const chart = $("#timeline-chart");
+      // The success and error branches both deref `chart` (.dataset, .innerHTML)
+      // — bail early when the timeline view is stripped from markup so a missing
+      // element doesn't mask the underlying load failure with a TypeError.
+      if (!chart) return;
       renderTimelineSkeletons();
       try {
         const r = await fetch("/api/timeline", { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();
         let runs = data.runs || [];
-        $("#count-timeline").textContent = runs.length;
+        const countEl = $("#count-timeline");
+        if (countEl) countEl.textContent = runs.length;
         delete chart.dataset.skeletoned;
         const filterSid = window._timelineSessionFilter || null;
         const bannerHtml = _tlBannerHtml(filterSid);
@@ -746,6 +781,10 @@
       const meta = $("#events-meta");
       const body = $("#events-body");
       const stats = $("#events-stats");
+      // Every branch below derefs `body` (.innerHTML, .dataset); bail when the
+      // events view markup is missing so missing-DOM doesn't masquerade as a
+      // load error in the catch block.
+      if (!body) return;
       renderEventsSkeletons();
       try {
         const r = await fetch("/.ai/events.jsonl", { cache: "no-store" });
@@ -754,7 +793,8 @@
           if (stats) { stats.innerHTML = ""; delete stats.dataset.skeletoned; }
           delete body.dataset.skeletoned;
           body.innerHTML = `<div class="empty">No events yet.<br><br>The hook is registered in <code>.claude/settings.json</code> and will start logging dispatches on the next Claude Code session that runs workflow phases.</div>`;
-          $("#count-events").textContent = "0";
+          const countEl404 = $("#count-events");
+          if (countEl404) countEl404.textContent = "0";
           if (meta) meta.textContent = "no events";
           _evRefreshPhaseOptions();
           return;
@@ -771,7 +811,8 @@
         if (_dropped > 0) console.warn("[dashboard] events: dropped " + _dropped + " malformed lines");
         events.reverse();
         _eventsCache = events;
-        $("#count-events").textContent = events.length;
+        const countEvEl = $("#count-events");
+        if (countEvEl) countEvEl.textContent = events.length;
         _evRefreshPhaseOptions();
         if (!events.length) {
           if (stats) { stats.innerHTML = ""; delete stats.dataset.skeletoned; }
