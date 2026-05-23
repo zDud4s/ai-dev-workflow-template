@@ -125,6 +125,13 @@ _WORKFLOW_UPDATE_LOCK = threading.Lock()
 # handful of concurrent clients can exhaust the server thread pool. Shared
 # between both endpoints because they consume the same LLM CLI binary.
 _SUGGESTION_SEMAPHORE = threading.Semaphore(2)
+# Hard cap on the request-thread wall-clock for /api/suggestions/<id>/draft
+# and /api/agents/suggest. ``cfg["timeout_seconds"]`` can be set as high as
+# 3600s (see _IMPROVER_TIMEOUT_BOUNDS); even with the semaphore cap above,
+# a 1-hour subprocess pinning a request thread + browser tab connection is
+# a trivial DoS vector. 60s is well above any healthy LLM response time
+# yet bounded so a misbehaving CLI can't park the dashboard.
+_SUGGESTION_HTTP_TIMEOUT_MAX = 60
 # Agent suggestions storage. Mirrors the skill-proposal layout but for the
 # agent-improver "Suggest-new-agents" mode: one .json payload + one .body.md
 # per proposal. Accept writes a real file at .claude/agents/<slug>.md;
@@ -1279,30 +1286,20 @@ def _load_improver_config() -> dict:
 
 def _last_improver_run_ts(skill_id: str) -> float:
     """Look at the audit ledger for the most recent improvement attempt
-    against this skill, return epoch seconds (or 0 if never)."""
-    try:
-        if not IMPROVEMENTS_LEDGER.is_file():
-            return 0.0
-    except OSError:
-        return 0.0
+    against this skill, return epoch seconds (or 0 if never).
+
+    Reads through ``_load_jsonl_cached`` so the auto-improver scheduler
+    (which calls this for every project skill on every wake) doesn't
+    re-parse the ledger N times per cycle. The cache preserves the prior
+    silent-skip-on-corrupt-row behaviour the hand-rolled loop relied on.
+    """
     last = 0.0
-    try:
-        with IMPROVEMENTS_LEDGER.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line.startswith("{"):
-                    continue
-                try:
-                    o = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if o.get("skill") != skill_id:
-                    continue
-                ts = _iso_to_epoch(o.get("ts") or "")
-                if ts > last:
-                    last = ts
-    except OSError:
-        return 0.0
+    for o in _load_jsonl_cached(IMPROVEMENTS_LEDGER):
+        if not isinstance(o, dict) or o.get("skill") != skill_id:
+            continue
+        ts = _iso_to_epoch(o.get("ts") or "")
+        if ts > last:
+            last = ts
     return last
 
 
@@ -1584,26 +1581,13 @@ def _check_skill_regression(skill_id: str, cfg: dict) -> dict | None:
 
     Returns ``{skill, proposal_id, backup_path, pre_rate, post_rate, n_pre,
     n_post}`` when a revert should fire, otherwise ``None``."""
-    try:
-        if not IMPROVEMENTS_LEDGER.is_file():
-            return None
-    except OSError:
-        return None
-    rows: list[dict] = []
-    try:
-        with IMPROVEMENTS_LEDGER.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line.startswith("{"):
-                    continue
-                try:
-                    o = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if o.get("skill") == skill_id:
-                    rows.append(o)
-    except OSError:
-        return None
+    # Route both ledger reads through ``_load_jsonl_cached`` — the
+    # auto-revert sweep runs this for every applied proposal on every
+    # wake; the cache turns a 100MB re-parse into a single ``stat()``.
+    rows = [
+        o for o in _load_jsonl_cached(IMPROVEMENTS_LEDGER)
+        if isinstance(o, dict) and o.get("skill") == skill_id
+    ]
     if not rows:
         return None
 
@@ -1627,34 +1611,20 @@ def _check_skill_regression(skill_id: str, cfg: dict) -> dict | None:
                 and _iso_to_epoch(r.get("ts") or "") > apply_ts:
             return None
 
-    try:
-        if not SKILL_METRICS_FILE.is_file():
-            return None
-    except OSError:
-        return None
     pre: list[dict] = []
     post: list[dict] = []
-    try:
-        with SKILL_METRICS_FILE.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line.startswith("{"):
-                    continue
-                try:
-                    m = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                # Match either the raw id or the canonical short name so we
-                # don't miss rows recorded with the plugin prefix.
-                if m.get("name") != skill_id and m.get("skill") != skill_id:
-                    continue
-                ts = _iso_to_epoch(m.get("ts") or "")
-                if ts < apply_ts:
-                    pre.append(m)
-                else:
-                    post.append(m)
-    except OSError:
-        return None
+    for m in _load_jsonl_cached(SKILL_METRICS_FILE):
+        if not isinstance(m, dict):
+            continue
+        # Match either the raw id or the canonical short name so we
+        # don't miss rows recorded with the plugin prefix.
+        if m.get("name") != skill_id and m.get("skill") != skill_id:
+            continue
+        ts = _iso_to_epoch(m.get("ts") or "")
+        if ts < apply_ts:
+            pre.append(m)
+        else:
+            post.append(m)
 
     n_threshold = int(cfg.get("revert_after_n_uses", 5))
     margin = float(cfg.get("revert_margin", 0.2))
@@ -3234,27 +3204,22 @@ def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 3) -> d
         "dropped_candidates": 0,
         "last_record_ts": None,
     }
-    if not METRICS_FILE.exists():
+    # Route through the mtime-keyed JSONL cache so repeated /api/auto-select
+    # polls don't re-parse the whole ledger. The helper preserves the prior
+    # ``errors="replace"`` invariant (so a half-written concurrent append
+    # from the orchestrate skill can't surface as UnicodeDecodeError) and
+    # silently skips malformed rows — mirroring this function's previous
+    # hand-rolled behaviour.
+    rows = _load_jsonl_cached(METRICS_FILE)
+    if not rows:
         return empty
-    try:
-        # ``errors="replace"`` so a half-written concurrent append (rare but
-        # possible when the orchestrate skill is logging while we read) can't
-        # 500 the whole /api/auto-select endpoint with UnicodeDecodeError.
-        raw_lines = METRICS_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return empty
-    tail = raw_lines[-max_records:] if len(raw_lines) > max_records else raw_lines
+    tail = rows[-max_records:] if len(rows) > max_records else rows
 
     groups: dict[tuple, dict[tuple, list[dict]]] = {}
     sample_count = 0
     last_ts: str | None = None
-    for line in tail:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
+    for rec in tail:
+        if not isinstance(rec, dict):
             continue
         phase = rec.get("phase")
         if not phase:
@@ -3364,25 +3329,19 @@ def _load_timeline_runs(max_events: int = 500) -> list[dict]:
     recent `max_events` lines of the file are scanned so the endpoint stays
     cheap regardless of historical volume.
     """
-    if not EVENTS_FILE.exists():
+    # Route through the mtime-keyed JSONL cache so repeated /api/timeline
+    # polls don't re-parse the whole ledger. The helper preserves the prior
+    # ``errors="replace"`` invariant (so a half-written concurrent append
+    # from log_event.py — writes are not atomic at the byte level — can't
+    # surface as UnicodeDecodeError) and silently skips malformed rows.
+    rows = _load_jsonl_cached(EVENTS_FILE)
+    if not rows:
         return []
-    try:
-        # ``errors="replace"`` so a half-written concurrent append from the
-        # log_event.py hook (writes are not atomic at the byte level) can't
-        # 500 the /api/timeline endpoint with UnicodeDecodeError.
-        raw_lines = EVENTS_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    tail = raw_lines[-max_events:] if len(raw_lines) > max_events else raw_lines
+    tail = rows[-max_events:] if len(rows) > max_events else rows
 
     by_session: dict[str, list[dict]] = {}
-    for line in tail:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
+    for ev in tail:
+        if not isinstance(ev, dict):
             continue
         if ev.get("kind") != "phase_dispatch":
             continue
@@ -5079,12 +5038,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             )
             # Same stdin trick as the improver: long argv prompts fail silently on Windows.
             tool_bin = shutil.which(cfg["tool"]) or cfg["tool"]
+            # Cap the request-thread wait at _SUGGESTION_HTTP_TIMEOUT_MAX
+            # so a long ``cfg["timeout_seconds"]`` (up to 3600s) can't
+            # park the dashboard via this interactive endpoint.
+            http_timeout = min(
+                int(cfg.get("timeout_seconds", 120)),
+                _SUGGESTION_HTTP_TIMEOUT_MAX,
+            )
             try:
                 proc = subprocess.run(
                     [tool_bin, "-p", "--model", cfg["model"]],
                     cwd=str(ROOT), input=prompt,
                     capture_output=True, text=True,
-                    timeout=int(cfg.get("timeout_seconds", 120)),
+                    timeout=http_timeout,
                     encoding="utf-8", errors="replace",
                 )
             except (subprocess.TimeoutExpired, OSError) as e:
@@ -5185,13 +5151,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if cfg["tool"] == "claude":
                 improver_sid = str(uuid.uuid4())
                 argv += ["--session-id", improver_sid]
+            # Mirror _handle_suggestion_draft: cap the wall-clock so a long
+            # ``cfg["timeout_seconds"]`` can't park the dashboard via this
+            # interactive endpoint.
+            http_timeout = min(
+                int(cfg.get("timeout_seconds", 120)),
+                _SUGGESTION_HTTP_TIMEOUT_MAX,
+            )
             try:
                 try:
                     proc = subprocess.run(
                         argv,
                         cwd=str(ROOT), input=prompt,
                         capture_output=True, text=True,
-                        timeout=int(cfg.get("timeout_seconds", 120)),
+                        timeout=http_timeout,
                         encoding="utf-8", errors="replace",
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
