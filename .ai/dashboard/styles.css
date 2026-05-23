@@ -755,7 +755,6 @@
     }
     .pill.claude     { color: var(--accent);   background: var(--accent-bg); border-color: var(--accent); }
     .pill.codex      { color: var(--magenta);  background: var(--magenta-bg); border-color: var(--magenta); }
-    .pill.gemini     { color: var(--warn);     background: var(--warn-bg);   border-color: var(--warn); }
     .pill.good       { color: var(--good);     background: var(--ok-bg);     border-color: var(--good); }
     .pill.warn       { color: var(--warn);     background: var(--warn-bg);   border-color: var(--warn); }
     .pill.bad        { color: var(--bad);      background: var(--bad-bg);    border-color: var(--bad); }
@@ -3106,7 +3105,6 @@
     }
     section.block .phases-table .ph-tool-claude { color: var(--accent); border-color: var(--accent-soft); }
     section.block .phases-table .ph-tool-codex  { color: var(--magenta); border-color: var(--magenta-bg); }
-    section.block .phases-table .ph-tool-gemini { color: var(--warn); border-color: var(--warn); }
     section.block .phases-table .ph-auto-pill {
       display: inline-block;
       margin-left: 6px;

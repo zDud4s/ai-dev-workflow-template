@@ -178,7 +178,7 @@
 
     // ----- renderers -----
     function pillTool(tool) {
-      const cls = tool === "claude" ? "claude" : tool === "codex" ? "codex" : tool === "gemini" ? "gemini" : "";
+      const cls = tool === "claude" ? "claude" : tool === "codex" ? "codex" : "";
       return `<span class="pill ${cls}">${tool || "?"}</span>`;
     }
 
@@ -197,7 +197,7 @@
 
     function shortModelLabel(name) {
       if (!name) return "?";
-      return String(name).replace(/^claude-/, "").replace(/^gemini-/, "g-").replace(/-codex$/, "-cdx");
+      return String(name).replace(/^claude-/, "").replace(/-codex$/, "-cdx");
     }
 
     function formatModelShares(byModel, opts = {}) {
@@ -496,7 +496,6 @@
     // Last refreshed: May 2026.
     //   Claude — https://platform.claude.com/docs/en/about-claude/models/overview
     //   Codex  — https://developers.openai.com/codex/models
-    //   Gemini — https://ai.google.dev/gemini-api/docs/models
     var MODELS_BY_TOOL = {
       claude: [
         "claude-opus-4-7",     // most capable, agentic coding flagship
@@ -509,13 +508,6 @@
         "gpt-5.4",             // computer-use, 1M ctx
         "gpt-5.4-mini",        // fast subagent
         "gpt-5.3-codex",       // previous codex generation
-      ],
-      gemini: [
-        "gemini-3.1-pro",      // reasoning-first, agentic workflows
-        "gemini-3.5-flash",    // near-Pro intelligence at Flash latency
-        "gemini-2.5-pro",      // 1M ctx, high-capability prior generation
-        "gemini-2.5-flash",    // balanced general use
-        "gemini-2.5-flash-lite", // lowest latency / cost
       ],
     };
 
@@ -539,7 +531,6 @@
           <select id="pe-tool" class="cmp-select">
             <option value="claude" ${initialTool === "claude" ? "selected" : ""}>claude</option>
             <option value="codex" ${initialTool === "codex" ? "selected" : ""}>codex</option>
-            <option value="gemini" ${initialTool === "gemini" ? "selected" : ""}>gemini</option>
           </select>
         </td>
         <td>

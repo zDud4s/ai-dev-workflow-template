@@ -11,7 +11,7 @@
     // vector. Defensively whitelist known-safe values before passing them
     // through. Anything unrecognised collapses to a safe sentinel.
     function _safeTool(t) {
-      return ({ "claude": "claude", "codex": "codex", "gemini": "gemini" }[t] || "unknown");
+      return ({ "claude": "claude", "codex": "codex" }[t] || "unknown");
     }
 
     // Pre-render skeleton placeholders so the page does not snap from

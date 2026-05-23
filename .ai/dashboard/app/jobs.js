@@ -49,7 +49,7 @@
     // _safeTool in skills.js (defined there but kept local here to
     // stay robust against script-load-order changes).
     function _jobsSafeTool(t) {
-      return ({ "claude": "claude", "codex": "codex", "gemini": "gemini" }[t] || "unknown");
+      return ({ "claude": "claude", "codex": "codex" }[t] || "unknown");
     }
 
     function statusPill(status) {

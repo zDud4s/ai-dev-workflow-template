@@ -6,10 +6,7 @@
   var ALL_PHASES = ["plan", "execute", "review", "rescue", "maintenance", "bootstrap"];
   var AS_PHASES_AVAILABLE = ["execute", "review", "rescue"];
   // Union of claude (low/medium/high/xhigh/max) and codex (low/medium/high/xhigh).
-  // `max` applies only to claude; the codex dispatcher rejects it. Gemini ignores
-  // reasoning_effort entirely (only `-m <model>` controls capability) — the
-  // dropdown still renders for gemini phases but the value is silently discarded
-  // by dispatch; we surface that via the tooltip.
+  // `max` applies only to claude; the codex dispatcher rejects it.
   var REASONING_LEVELS = ["", "low", "medium", "high", "xhigh", "max"];
 
   var loadedOnce = false;
@@ -293,7 +290,6 @@
       var tool = (p.tool || "").toLowerCase();
       var isClaude = tool === "claude";
       var isCodex = tool === "codex";
-      var isGemini = tool === "gemini";
       var isAuto = autoOn && autoPhases.indexOf(ph) >= 0;
       // Normalize the stored value to lowercase so a YAML that drifted
       // ("Low", "HIGH") still matches the canonical option (which is always
@@ -301,16 +297,14 @@
       // selection" and a save would overwrite a non-empty value with "".
       var current = String(p.reasoning_effort || "").toLowerCase();
       var options = REASONING_LEVELS.map(function (r) {
-        // `max` is claude-only; hide it from the dropdown for codex/gemini phases.
+        // `max` is claude-only; hide it from the dropdown for codex phases.
         if (r === "max" && !isClaude) return "";
         var sel = current === r ? " selected" : "";
         var label = r || "(default)";
         return '<option value="' + r + '"' + sel + '>' + label + '</option>';
       }).join("");
       var to = p.timeout_seconds || "";
-      var reasoningTitle = isGemini
-        ? "gemini ignores reasoning_effort — only -m <model> controls capability"
-        : isCodex
+      var reasoningTitle = isCodex
         ? "codex --config model_reasoning_effort (low/medium/high/xhigh)"
         : "claude --effort (low/medium/high/xhigh/max)";
       var reasoningCell = '<select class="ph-reasoning" title="' + reasoningTitle + '">' + options + '</select>';
@@ -376,7 +370,7 @@
       var m = (toolPill.className || "").match(/ph-tool-([a-z]+)/);
       if (m) tool = m[1];
     }
-    if (rEl && tool !== "gemini") body.reasoning_effort = rEl.value;
+    if (rEl) body.reasoning_effort = rEl.value;
     if (_settingsVersion != null) body._if_match = _settingsVersion;
     setMsg("phases-msg", "");
     try {
