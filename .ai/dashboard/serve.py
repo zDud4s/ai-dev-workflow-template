@@ -147,6 +147,32 @@ _IMPROVER_DEFAULTS = {
     "revert_margin": 0.2,
 }
 
+# Maximum size of a JSON request body. Anything larger gets a 413 before we
+# even allocate a buffer — a single multi-MB POST against an endpoint that
+# expects ``{"mode": "..."}`` is a trivial DoS otherwise. 1 MiB is well above
+# any legitimate payload the dashboard sends (the largest is the chat
+# composer with inlined files, which is capped client-side at ~256 KB).
+MAX_JSON_BODY = 1024 * 1024  # 1 MiB
+
+# Hard upper bound on a single Server-Sent Events session, regardless of
+# whether the subscriber is idle or not. ``_handle_job_stream`` already
+# bails on a 4-minute idle window, but a chatty job could keep a single
+# connection open indefinitely otherwise — and the SSE response holds a
+# request thread, a queue subscriber slot, and a TCP connection for the
+# whole lifetime. Clients reconnect transparently, so a forced rotation
+# is observationally invisible.
+MAX_SSE_SESSION_S = 1800  # 30 minutes
+
+# Directories the fallback ``ROOT.rglob("*")`` walk in ``_handle_files_list``
+# must not descend into. Without this, the autocomplete endpoint walks the
+# entire repo on every keystroke when ``git ls-files`` is unavailable —
+# slow on large repos and leaks dotfile paths (``.git/objects/*``,
+# ``node_modules/**``, ``.venv/**``) into the suggestion list.
+SKIP_DIRS = frozenset({
+    ".git", "node_modules", "__pycache__", ".pytest_cache",
+    ".venv", "venv", ".tox", ".mypy_cache", "tmp",
+})
+
 # Fields that exist only at runtime inside the JOBS dict and must NOT be
 # serialised to disk (they are either not JSON-encodable or meaningless
 # after the subprocess dies).
@@ -251,9 +277,11 @@ def _persist_job(job_id: str) -> None:
         with _JOBS_PERSIST_LOCK:
             with JOBS_PERSIST_FILE.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(snapshot, default=str) + "\n")
-    except OSError:
-        # Persistence is best-effort; never break the live pipeline.
-        pass
+    except OSError as e:
+        # Persistence is best-effort; never break the live pipeline. Log
+        # so an operator who notices restarts losing job history has a
+        # trail to follow (disk full, permissions, file locked, etc.).
+        print(f"[serve] persist_job failed for {job_id}: {e}", flush=True)
 
 
 def _update_job_cost(job_id: str, result_obj: dict) -> None:
@@ -311,8 +339,11 @@ def _prune_old_logs(jobs_dir: Path, max_age_days: int = 14, keep_newest: int = 2
             try:
                 p.unlink()
                 deleted += 1
-            except OSError:
-                pass
+            except OSError as e:
+                # File may be locked (Windows) or already gone (race
+                # with another sweep). Log so a chronic leak is
+                # discoverable rather than silent.
+                print(f"[serve] log sweep unlink failed for {p}: {e}", flush=True)
     return deleted
 
 
@@ -1456,8 +1487,10 @@ def _audit_improvement(skill_id: str, status: str, reason: str,
         with _IMPROVEMENTS_LEDGER_LOCK:
             with IMPROVEMENTS_LEDGER.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(row, default=str) + "\n")
-    except OSError:
-        pass
+    except OSError as e:
+        # Audit ledger is best-effort; never break the improver pipeline.
+        # Log so a silently-dropped audit row is traceable.
+        print(f"[serve] audit_improvement write failed for {skill_id}: {e}", flush=True)
 
 
 def _write_proposal(skill_id: str, skill_path: Path, old: str, new: str,
@@ -1501,7 +1534,12 @@ def _apply_improvement(skill_path: Path, new_content: str, source: str,
     slug = re.sub(r"[^a-z0-9]+", "-", skill_id.lower()).strip("-") or "skill"
     backup_path = SKILL_BACKUPS_DIR / f"{slug}-{ts}.md.bak"
     try:
-        original = skill_path.read_text(encoding="utf-8")
+        # ``errors="replace"`` so a SKILL.md that has been hand-edited with
+        # a non-UTF-8 sequence doesn't crash the apply path with a
+        # ``UnicodeDecodeError`` (manifested as an unrelated 500). The
+        # replaced bytes get backed up too — operators can recover from the
+        # .bak. Better than losing the whole proposal flow.
+        original = skill_path.read_text(encoding="utf-8", errors="replace")
         backup_path.write_text(original, encoding="utf-8")
         tmp_path = skill_path.with_name(skill_path.name + ".tmp")
         tmp_path.write_text(new_content, encoding="utf-8")
@@ -1765,8 +1803,11 @@ def _purge_claude_transcript(session_id: str | None) -> None:
         f = tdir / f"{session_id}.jsonl"
         if f.is_file():
             f.unlink()
-    except OSError:
-        pass
+    except OSError as e:
+        # Best-effort delete (file may be locked on Windows, or removed
+        # by a concurrent caller). Log so the operator can see why a
+        # stale transcript stuck around.
+        print(f"[serve] transcript delete failed for {session_id}: {e}", flush=True)
 
 
 def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
@@ -2051,8 +2092,11 @@ def _detect_skill_suggestions(threshold: float = 0.5, min_cluster: int = 3,
                 slug = o.get("skill") or o.get("suggested_name")
                 if slug:
                     covered_names.add(slug)
-    except OSError:
-        pass
+    except OSError as e:
+        # Best-effort filter — losing a few "covered" entries just means
+        # the user sees a previously-addressed cluster again. Log so a
+        # systemic problem (permissions, missing dir) is visible.
+        print(f"[serve] proposals coverage scan failed: {e}", flush=True)
     clusters = [
         c for c in clusters
         if c.get("id") not in covered_cluster_ids
@@ -2804,8 +2848,15 @@ def _publish_chunk(job_id: str, chunk: str | None) -> None:
     for q in subs:
         try:
             q.put_nowait(chunk)
-        except Exception:  # noqa: BLE001
+        except _stdqueue.Full:
+            # Subscriber queue at maxsize=1024 — slow client. Drop this chunk
+            # for that subscriber rather than blocking the runner; the SSE
+            # heartbeat loop will reap them on the next disconnect.
             pass
+        except Exception as e:  # noqa: BLE001
+            # Defensive: any other queue / GC race. Log so a runaway
+            # subscriber pattern is visible in the server log.
+            print(f"[serve] publish_chunk subscriber put_nowait failed for job {job_id}: {e}", flush=True)
 
 
 def _send_chat_blocks(job_id: str, blocks: list[dict]) -> tuple[bool, str]:
@@ -2904,11 +2955,28 @@ def _cancel_job(job_id: str) -> bool:
     if pid:
         try:
             if os.name == "nt":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], check=False, capture_output=True)
+                # `capture_output=True` keeps the noise out of the server's
+                # stdout; the stderr tail is only worth printing when the
+                # kill actually fails (process gone, ACL, etc.). Without this
+                # log a stuck job that wouldn't die looked identical to one
+                # that died cleanly — operators had no signal.
+                tk = subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    check=False, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=10,
+                )
+                if tk.returncode != 0:
+                    print(
+                        f"[serve] taskkill rc={tk.returncode} pid={pid} "
+                        f"stderr={(tk.stderr or '').strip()[:200]}",
+                        flush=True,
+                    )
             else:
                 os.kill(pid, 15)
-        except (ProcessLookupError, OSError):
-            pass
+        except (ProcessLookupError, OSError) as e:
+            print(f"[serve] cancel kill failed pid={pid}: {e}", flush=True)
+        except subprocess.TimeoutExpired:
+            print(f"[serve] taskkill timed out for pid={pid}", flush=True)
     return True
 
 
@@ -2980,7 +3048,11 @@ def _reconcile_running_pids() -> int:
             if proc is not None:
                 try:
                     rc = proc.poll()
-                except Exception:  # noqa: BLE001
+                except OSError as e:
+                    # poll() can raise on closed handles / interrupted
+                    # syscalls on some platforms — fall through to the
+                    # PID-alive probe below, but record the anomaly.
+                    print(f"[serve] reaper poll() failed for job {jid}: {e}", flush=True)
                     rc = None
                 if rc is None:
                     continue
@@ -3780,11 +3852,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def _read_json_body(self) -> dict | None:
-        length = int(self.headers.get("Content-Length") or "0")
+        # Reject oversized bodies up front using only the Content-Length
+        # header so we never allocate the buffer for a DoS payload. The
+        # 1 MiB ceiling (``MAX_JSON_BODY``) is well above legitimate
+        # dashboard traffic; the largest known payload is the chat
+        # composer with inlined files, which is capped client-side at
+        # ~256 KB.
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except (TypeError, ValueError):
+            self._json(411, {"error": "missing or invalid Content-Length"})
+            return None
         if length <= 0:
             return {}
-        if length > 64 * 1024:
-            self._json(413, {"error": "payload too large"})
+        if length > MAX_JSON_BODY:
+            self._json(413, {"detail": "request body too large", "error": "payload too large"})
             return None
         try:
             raw = self.rfile.read(length).decode("utf-8")
@@ -3802,6 +3884,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # Defense-in-depth: stop a misconfigured proxy / antivirus
+        # MIME-sniffing a JSON response into ``text/html`` and rendering it.
+        # The API never returns HTML; nosniff makes that a hard contract.
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -3848,7 +3934,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = ROOT / ".ai" / "memory.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            existing = path.read_text(encoding="utf-8")
+            # ``errors="replace"`` so a memory.md that picked up non-UTF-8
+            # bytes (hand-edited in a non-UTF-8 editor, e.g.) doesn't 500
+            # the append endpoint. The replacement char is benign in
+            # markdown and the next manual edit will normalise it.
+            existing = path.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
             existing = ""
         if existing and not existing.endswith("\n"):
@@ -3883,7 +3973,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = ROOT / ".ai" / "decisions.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            existing = path.read_text(encoding="utf-8")
+            # ``errors="replace"`` so a decisions.md that picked up non-UTF-8
+            # bytes (hand-edited in a non-UTF-8 editor, e.g.) doesn't 500
+            # the append endpoint. Matches the memory.md path above.
+            existing = path.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
             existing = ""
         if existing and not existing.endswith("\n"):
@@ -4173,7 +4266,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     @staticmethod
     def _read_workflow_version() -> str | None:
         try:
-            return WORKFLOW_VERSION_FILE.read_text(encoding="utf-8").strip() or None
+            # ``errors="replace"`` so a corrupted/version-file edge case
+            # never breaks the workflow-check endpoint; a non-decodable
+            # SHA-shaped value won't pass the downstream regex anyway.
+            return WORKFLOW_VERSION_FILE.read_text(encoding="utf-8", errors="replace").strip() or None
         except (FileNotFoundError, OSError):
             return None
 
@@ -4487,7 +4583,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             new_text = _patch_or_create_block(
-                path.read_text(encoding="utf-8"),
+                # ``errors="replace"`` aligns with the other models.yaml
+                # read paths — a stray non-UTF-8 byte in a hand-edited
+                # config must not 500 the improver-config update endpoint.
+                path.read_text(encoding="utf-8", errors="replace"),
                 "improver",
                 updates,
                 creator_template="improver:\n  enabled: true\n",
@@ -4532,7 +4631,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             new_text = _patch_or_create_block(
-                path.read_text(encoding="utf-8"),
+                # ``errors="replace"`` aligns with the other models.yaml
+                # read paths — see _handle_improver_update.
+                path.read_text(encoding="utf-8", errors="replace"),
                 "auto_select",
                 updates,
                 creator_template="auto_select:\n  enabled: false\n  token_budget: medium\n  phases: [execute, review, rescue]\n",
@@ -5382,17 +5483,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             break
             except (subprocess.TimeoutExpired, OSError):
                 files = []
-        # Fallback: walk repo top-level (cheap, no recursion bomb).
+        # Fallback: walk the repo when ``git ls-files`` isn't available
+        # (no-git checkouts, broken HEAD, etc.). ``SKIP_DIRS`` keeps the
+        # walk off the obvious hot paths (``.git/objects`` alone can be
+        # hundreds of thousands of entries) and stops the autocomplete
+        # endpoint leaking ``.venv`` / ``node_modules`` paths into the
+        # suggestion list.
         if not files:
-            for p in ROOT.rglob("*"):
-                if not p.is_file():
-                    continue
-                rel = str(p.relative_to(ROOT)).replace("\\", "/")
-                if prefix and prefix not in rel.lower():
-                    continue
-                files.append(rel)
-                if len(files) >= limit:
-                    break
+            try:
+                for p in ROOT.rglob("*"):
+                    try:
+                        parts = p.relative_to(ROOT).parts
+                    except ValueError:
+                        continue
+                    if any(part in SKIP_DIRS for part in parts):
+                        continue
+                    if not p.is_file():
+                        continue
+                    rel = "/".join(parts)
+                    if prefix and prefix not in rel.lower():
+                        continue
+                    files.append(rel)
+                    if len(files) >= limit:
+                        break
+            except OSError as e:
+                print(f"[serve] files-list fallback walk failed: {e}", flush=True)
         self._json(200, {"files": files})
 
     def _handle_file_read(self, qs: dict[str, list[str]]) -> None:
@@ -5451,12 +5566,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not self._write_sse_frame(existing.decode("utf-8", "replace").replace("\r\n", "\n")):
                 return
 
-        # Live tail: poll for appended bytes. Exit when client disconnects
-        # or after a long idle period (defensive cap).
+        # Live tail: poll for appended bytes. Exit when client disconnects,
+        # after a long idle period (defensive cap), OR when the hard
+        # wall-clock cap (``MAX_SSE_SESSION_S``) trips — a chatty transcript
+        # that emits one record per second forever would otherwise pin the
+        # request thread + TCP connection indefinitely. The idle cap and the
+        # wall-clock cap are complementary: idle catches "stalled stream",
+        # wall-clock catches "infinite chatter".
+        session_start = time.monotonic()
         last_size = pos
         idle_ticks = 0
         max_idle_ticks = 240  # ~ 4 minutes at 1s; client will reconnect
         while idle_ticks < max_idle_ticks:
+            if time.monotonic() - session_start > MAX_SSE_SESSION_S:
+                self._write_sse_event("end", '{"reason":"max_session"}')
+                return
             try:
                 size = path.stat().st_size
             except OSError:
@@ -5708,7 +5832,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if pty is not None:
                         try:
                             pty.write(data)
-                        except Exception:
+                        except (OSError, ValueError) as e:
+                            # OSError covers EBADF / EPIPE on a dead PTY;
+                            # ValueError covers writes against a closed fd.
+                            # Either way we can't recover — break the loop
+                            # but record the cause so a flood of "WS closed
+                            # unexpectedly" reports has context.
+                            print(f"[serve] pty_ws write({pty_id}) failed: {e}", flush=True)
                             break
                 elif opcode == WebSocket.OPCODE_TEXT:
                     # Control message (resize, etc.) JSON-encoded.
@@ -5726,8 +5856,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         if pty is not None:
                             try:
                                 pty.resize(cols, rows)
-                            except Exception:
-                                pass
+                            except (OSError, ValueError) as e:
+                                # resize is best-effort; some backends throw
+                                # on a stale handle. Don't break the loop —
+                                # the user can still type / read — but log.
+                                print(f"[serve] pty_ws resize({pty_id}) failed: {e}", flush=True)
                         with entry["_lock"]:
                             entry["cols"] = cols
                             entry["rows"] = rows
@@ -5736,8 +5869,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             with entry["_lock"]:
                 try: entry["_subscribers"].remove(q)
                 except ValueError: pass
-            try: ws.close()
-            except Exception: pass
+            try:
+                ws.close()
+            except (OSError, _WsClosed):
+                # Already closed by the peer — common path, not worth logging.
+                pass
 
     def _handle_job_input(self, job_id: str, body: dict) -> None:
         with JOBS_LOCK:
@@ -5837,8 +5973,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
           2. Register a queue as a subscriber; each chunk written by the
              runner thread gets forwarded as a `data:` frame.
           3. Terminate when the runner publishes the EOF sentinel (None).
+
+        Hard upper-bound on a single SSE session: ``MAX_SSE_SESSION_S``
+        seconds, regardless of idleness. A chatty job that emits one
+        chunk every second forever would otherwise pin the response
+        thread, the queue subscriber slot, and the TCP connection
+        indefinitely. The client reconnects transparently, so the
+        forced rotation is observationally invisible.
         """
         import queue as _queue
+
+        session_start = time.monotonic()
 
         with JOBS_LOCK:
             j = JOBS.get(job_id)
@@ -5885,6 +6030,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             # 2. Live tail until EOF sentinel arrives.
             while True:
+                # Hard session cap — emit a final SSE event so the client
+                # can distinguish "server rotated me" from a network drop.
+                if time.monotonic() - session_start > MAX_SSE_SESSION_S:
+                    self._write_sse_event("end", '{"reason":"max_session"}')
+                    return
                 try:
                     chunk = q.get(timeout=15)
                 except _queue.Empty:
@@ -5939,7 +6089,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not path.exists():
             self._json(404, {"error": "models.yaml not found"})
             return
-        text = path.read_text(encoding="utf-8")
+        # ``errors="replace"`` so an editor-induced non-UTF-8 byte in
+        # models.yaml doesn't 500 a config-change request — the patch
+        # regex still matches the ``dispatch_mode:`` line.
+        text = path.read_text(encoding="utf-8", errors="replace")
         # Replace existing `dispatch_mode: <value>` line (with optional inline comment), or insert near top.
         line_re = re.compile(r"^(dispatch_mode:\s*)\S+(\s*(?:#.*)?)$", re.M)
         if line_re.search(text):
@@ -6014,7 +6167,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(404, {"error": "models.yaml not found"})
             return
         try:
-            new_text = _patch_phase_block(path.read_text(encoding="utf-8"), phase, updates)
+            new_text = _patch_phase_block(path.read_text(encoding="utf-8", errors="replace"), phase, updates)
         except ValueError as e:
             self._json(404, {"error": str(e)})
             return
