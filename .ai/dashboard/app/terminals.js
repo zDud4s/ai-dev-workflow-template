@@ -961,7 +961,7 @@
         termClosePty(jobId);
         return;
       }
-      try { t.source.close(); } catch (_) {}
+      try { t.source.close(); } catch (e) { console.warn("[terminals] termClose: SSE close failed: " + (e && e.message ? e.message : e)); }
       // Stop the SSE heartbeat watchdog so the closed pane doesn't keep
       // a timer alive that calls termSetDead on an already-removed pane.
       if (t._sseHeartbeat) {
@@ -1064,6 +1064,11 @@
         err.style.color = "var(--bad)";
         err.textContent = `\n[input failed: ${e.message}]\n`;
         t.body.appendChild(err);
+        // Also surface to the global toast: when the chat scroll is well
+        // past the bottom or the pane is collapsed in list mode, the
+        // inline ``[input failed]`` line is invisible. setMsg is the only
+        // reliable signal that the operator's click did not land.
+        setMsg("#term-msg", "err", "Send failed: " + e.message, 4000);
         if (/not running|409/i.test(e.message)) termSetDead(t, "ended");
       } finally {
         t.sendBtn.disabled = false;
@@ -1088,11 +1093,18 @@
       try {
         const trimmed = (text || "").trim();
         if (!trimmed) return;
-        const res = await postJson("/api/jobs", {
+        // Propagate the operator's chosen model on resume. Without this,
+        // resuming a dead chat fell back to the server-default model even
+        // though the original pane had pinned a specific one. The codex
+        // resume path (termSendCodexNextTurn) already includes model — chat
+        // resume was the only path missing it.
+        const payload = {
           kind: "chat",
           task: trimmed,
           resume_session_id: t.sessionId,
-        });
+        };
+        if (t.model) payload.model = t.model;
+        const res = await postJson("/api/jobs", payload);
         t.input.value = "";
         if (t.input.tagName === "TEXTAREA") t.input.style.height = "";
         // Open the resumed pane alongside this dead one and bring it
@@ -1133,34 +1145,47 @@
     }
 
     async function termCodexAwaitNextTurn(t) {
-      termClearThinkingPlaceholder(t);
-      termSetActivity(t, "waiting", "waiting");
-      const sp = t.pane.querySelector(".status-pill");
-      if (sp) {
-        sp.textContent = "ready";
-        sp.classList.remove("queued", "running");
-        sp.classList.add("done");
-      }
-      if (t.input) {
-        t.input.disabled = false;
-        t.input.placeholder = "type, /skill, @file — Enter sends next turn (Codex resumes session)";
-      }
-      if (t.sendBtn) {
-        t.sendBtn.disabled = false;
-        t.sendBtn.textContent = "send";
-      }
-      // Fetch the latest job summary so we pick up the session_id the
-      // server captured from the codex stream. Without it the next turn
-      // can't resume.
+      // Re-entry guard. Multiple async sources fire this concurrently for
+      // the same pane: SSE 'end', onerror (CLOSED), the 15s heartbeat
+      // watchdog (for the chat-codex codepath), and (post-rekey) the
+      // previous job's lingering events. Without serialisation each
+      // caller fetches /api/jobs/<id> in parallel and the last write of
+      // session_id/model wins — sometimes overwriting a captured
+      // session_id with an empty string for the rekeyed turn. Drop
+      // overlapping calls; the first one wins, the rest no-op.
+      if (t._codexAwaitInFlight) return;
+      t._codexAwaitInFlight = true;
       try {
-        const r = await fetch(`/api/jobs/${t.jobId}`, { cache: "no-store" });
-        if (r.ok) {
-          const j = await r.json();
-          if (j.session_id) t.sessionId = j.session_id;
-          if (j.model) t.model = j.model;
+        termClearThinkingPlaceholder(t);
+        termSetActivity(t, "waiting", "waiting");
+        // Route through termSetPillState so every prior state class
+        // (running/queued/cancelling/bad/warn) is cleared before "done" lands.
+        // The old toggle/add cocktail left stale classes that the CSS cascade
+        // could resolve in the wrong order.
+        termSetPillState(t.pane.querySelector(".status-pill"), "done", "ready");
+        if (t.input) {
+          t.input.disabled = false;
+          t.input.placeholder = "type, /skill, @file — Enter sends next turn (Codex resumes session)";
         }
-      } catch (_) { /* the operator can retry — we'll try again on send */ }
-      termRefreshCost(t);
+        if (t.sendBtn) {
+          t.sendBtn.disabled = false;
+          t.sendBtn.textContent = "send";
+        }
+        // Fetch the latest job summary so we pick up the session_id the
+        // server captured from the codex stream. Without it the next turn
+        // can't resume.
+        try {
+          const r = await fetch(`/api/jobs/${t.jobId}`, { cache: "no-store" });
+          if (r.ok) {
+            const j = await r.json();
+            if (j.session_id) t.sessionId = j.session_id;
+            if (j.model) t.model = j.model;
+          }
+        } catch (_) { /* the operator can retry — we'll try again on send */ }
+        termRefreshCost(t);
+      } finally {
+        t._codexAwaitInFlight = false;
+      }
     }
 
     async function termSendCodexNextTurn(t, text, attached) {
@@ -1210,12 +1235,10 @@
         persistOpenPanes();
         const idEl = t.pane.querySelector(".id");
         if (idEl) idEl.textContent = res.id.slice(0, 8);
-        const sp = t.pane.querySelector(".status-pill");
-        if (sp) {
-          sp.textContent = "connecting";
-          sp.classList.remove("done", "warn");
-          sp.classList.add("running");
-        }
+        // Normalize pill state through the helper — clears queued, done,
+        // warn, bad, cancelling so the new "running" doesn't compose with
+        // a stale class from the previous turn.
+        termSetPillState(t.pane.querySelector(".status-pill"), "running", "connecting");
         // Tear down the previous job's SSE and bind a new one to the
         // freshly-spawned resume job.
         try { t.source && t.source.close(); } catch (_) {}
@@ -1224,8 +1247,13 @@
         const es = new EventSource(`/api/jobs/${res.id}/stream`);
         t.source = es;
         es.onopen = () => {
-          const pill = t.pane.querySelector(".status-pill");
-          if (pill) { pill.textContent = "live"; pill.classList.remove("queued"); }
+          // Route through termSetPillState so the pill state is normalised
+          // — the ad-hoc ``textContent = "live" + classList.remove("queued")``
+          // here left other prior classes (warn/bad/done from a previous
+          // turn that flipped through them) stacked under "running", and
+          // the cascade resolved colours unpredictably. The helper clears
+          // every known state class first, then applies the new one.
+          termSetPillState(t.pane.querySelector(".status-pill"), "running", "live");
           termSetActivity(t, "live", "busy");
         };
         es.onmessage = (ev) => termHandleCodexChunk(t, ev.data);
@@ -1332,7 +1360,7 @@
         if (kind === "function_call") {
           const name = payload.name || "(tool)";
           let args = {};
-          try { args = JSON.parse(payload.arguments || "{}"); } catch (_) {}
+          try { args = JSON.parse(payload.arguments || "{}"); } catch (e) { console.warn("[terminals] codex function_call args parse failed: " + (e && e.message ? e.message : e)); }
           const callId = payload.call_id || payload.id || ("codex_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8));
           termAddToolPill(t, callId, name, args);
           return;
@@ -1795,6 +1823,17 @@
       textEl._renderPending = true;
       requestAnimationFrame(() => {
         textEl._renderPending = false;
+        // The pane (and therefore this textEl) may have been removed from
+        // the DOM between the delta arriving and the rAF callback firing
+        // — operator clicked close, termCloseAllFinished swept it, the
+        // chat-codex rekey replaced the block, etc. Writing into a
+        // detached node leaks the dataset payload + queued buffer for
+        // GC's lifetime and pointlessly re-parses markdown. Bail out
+        // cleanly when the node is no longer connected.
+        if (!textEl.isConnected) {
+          textEl._rawBuf = [];
+          return;
+        }
         const latest = (textEl._rawBuf || []).join("");
         textEl.dataset.raw = latest;
         try { textEl.innerHTML = DOMPurify.sanitize(marked.parse(latest)); }
@@ -2193,9 +2232,15 @@
         catch (_) { text.textContent = raw; }
         block.appendChild(text);
         tracker.body.appendChild(block);
-        // Header pill goes from "dispatch" to "done" / "failed".
-        const status = tracker.pane.querySelector(".status-pill");
-        if (status) { status.textContent = isError ? "failed" : "done"; status.classList.toggle("done", !isError); }
+        // Header pill goes from "dispatch" to "done" / "failed". Use the
+        // helper so the prior "running" / "queued" / cancelling classes are
+        // wiped — toggle("done", !isError) on its own left stale classes
+        // when the dispatch had been in "running" state.
+        termSetPillState(
+          tracker.pane.querySelector(".status-pill"),
+          isError ? "bad" : "done",
+          isError ? "failed" : "done",
+        );
         // The activity chip is initialised to "queued…" at pane creation
         // and dispatch panes have no streaming events to advance it. If we
         // don't update it here it stays "queued…" forever even though the
@@ -2628,7 +2673,7 @@
         if (typeof ev.data === "string") {
           // Control frame from server (JSON).
           let msg;
-          try { msg = JSON.parse(ev.data); } catch (_) { return; }
+          try { msg = JSON.parse(ev.data); } catch (e) { console.warn("[terminals] PTY control frame JSON parse failed: " + (e && e.message ? e.message : e)); return; }
           if (msg.type === "exit") {
             termSetPillState(statusPill, "done", "ended");
             termSetActivity(t, "ended", "ended");
@@ -2680,7 +2725,7 @@
         if (ws.readyState === WebSocket.OPEN) {
           try {
             ws.send(JSON.stringify({ type: "resize", cols, rows }));
-          } catch (_) {}
+          } catch (e) { console.warn("[terminals] PTY resize send failed: " + (e && e.message ? e.message : e)); }
         }
       };
       term.onResize(({ cols, rows }) => {
@@ -2689,7 +2734,7 @@
         if (ws.readyState === WebSocket.OPEN) {
           try {
             ws.send(JSON.stringify({ type: "resize", cols, rows }));
-          } catch (_) {}
+          } catch (e) { console.warn("[terminals] PTY resize send failed: " + (e && e.message ? e.message : e)); }
         }
       });
       if (typeof ResizeObserver !== "undefined") {
@@ -2724,7 +2769,7 @@
       // Fire-and-forget kill on the server side too so we don't leak shells.
       try {
         fetch(`/api/ptys/${ptyId}/kill`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      } catch (_) {}
+      } catch (e) { console.warn("[terminals] PTY kill fetch failed: " + (e && e.message ? e.message : e)); }
       try { t._term && t._term.dispose(); } catch (_) {}
       t.pane.remove();
       TERMS.delete(ptyId);
@@ -3171,8 +3216,12 @@
           // Mirror's composer stays locked; this branch is now history.
           t.input.placeholder = "mirror pane is read-only — continue in the fork pane";
           t.sendBtn.textContent = "forked";
-          const sp = t.pane.querySelector(".status-pill");
-          if (sp) { sp.textContent = "forked"; sp.classList.add("warn"); }
+          // Route through termSetPillState so the pill ends up with EXACTLY
+          // the warn class (and "forked" text), with every prior state
+          // (running/done/bad/queued/cancelling/cancelled) stripped.
+          // Direct ``classList.add("warn")`` previously left those stacked
+          // and the CSS cascade could resolve to the wrong colour.
+          termSetPillState(t.pane.querySelector(".status-pill"), "warn", "forked");
           // Open the writable chat pane next to this one AND expand +
           // scroll it into view so the operator sees their fork land
           // (otherwise list-mode tucks it away as a collapsed row at the
@@ -3594,7 +3643,15 @@
 
     function termCloseAllFinished() {
       let closed = 0;
-      for (const [jobId, t] of TERMS.entries()) {
+      // Snapshot the keys before iterating — termClose() deletes the entry
+      // for the closing pane from TERMS, and on some panes (chat-codex
+      // rekeys, transcript companions) the close can cascade and remove
+      // another entry. Iterating TERMS.entries() live can skip a sibling
+      // entry mid-cascade; the snapshot decouples the iteration from
+      // mutation and a stale jobId is just a no-op in termClose.
+      for (const jobId of [...TERMS.keys()]) {
+        const t = TERMS.get(jobId);
+        if (!t) continue;
         if (termPaneIsFinished(t)) { termClose(jobId); closed++; }
       }
       if (!closed) {
