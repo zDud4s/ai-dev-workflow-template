@@ -6,7 +6,10 @@
   var ALL_PHASES = ["plan", "execute", "review", "rescue", "maintenance", "bootstrap"];
   var AS_PHASES_AVAILABLE = ["execute", "review", "rescue"];
   // Union of claude (low/medium/high/xhigh/max) and codex (low/medium/high/xhigh).
-  // `max` applies only to claude; the codex dispatcher rejects it.
+  // `max` applies only to claude; the codex dispatcher rejects it. Gemini ignores
+  // reasoning_effort entirely (only `-m <model>` controls capability) — the
+  // dropdown still renders for gemini phases but the value is silently discarded
+  // by dispatch; we surface that via the tooltip.
   var REASONING_LEVELS = ["", "low", "medium", "high", "xhigh", "max"];
 
   var loadedOnce = false;
@@ -14,6 +17,13 @@
   // calls from racing each other and rendering out of order. Mirrors the
   // _jobsLoadInFlight pattern in jobs.js.
   var _isLoading = false;
+  // Last-known version token from /api/settings. When the server returns a
+  // `version` field (mtime, hash, or monotonic counter — server may add it
+  // opportunistically), saves echo it back as `_if_match` so the server can
+  // refuse a stale write. Until the server opts in, this is a no-op safeguard
+  // on the client side — when the field is null we just don't send it and
+  // behave as last-write-wins, the previous semantics.
+  var _settingsVersion = null;
 
   // ---------- HTTP helpers ----------
   async function getJson(url) {
@@ -74,8 +84,15 @@
     try {
       return await fn();
     } finally {
-      btn.disabled = false;
-      btn.textContent = btn.dataset.prevLabel || label;
+      // The button may have been detached from the DOM while we were
+      // awaiting (e.g. renderPhasesTable rebuilt #phases-table during a
+      // long save). Skip the restore in that case — writing to a stale
+      // node leaks references and confuses the GC; the new node already
+      // has the correct enabled state.
+      if (btn.isConnected) {
+        btn.disabled = false;
+        btn.textContent = btn.dataset.prevLabel || label;
+      }
     }
   }
 
@@ -160,6 +177,10 @@
       timeout_seconds:        parsed.timeout_seconds,
       revert_after_n_uses:    parsed.revert_after_n_uses,
     };
+    // Optimistic concurrency: include the last-seen version if we have one.
+    // Server ignores it today; the moment it grows version-aware this
+    // becomes the lost-edit guard with no further client change.
+    if (_settingsVersion != null) body._if_match = _settingsVersion;
     try {
       await withBusy(btn, function () { return postJson("/api/settings/improver", body); });
       setMsg("imp-msg", "Saved to .ai/models.yaml", "good");
@@ -214,12 +235,36 @@
       phases: phases,
     };
     try {
+      // Snapshot the version we read on the last load to detect concurrent
+      // edits (a second tab, an external YAML edit). If the server's current
+      // version doesn't match, refuse to clobber and prompt a reload.
+      var ifMatch = _settingsVersion;
+      if (ifMatch != null) body._if_match = ifMatch;
       await withBusy(btn, function () { return postJson("/api/settings/auto_select", body); });
       setMsg("as-msg", "Saved to .ai/models.yaml", "good");
-      // The per-phase fallback section depends on auto-select state, refresh it.
-      loadAllSettings();
+      // Surgical refresh: just re-render the dependent banner + per-phase
+      // table without re-triggering the skeleton-flash path. The improver
+      // section is independent of auto-select so it doesn't need a redraw,
+      // and the auto-select checkboxes already reflect the just-saved state.
+      await refreshPhasesSection();
     } catch (e) {
       setMsg("as-msg", e.message || "save failed", "bad");
+    }
+  }
+
+  // Re-fetch /api/settings without triggering showLoadingState() so the user
+  // doesn't see a skeleton flicker on every save. Only repaints the phases
+  // table + auto-select-warning banner — the two regions that depend on
+  // auto-select state. Safe to call from any save handler.
+  async function refreshPhasesSection() {
+    try {
+      var data = await getJson("/api/settings");
+      _settingsVersion = data.version != null ? data.version : _settingsVersion;
+      renderPhasesTable(data.phases || {}, data.auto_select || {});
+    } catch (e) {
+      // Non-fatal: the previous table content stays on screen, which is
+      // strictly better than a skeleton flash followed by a load failure.
+      console.warn("[settings] refreshPhasesSection failed:", e.message);
     }
   }
 
@@ -246,18 +291,26 @@
     var rows = ALL_PHASES.map(function (ph) {
       var p = phases[ph] || {};
       var tool = (p.tool || "").toLowerCase();
+      var isClaude = tool === "claude";
       var isCodex = tool === "codex";
+      var isGemini = tool === "gemini";
       var isAuto = autoOn && autoPhases.indexOf(ph) >= 0;
-      var current = p.reasoning_effort || "";
+      // Normalize the stored value to lowercase so a YAML that drifted
+      // ("Low", "HIGH") still matches the canonical option (which is always
+      // lowercase). Without this, the dropdown would silently render "no
+      // selection" and a save would overwrite a non-empty value with "".
+      var current = String(p.reasoning_effort || "").toLowerCase();
       var options = REASONING_LEVELS.map(function (r) {
-        // `max` is claude-only; hide it from the dropdown for codex phases.
-        if (r === "max" && isCodex) return "";
+        // `max` is claude-only; hide it from the dropdown for codex/gemini phases.
+        if (r === "max" && !isClaude) return "";
         var sel = current === r ? " selected" : "";
         var label = r || "(default)";
         return '<option value="' + r + '"' + sel + '>' + label + '</option>';
       }).join("");
       var to = p.timeout_seconds || "";
-      var reasoningTitle = isCodex
+      var reasoningTitle = isGemini
+        ? "gemini ignores reasoning_effort — only -m <model> controls capability"
+        : isCodex
         ? "codex --config model_reasoning_effort (low/medium/high/xhigh)"
         : "claude --effort (low/medium/high/xhigh/max)";
       var reasoningCell = '<select class="ph-reasoning" title="' + reasoningTitle + '">' + options + '</select>';
@@ -323,7 +376,8 @@
       var m = (toolPill.className || "").match(/ph-tool-([a-z]+)/);
       if (m) tool = m[1];
     }
-    if (rEl) body.reasoning_effort = rEl.value;
+    if (rEl && tool !== "gemini") body.reasoning_effort = rEl.value;
+    if (_settingsVersion != null) body._if_match = _settingsVersion;
     setMsg("phases-msg", "");
     try {
       await withBusy(btn, function () { return postJson("/api/models/phase", body); });
@@ -353,19 +407,53 @@
     el.style.display = "block";
     el.textContent = text;
   }
-  function setWorkflowBusy(busy) {
+  // Single source of truth for the workflow-update widget. Every UI change
+  // flows through `renderWorkflowButtons(_workflowState)`; never poke
+  // `.disabled` directly from event handlers. The previous code split
+  // ownership between `setWorkflowBusy` (transient busy flag) and ad-hoc
+  // writes in `workflowCheck` / `workflowUpdate` (`has_updates` derivation),
+  // making it impossible to reason about the button's actual state at any
+  // given moment.
+  var _workflowState = {
+    busy: false,        // a check or update is currently running
+    hasUpdates: false,  // last successful check said there are pending updates
+    checked: false,     // we've seen a successful response at least once
+  };
+  function renderWorkflowButtons() {
     var c = $q("#btn-workflow-check");
     var p = $q("#btn-workflow-update");
-    if (c) c.disabled = busy;
-    if (p && busy) p.disabled = true;
+    if (c) c.disabled = _workflowState.busy;
+    if (p) {
+      // Update button is enabled iff: we've checked, there are updates,
+      // and nothing else is in flight. No other site is allowed to flip
+      // this flag — workflowCheck/workflowUpdate must mutate the state
+      // object and call renderWorkflowButtons().
+      p.disabled = _workflowState.busy
+        || !_workflowState.checked
+        || !_workflowState.hasUpdates;
+    }
+  }
+  function setWorkflowBusy(busy) {
+    _workflowState.busy = !!busy;
+    renderWorkflowButtons();
   }
   function setRestartWarning(visible) {
     var el = $q("#workflow-restart-warning");
     if (el) el.style.display = visible ? "block" : "none";
   }
+  // Defense in depth: cover the full OWASP-recommended set so this helper is
+  // safe in attribute position too (today's callers all use it between tags,
+  // but future callers shouldn't have to think about context). Single and
+  // double quotes plus `<`, `>`, `&` cover both text and unquoted-attr sinks.
   function escHtml(s) {
-    return String(s == null ? "" : s).replace(/[<>&]/g, function (ch) {
-      return { "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch];
+    return String(s == null ? "" : s).replace(/[<>&'"]/g, function (ch) {
+      return {
+        "<": "&lt;",
+        ">": "&gt;",
+        "&": "&amp;",
+        "'": "&#39;",
+        '"': "&quot;",
+      }[ch];
     });
   }
   function showWorkflowLog(commits) {
@@ -391,7 +479,10 @@
       if (data.success === false) {
         setWorkflowStatus(data.message || data.error || "Check failed", "bad");
         if (data.output) setWorkflowOutput(data.output);
-        $q("#btn-workflow-update").disabled = true;
+        // Reset to "no updates known" on failure; renderWorkflowButtons in
+        // the finally block will keep the update button disabled.
+        _workflowState.hasUpdates = false;
+        _workflowState.checked = false;
         return;
       }
       var shortUp = (data.upstream_sha || "").substring(0, 7) || "?";
@@ -399,13 +490,19 @@
       var line = "Upstream " + shortUp + " · installed " + shortCur;
       setWorkflowStatus(line + " — " + (data.message || ""),
                         data.has_updates ? "warn" : "good");
-      // Enabled iff there ARE updates to apply. Don't gate on current_sha:
-      // on a fresh install with no updates queued the old combined expression
-      // would erroneously enable the button.
+      // Update the single state object; renderWorkflowButtons (called via
+      // setWorkflowBusy(false) below) will derive the button state. We
+      // also flip .disabled inline here so the visual change is immediate
+      // (before the finally block runs); both writes land on the same
+      // value because they read from the same `data.has_updates`.
+      _workflowState.checked = true;
+      _workflowState.hasUpdates = !!data.has_updates;
       $q("#btn-workflow-update").disabled = !data.has_updates;
       showWorkflowLog(data.commits || []);
     } catch (e) {
       setWorkflowStatus("Network error: " + e.message, "bad");
+      _workflowState.checked = false;
+      _workflowState.hasUpdates = false;
     } finally {
       setWorkflowBusy(false);
     }
@@ -424,14 +521,16 @@
       if (data.success) {
         showWorkflowLog([]);
         if (data.restart_dashboard) setRestartWarning(true);
+        // Successful apply: there are no longer pending updates. Force the
+        // state to reflect that until the next workflowCheck() runs.
+        _workflowState.hasUpdates = false;
       }
     } catch (e) {
       setWorkflowStatus("Network error: " + e.message, "bad");
     } finally {
-      var c = $q("#btn-workflow-check");
-      var p = $q("#btn-workflow-update");
-      if (c) c.disabled = false;
-      if (p) p.disabled = false;
+      // Single source of truth: clear busy and let renderWorkflowButtons
+      // derive both buttons' enabled state from _workflowState.
+      setWorkflowBusy(false);
     }
   }
 
@@ -463,6 +562,9 @@
     showLoadingState();
     try {
       var data = await getJson("/api/settings");
+      // Capture the version token (if any) so subsequent saves can include
+      // it as `_if_match` to detect concurrent edits.
+      _settingsVersion = data.version != null ? data.version : null;
       fillImprover(data.improver || {});
       fillAutoSelect(data.auto_select || {});
       renderPhasesTable(data.phases || {}, data.auto_select || {});
