@@ -41,6 +41,17 @@
     var _jobsListDelegationWired = false;
     var _jobsDocDelegationWired = false;
 
+    // Local defensive whitelist for tool names before they reach
+    // pillTool() (owned by core.js, which interpolates raw). Anything
+    // not in the known set collapses to a safe sentinel so a hostile
+    // server JSON `tool` field can't smuggle attributes/markup into
+    // the resulting <span class="pill ...">${tool}</span>. Mirrors
+    // _safeTool in skills.js (defined there but kept local here to
+    // stay robust against script-load-order changes).
+    function _jobsSafeTool(t) {
+      return ({ "claude": "claude", "codex": "codex", "gemini": "gemini" }[t] || "unknown");
+    }
+
     function statusPill(status) {
       const cls = ["running","queued","cancelling","cancelled","done"].includes(status)
         ? status
@@ -99,7 +110,7 @@
             const metaParts = [];
             if (ts) metaParts.push(`<span>${escape(ts)}</span>`);
             if (dur) metaParts.push(`<span>${escape(dur)}</span>`);
-            const inner = `<div class="job-row-head">${statusPill(j.status)} ${pillTool(tool)} <span class="job-row-kind">${escape((j.kind || "").toUpperCase())}</span></div>
+            const inner = `<div class="job-row-head">${statusPill(j.status)} ${pillTool(_jobsSafeTool(tool))} <span class="job-row-kind">${escape((j.kind || "").toUpperCase())}</span></div>
               <div class="sub" style="margin-top:4px;white-space:normal">${escape(taskPreview.slice(0, 80))}${taskPreview.length > 80 ? "…" : ""}</div>
               ${metaParts.length ? `<div class="job-row-meta">${metaParts.join(" · ")}</div>` : ""}`;
             return { id: j.id, inner };
@@ -181,7 +192,14 @@
       } finally {
         const wasPending = _jobsLoadInFlight === "pending";
         _jobsLoadInFlight = false;
-        if (wasPending) setTimeout(loadJobs, 0);
+        if (wasPending) {
+          // Cancel the freshly-armed background poll before scheduling
+          // the immediate retry — otherwise both timers fire and we
+          // race two concurrent loadJobs calls (the in-flight guard
+          // catches it but only after two awaits already started).
+          if (_jobsTimer) { clearTimeout(_jobsTimer); _jobsTimer = null; }
+          setTimeout(loadJobs, 0);
+        }
       }
     }
 
@@ -422,7 +440,13 @@
 
     // ----- events -----
     function relativeTime(iso) {
-      const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+      // Guard against future-dated stamps (clock skew between client
+      // and server, or jobs spawned with a forward-clock event log).
+      // Without Math.max(0, ...) we render "-3s ago" or similar — and
+      // negative input also confuses the cadence buckets below. NaN
+      // (from `new Date("garbage")`) also collapses to 0 / "just now".
+      const raw = (Date.now() - new Date(iso).getTime()) / 1000;
+      const diff = Math.max(0, Number.isFinite(raw) ? raw : 0);
       if (diff < 60) return Math.floor(diff) + "s ago";
       if (diff < 3600) return Math.floor(diff / 60) + "m ago";
       if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
@@ -642,7 +666,7 @@
         const main = `<tr class="ev-row ${isBad ? "bad-row" : ""}${isOpen ? " is-open" : ""}" data-expand-key="${escape(expandKey)}">
           <td class="ts" title="${escape(ts)}">${escape(tsRel)}<div class="ts-abs">${escape(tsAbs)}</div></td>
           <td><span class="pill">${escape(e.phase || "?")}</span></td>
-          <td>${pillTool(e.tool)}</td>
+          <td>${pillTool(_jobsSafeTool(e.tool))}</td>
           <td class="mono">${escape(e.model || "—")}</td>
           <td>${_evExitPill(e.exit_code)}</td>
           <td class="cmd" title="${escape(e.command_preview || "")}">${escape(e.command_preview || "")}</td>
@@ -819,7 +843,24 @@
 
 
     // ----- Cross-cutting: pause polling when tab hidden (packet C) -----
+    // Dedupe / debounce: some browsers (notably Safari + older Chrome
+    // with bfcache) fire `visibilitychange` twice in quick succession
+    // when a tab is focused, which would trigger two parallel
+    // loadJobs/loadEvents/loadTimeline storms. We coalesce calls
+    // within a short window by tracking the last-handled visibility
+    // state + timestamp; identical transitions inside the window
+    // are dropped.
+    var _lastVisibilityState = null;
+    var _lastVisibilityAt = 0;
     document.addEventListener("visibilitychange", () => {
+      const state = document.hidden ? "hidden" : "visible";
+      const now = Date.now();
+      if (_lastVisibilityState === state && (now - _lastVisibilityAt) < 250) {
+        // Duplicate fire within the debounce window — ignore.
+        return;
+      }
+      _lastVisibilityState = state;
+      _lastVisibilityAt = now;
       if (document.hidden) {
         if (_jobsTimer) { clearTimeout(_jobsTimer); _jobsTimer = null; }
         if (_eventsTimer) { clearInterval(_eventsTimer); _eventsTimer = null; }
