@@ -985,7 +985,12 @@
       suppressAutoOpen(jobId);
       termRenderEmptyState();
       persistOpenPanes();
-      loadJobs();
+      // Fire-and-forget refresh — async loadJobs failures (network blip,
+      // server transient 5xx) must not become unhandled rejections that
+      // pollute the browser console with cryptic "Uncaught (in promise)"
+      // stacks. Surface via warn so transient failures are diagnosable
+      // but don't interrupt the close flow.
+      Promise.resolve(loadJobs()).catch((e) => console.warn("[terminals] loadJobs after termClose failed: " + (e && e.message ? e.message : e)));
     }
 
     async function termSend(arg) {
@@ -1260,7 +1265,7 @@
         es.addEventListener("end", () => {
           try { es.close(); } catch (_) {}
           termCodexAwaitNextTurn(t);
-          loadJobs();
+          Promise.resolve(loadJobs()).catch((e) => console.warn("[terminals] loadJobs after codex end failed: " + (e && e.message ? e.message : e)));
         });
         es.onerror = () => {
           // Same readyState gate as the chat onerror — only react when the
@@ -1269,7 +1274,7 @@
           if (es.readyState !== EventSource.CLOSED) return;
           termCodexAwaitNextTurn(t);
         };
-        loadJobs();
+        Promise.resolve(loadJobs()).catch((e) => console.warn("[terminals] loadJobs after codex rekey failed: " + (e && e.message ? e.message : e)));
       } catch (e) {
         termClearThinkingPlaceholder(t);
         const err = document.createElement("div");
@@ -2767,8 +2772,16 @@
       }
       try { t.source && t.source.close(); } catch (_) {}
       // Fire-and-forget kill on the server side too so we don't leak shells.
+      // Both the synchronous throw (rare) AND the Promise rejection (mid-flight
+      // network drop, 4xx/5xx response) need to be surfaced — otherwise the
+      // operator's "close" appears to succeed locally while the shell keeps
+      // running server-side with no diagnostic trail. The earlier guard only
+      // caught the synchronous arm.
       try {
-        fetch(`/api/ptys/${ptyId}/kill`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        const _killPromise = fetch(`/api/ptys/${ptyId}/kill`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        if (_killPromise && typeof _killPromise.catch === "function") {
+          _killPromise.catch((e) => console.warn("[terminals] PTY kill fetch rejected: " + (e && e.message ? e.message : e)));
+        }
       } catch (e) { console.warn("[terminals] PTY kill fetch failed: " + (e && e.message ? e.message : e)); }
       try { t._term && t._term.dispose(); } catch (_) {}
       t.pane.remove();
@@ -3076,7 +3089,9 @@
         } else {
           termSetDead(t, "done");
         }
-        loadJobs();
+        // Fire-and-forget: a rejection here (e.g. server restarted while the
+        // stream was ending) would otherwise become an unhandled rejection.
+        Promise.resolve(loadJobs()).catch((e) => console.warn("[terminals] loadJobs after SSE end failed: " + (e && e.message ? e.message : e)));
       });
       es.onerror = () => {
         // EventSource fires onerror on any disconnect — including transient
