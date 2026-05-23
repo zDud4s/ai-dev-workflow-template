@@ -38,7 +38,15 @@
     // Defer to DOMContentLoaded so every app/*.js has finished hoisting.
     document.addEventListener("DOMContentLoaded", function restoreView() {
       let saved = null;
-      try { saved = localStorage.getItem("dash.view"); } catch (_) { /* ignore */ }
+      // Private browsing / restricted contexts throw on localStorage access.
+      // Swallow and default to the "overview" view so the DOMContentLoaded
+      // handler doesn't abort the rest of the dashboard boot.
+      try {
+        saved = localStorage.getItem("dash.view");
+      } catch (e) {
+        console.warn("[dashboard] localStorage unavailable: " + (e && e.message ? e.message : e));
+        saved = "overview";
+      }
       if (!saved || saved === "overview") return;
       const btn = document.querySelector(`nav button[data-view="${saved}"]`);
       if (btn) btn.click();
@@ -46,19 +54,22 @@
 
     // ----- form button wiring -----
     document.addEventListener("DOMContentLoaded", () => {
-      $("#mem-submit").addEventListener("click", submitMemory);
-      $("#dec-submit").addEventListener("click", submitDecision);
-      $("#dispatch-toggle").addEventListener("click", toggleDispatchMode);
-      $("#run-submit").addEventListener("click", submitJob);
-      $("#run-task").addEventListener("keydown", (e) => {
+      // Guard every `$()` lookup in this handler — any one being renamed
+      // or removed from index.html otherwise aborts the rest of boot.
+      $("#mem-submit")?.addEventListener("click", submitMemory);
+      $("#dec-submit")?.addEventListener("click", submitDecision);
+      $("#dispatch-toggle")?.addEventListener("click", toggleDispatchMode);
+      $("#run-submit")?.addEventListener("click", submitJob);
+      $("#run-task")?.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitJob(); }
       });
       // Default decision date = today
       const today = new Date().toISOString().slice(0, 10);
-      $("#dec-date").value = today;
+      const decDate = $("#dec-date");
+      if (decDate) decDate.value = today;
       // Enter-to-submit on Memory form
       ["#mem-topic", "#mem-fact"].forEach((s) => {
-        $(s).addEventListener("keydown", (e) => { if (e.key === "Enter") submitMemory(); });
+        $(s)?.addEventListener("keydown", (e) => { if (e.key === "Enter") submitMemory(); });
       });
       // Skills search input
       $("#skills-search")?.addEventListener("input", (e) => {
@@ -102,12 +113,20 @@
         const btn = $("#density-toggle");
         if (btn) btn.textContent = mode === "compact" ? "comfortable" : "compact";
       };
-      const savedDensity = localStorage.getItem("dash.density") || "comfortable";
+      // In private browsing / restricted contexts localStorage.getItem
+      // throws synchronously. Catch so the rest of DOMContentLoaded keeps
+      // running and default to "comfortable" density.
+      let savedDensity = "comfortable";
+      try {
+        savedDensity = localStorage.getItem("dash.density") || "comfortable";
+      } catch (e) {
+        console.warn("[dashboard] localStorage unavailable: " + (e && e.message ? e.message : e));
+      }
       applyDensity(savedDensity);
       $("#density-toggle")?.addEventListener("click", () => {
         const isCompact = document.body.classList.contains("density-compact");
         const next = isCompact ? "comfortable" : "compact";
-        localStorage.setItem("dash.density", next);
+        try { localStorage.setItem("dash.density", next); } catch (_) { /* ignore */ }
         applyDensity(next);
       });
     });
@@ -159,12 +178,16 @@
 
     // ----- renderers -----
     function pillTool(tool) {
-      const cls = tool === "claude" ? "claude" : tool === "codex" ? "codex" : "";
+      const cls = tool === "claude" ? "claude" : tool === "codex" ? "codex" : tool === "gemini" ? "gemini" : "";
       return `<span class="pill ${cls}">${tool || "?"}</span>`;
     }
 
     function formatTokens(n) {
-      if (n == null || isNaN(n)) return "—";
+      // Explicit empty-string check first — `isNaN("")` is false because ""
+      // coerces to 0, so without this guard formatTokens("") returned "0"
+      // instead of the intended em-dash placeholder.
+      if (n === "" || n === null || n === undefined) return "—";
+      if (isNaN(n)) return "—";
       n = Number(n);
       if (n < 1000) return String(n);
       if (n < 1_000_000) return (n / 1000).toFixed(1) + "K";
@@ -174,7 +197,7 @@
 
     function shortModelLabel(name) {
       if (!name) return "?";
-      return String(name).replace(/^claude-/, "").replace(/-codex$/, "-cdx");
+      return String(name).replace(/^claude-/, "").replace(/^gemini-/, "g-").replace(/-codex$/, "-cdx");
     }
 
     function formatModelShares(byModel, opts = {}) {
@@ -229,14 +252,17 @@
     }
 
     function renderOverview(project, models, memoryEntries, plansCount, specsCount) {
-      if (!$("#overview-cards")) return;
+      // Single lookup — the previous shape called `$()` once for the guard
+      // then again for the assignment, so a DOM mutation between the two
+      // would silently null-deref `overviewCards.dataset`.
+      const overviewCards = $("#overview-cards");
+      if (!overviewCards) return;
       const stack = (project.stack || []).join(", ") || "—";
       const pms = (project.package_managers || []).join(", ") || "—";
       const dispatchMode = models.dispatch_mode || "manual";
       const dispatchPill = dispatchMode === "auto"
         ? `<span class="pill good">${dispatchMode}</span>`
         : `<span class="pill warn">${dispatchMode}</span>`;
-      const overviewCards = $("#overview-cards");
       delete overviewCards.dataset.skeletoned;
       overviewCards.innerHTML = `
         <div class="card"><h3>Stack</h3><div class="val">${escape(stack)}</div></div>
@@ -361,16 +387,31 @@
         metaEl.textContent = metaBits.join(" · ");
       } catch (err) {
         console.error(err);
+        // Surface the failure to the operator via the toast stack if the
+        // dashboard provides a #token-usage-msg channel; otherwise fall
+        // back to a console.warn (no msg element available in markup).
+        const msg = "token usage failed: " + (err && err.message ? err.message : err);
+        if ($("#token-usage-msg")) {
+          setMsg("#token-usage-msg", "warn", msg, 5000);
+        } else {
+          console.warn("[dashboard] " + msg + " (no msg element available)");
+        }
       }
     }
 
     function renderActivity(plans, specs) {
-      if (!$("#overview-activity")) return;
+      // Single lookup — see renderOverview for the rationale.
+      const activity = $("#overview-activity");
+      if (!activity) return;
       const items = [
         ...plans.map((p) => ({ kind: "plan", name: p })),
         ...specs.map((s) => ({ kind: "spec", name: s })),
-      ].sort((a, b) => b.name.localeCompare(a.name)).slice(0, 8);
-      const activity = $("#overview-activity");
+      ]
+        // Explicit String() coercion — the names are normally strings from
+        // listDir(), but if a future caller hands us numeric or null entries
+        // `localeCompare` throws. Coerce defensively to keep the sort stable.
+        .sort((a, b) => String(b.name).localeCompare(String(a.name)))
+        .slice(0, 8);
       delete activity.dataset.skeletoned;
       if (!items.length) {
         activity.innerHTML = `<div class="empty">No plans or specs yet. Run the planner.</div>`;
@@ -382,17 +423,24 @@
     }
 
     function renderModels(models) {
-      if (!$("#dispatch-toggle") || !$("#models-table")) return;
+      // Single lookups + null-guards on every dataset/innerHTML target.
+      // The previous shape guarded only #dispatch-toggle and #models-table,
+      // leaving `dispatchCards.dataset.skeletoned` to throw if the dispatch
+      // cards container was removed by markup edits.
+      const tBtn = $("#dispatch-toggle");
+      const modelsTable = $("#models-table");
+      if (!tBtn || !modelsTable) return;
       const mode = models.dispatch_mode || "manual";
       const session = models.session || {};
       const dispatchCards = $("#dispatch-cards");
-      delete dispatchCards.dataset.skeletoned;
-      dispatchCards.innerHTML = `
-        <div class="card"><h3>Dispatch mode</h3><div class="val big">${escape(mode)}</div></div>
-        <div class="card"><h3>Session tool</h3><div class="val">${pillTool(session.tool)}</div></div>
-        <div class="card"><h3>Session model</h3><div class="val mono">${escape(session.model || "—")}</div></div>
-      `;
-      const tBtn = $("#dispatch-toggle");
+      if (dispatchCards) {
+        delete dispatchCards.dataset.skeletoned;
+        dispatchCards.innerHTML = `
+          <div class="card"><h3>Dispatch mode</h3><div class="val big">${escape(mode)}</div></div>
+          <div class="card"><h3>Session tool</h3><div class="val">${pillTool(session.tool)}</div></div>
+          <div class="card"><h3>Session model</h3><div class="val mono">${escape(session.model || "—")}</div></div>
+        `;
+      }
       tBtn.dataset.current = mode;
       tBtn.textContent = mode === "auto" ? "Switch to manual" : "Switch to auto";
       const phases = ["session", "plan", "execute", "review", "rescue", "maintenance", "bootstrap"];
@@ -418,7 +466,6 @@
           <td style="text-align:right"><button class="btn secondary" style="padding:3px 10px;font-size:11px" data-edit-phase="${escape(ph)}">Edit</button></td>
         </tr>`;
       }).join("");
-      const modelsTable = $("#models-table");
       delete modelsTable.dataset.skeletoned;
       modelsTable.innerHTML = `<table>
         <thead><tr><th>Phase</th><th>Tool</th><th>Model</th><th>Override</th><th>Resolved</th><th></th></tr></thead>
@@ -449,6 +496,7 @@
     // Last refreshed: May 2026.
     //   Claude — https://platform.claude.com/docs/en/about-claude/models/overview
     //   Codex  — https://developers.openai.com/codex/models
+    //   Gemini — https://ai.google.dev/gemini-api/docs/models
     var MODELS_BY_TOOL = {
       claude: [
         "claude-opus-4-7",     // most capable, agentic coding flagship
@@ -461,6 +509,13 @@
         "gpt-5.4",             // computer-use, 1M ctx
         "gpt-5.4-mini",        // fast subagent
         "gpt-5.3-codex",       // previous codex generation
+      ],
+      gemini: [
+        "gemini-3.1-pro",      // reasoning-first, agentic workflows
+        "gemini-3.5-flash",    // near-Pro intelligence at Flash latency
+        "gemini-2.5-pro",      // 1M ctx, high-capability prior generation
+        "gemini-2.5-flash",    // balanced general use
+        "gemini-2.5-flash-lite", // lowest latency / cost
       ],
     };
 
@@ -484,6 +539,7 @@
           <select id="pe-tool" class="cmp-select">
             <option value="claude" ${initialTool === "claude" ? "selected" : ""}>claude</option>
             <option value="codex" ${initialTool === "codex" ? "selected" : ""}>codex</option>
+            <option value="gemini" ${initialTool === "gemini" ? "selected" : ""}>gemini</option>
           </select>
         </td>
         <td>
@@ -546,14 +602,18 @@
     }
 
     function renderProject(project, rawText) {
-      if (!$("#project-stack")) return;
+      // Resolve every target up front and null-guard each independently.
+      // The previous shape only checked #project-stack; if a future markup
+      // edit drops #project-boundaries or #project-raw, the unguarded
+      // dataset access aborted the rest of the loader.
+      const stack = $("#project-stack");
+      if (!stack) return;
       const cmds = project.commands || {};
       const cmdRows = Object.entries(cmds).map(([k, v]) => {
         const arr = Array.isArray(v) ? v : [v];
         const val = arr.length && arr[0] ? arr.join(" && ") : "—";
         return `<tr><td class="mono">${k}</td><td class="mono">${escape(val)}</td></tr>`;
       }).join("");
-      const stack = $("#project-stack");
       delete stack.dataset.skeletoned;
       stack.innerHTML = cmdRows
         ? `<table><thead><tr><th>Command</th><th>Value</th></tr></thead><tbody>${cmdRows}</tbody></table>`
@@ -566,14 +626,18 @@
         return `<tr><td class="mono">${k}</td><td>${val}</td></tr>`;
       }).join("");
       const boundaries = $("#project-boundaries");
-      delete boundaries.dataset.skeletoned;
-      boundaries.innerHTML = boundaryRows
-        ? `<table><thead><tr><th>Category</th><th>Entries</th></tr></thead><tbody>${boundaryRows}</tbody></table>`
-        : `<div class="empty">No boundaries declared.</div>`;
+      if (boundaries) {
+        delete boundaries.dataset.skeletoned;
+        boundaries.innerHTML = boundaryRows
+          ? `<table><thead><tr><th>Category</th><th>Entries</th></tr></thead><tbody>${boundaryRows}</tbody></table>`
+          : `<div class="empty">No boundaries declared.</div>`;
+      }
 
       const raw = $("#project-raw");
-      delete raw.dataset.skeletoned;
-      raw.textContent = rawText;
+      if (raw) {
+        delete raw.dataset.skeletoned;
+        raw.textContent = rawText;
+      }
     }
 
 function renderMarkdown(el, text) {
@@ -585,6 +649,9 @@ function renderMarkdown(el, text) {
 }
 
     function countMemoryEntries(text) {
+      // Defensive coerce — callers default to "" today but a future caller
+      // passing null/undefined would throw on `.match`.
+      text = text || "";
       const m = text.match(/^- \d{4}-\d{2}-\d{2}/gm);
       return m ? m.length : 0;
     }
@@ -684,11 +751,16 @@ function renderMarkdown(el, text) {
       const entry = TOASTS.get(channel);
       if (!entry) return;
       clearTimeout(entry.timer);
+      entry.timer = null;
+      // Drop the Map entry up-front so a second hideToast for the same
+      // channel (or a replacement showToast that races the 220ms exit
+      // animation) doesn't keep the orphan element/timer alive in the Map.
+      // The DOM removal still completes via the setTimeout below.
+      TOASTS.delete(channel);
       entry.el.classList.remove("in");
       entry.el.classList.add("out");
       setTimeout(() => {
         if (entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
-        TOASTS.delete(channel);
       }, 220);
     }
 

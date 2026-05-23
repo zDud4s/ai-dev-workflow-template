@@ -30,7 +30,12 @@
     }
 
     async function loadAll() {
-      $("#meta").innerHTML = `<span class="spinner"></span> loading…`;
+      // Null-guard every #meta dereference — if index.html ever drops the
+      // status element (or this loader is mounted against a stripped shell),
+      // an unguarded `.innerHTML =` aborts the whole boot before
+      // renderOverviewSkeletons() even runs.
+      const metaEl = $("#meta");
+      if (metaEl) metaEl.innerHTML = `<span class="spinner"></span> loading…`;
       renderOverviewSkeletons();
       // Seed list skeletons for plans/specs/packets so the lists render
       // a couple of shimmer rows until listDir() resolves.
@@ -51,8 +56,24 @@
           listDir(".ai/packets").then((xs) => xs.filter((x) => x.endsWith(".md")).sort()),
         ]);
 
-        const project = jsyaml.load(projectRaw) || {};
-        const models = jsyaml.load(modelsRaw) || {};
+        // jsyaml.load throws on malformed YAML. The previous `|| {}` only
+        // handled the empty-document case; a parse exception aborts the whole
+        // boot. Surface the failure via toast so operators can spot a bad
+        // .ai/project.yaml or .ai/models.yaml without diffing the console.
+        let project = {};
+        try {
+          project = jsyaml.load(projectRaw) || {};
+        } catch (e) {
+          console.error("[dashboard] failed to parse .ai/project.yaml:", e);
+          setMsg("#dashboard-load", "err", "project.yaml parse failed: " + (e && e.message ? e.message : e));
+        }
+        let models = {};
+        try {
+          models = jsyaml.load(modelsRaw) || {};
+        } catch (e) {
+          console.error("[dashboard] failed to parse .ai/models.yaml:", e);
+          setMsg("#dashboard-load", "err", "models.yaml parse failed: " + (e && e.message ? e.message : e));
+        }
 
         $("#project-name").textContent = project.project_name || "unknown";
         const memoryCount = countMemoryEntries(memoryText);
@@ -86,12 +107,14 @@
           loadAgents(),
         ]);
 
-        $("#meta").textContent = `updated ${new Date().toLocaleTimeString()}`;
+        if (metaEl) metaEl.textContent = `updated ${new Date().toLocaleTimeString()}`;
       } catch (err) {
-        $("#meta").textContent = "error";
+        if (metaEl) metaEl.textContent = "error";
         const cards = $("#overview-cards");
-        cards.innerHTML = `<div class="err">${escape(err.message)}</div>`;
-        delete cards.dataset.skeletoned;
+        if (cards) {
+          cards.innerHTML = `<div class="err">${escape(err.message)}</div>`;
+          delete cards.dataset.skeletoned;
+        }
         console.error(err);
         setMsg("#dashboard-load", "err", "Dashboard load failed: " + err.message);
       }
