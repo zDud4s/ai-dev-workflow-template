@@ -443,7 +443,15 @@
     // prevents the IDE-transcript auto-opener from spawning a duplicate
     // mirror pane the moment claude writes its first JSONL line.
     function termDraftLaunchCommand(tool, model, sessionId) {
-      const safeModel = String(model || "").replace(/"/g, "");
+      // Strict allowlist to defeat shell-metachar injection. `safeModel`
+      // is typed verbatim into a running PTY via WebSocket — any
+      // metachar (; $() && backtick newline space) would be evaluated
+      // by the shell. Legitimate model names contain only
+      // [A-Za-z0-9._-]; anything else falls back to an empty string
+      // so claude/codex surface a clear "model required" error instead
+      // of executing attacker payloads.
+      const rawModel = String(model || "");
+      const safeModel = /^[A-Za-z0-9._-]+$/.test(rawModel) ? rawModel : "";
       if (tool === "codex") {
         return `codex -m ${safeModel}`;
       }
@@ -3075,6 +3083,13 @@
       t._sseHeartbeat = setInterval(() => {
         if (!t.pane || !t.pane.isConnected) return;
         if (t.pane.classList.contains("dead")) return;
+        // Don't kill the pane while the tab is in the background — the
+        // browser throttles SSE in hidden tabs (Chrome especially) which
+        // makes `_lastSSEEvent` look stale even when the server is fine.
+        // Resume the staleness check on visibility restore. Without this,
+        // returning to the dashboard after >60s showed every pane as
+        // "ended/disconnected" until manually reopened.
+        if (typeof document !== "undefined" && document.hidden) return;
         if (Date.now() - (t._lastSSEEvent || 0) < SSE_STALE_MS) return;
         // Stale connection — surface the disconnect and walk the standard
         // close path so the pane is consistent with a normal "ended" state.
