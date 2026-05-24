@@ -192,7 +192,20 @@
 
     function showUpdateBanner(data) {
       const existing = document.getElementById("update-banner");
-      if (existing) existing.remove();
+      if (existing) {
+        // Explicit listener cleanup before remove(). Modern browsers drop
+        // listeners on detached nodes, but the closure over `data` would
+        // otherwise keep the previous payload alive until the next GC pass.
+        const oldAct = existing.querySelector(".update-banner-action");
+        const oldClose = existing.querySelector(".update-banner-close");
+        if (oldAct && existing._actHandler) {
+          oldAct.removeEventListener("click", existing._actHandler);
+        }
+        if (oldClose && existing._closeHandler) {
+          oldClose.removeEventListener("click", existing._closeHandler);
+        }
+        existing.remove();
+      }
 
       const shortUp = String(data.upstream_sha || "").substring(0, 7) || "?";
       const shortCur = data.current_sha ? String(data.current_sha).substring(0, 7) : "none";
@@ -219,7 +232,7 @@
       document.body.appendChild(el);
       requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("in")));
 
-      el.querySelector(".update-banner-action").addEventListener("click", () => {
+      const actHandler = () => {
         const navBtn = document.querySelector('nav button[data-view="settings"]');
         if (navBtn) navBtn.click();
         setTimeout(() => {
@@ -227,11 +240,17 @@
           if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
         }, 80);
         dismissUpdateBanner(el);
-      });
-      el.querySelector(".update-banner-close").addEventListener("click", () => {
+      };
+      const closeHandler = () => {
         try { localStorage.setItem("dash.updateDismissedSha", data.upstream_sha || ""); } catch (_) { /* ignore */ }
         dismissUpdateBanner(el);
-      });
+      };
+      el.querySelector(".update-banner-action").addEventListener("click", actHandler);
+      el.querySelector(".update-banner-close").addEventListener("click", closeHandler);
+      // Park the refs on the element so the next showUpdateBanner() can
+      // remove them before dropping the node.
+      el._actHandler = actHandler;
+      el._closeHandler = closeHandler;
     }
 
     // Matches the 220ms CSS transition on `.update-banner.out`. Kept as a

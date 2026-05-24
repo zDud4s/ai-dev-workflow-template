@@ -126,16 +126,23 @@
     root.dataset.skeletoned = "1";
   }
 
+  // Monotonic sequence so a slow response from threshold=3 can't paint
+  // over a freshly-issued threshold=5 (typing in the input fires
+  // loadAutoSelect every debounced keystroke).
+  var _autoSelectSeq = 0;
   async function loadAutoSelect() {
     const meta = $("#auto-select-meta");
     const root = $("#auto-select-rankings");
     if (!root) return;
     renderAutoSelectSkeletons();
     const threshold = setThreshold(getThreshold());
+    const mySeq = ++_autoSelectSeq;
     try {
       const r = await fetch("/api/auto-select?min_samples=" + threshold, { cache: "no-store" });
+      if (mySeq !== _autoSelectSeq) return;
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
+      if (mySeq !== _autoSelectSeq) return;
       const groups = data.groups || [];
       // `??` (not `||`) for numeric counters so a legitimate 0 from the API
       // is preserved rather than tripping the falsy fallback. For samples /
@@ -174,11 +181,20 @@
     } catch (err) {
       if (meta) meta.textContent = "load failed";
       delete root.dataset.skeletoned;
-      root.innerHTML =
-        `<div class="tl-empty">Failed to load: ${escape(err && err.message ? err.message : String(err))}.</div>`;
+      // Mirror settings.js: keep the prior render visible so a transient
+      // network blip doesn't wipe the operator's last-known auto-select
+      // state. Only surface the failure in the meta strip + toast.
       if (typeof window.setMsg === "function") {
         window.setMsg("#auto-select-load", "err", "Auto-select load failed: " + err);
       }
+      // If the panel was empty (first paint failed), still show the error
+      // marker so the operator sees something rather than a blank pane.
+      if (!root.innerHTML || root.dataset.firstPaint !== "1") {
+        root.innerHTML =
+          `<div class="tl-empty">Failed to load: ${escape(err && err.message ? err.message : String(err))}.</div>`;
+      }
+    } finally {
+      if (root) root.dataset.firstPaint = "1";
     }
   }
 

@@ -21,6 +21,10 @@
   // on the client side — when the field is null we just don't send it and
   // behave as last-write-wins, the previous semantics.
   var _settingsVersion = null;
+  // Wall-clock at last successful loadAllSettings — savePhaseRow refreshes
+  // when it goes stale so a long-open settings tab doesn't try to save
+  // with a now-rejected _if_match.
+  var _settingsLoadedAt = 0;
 
   // ---------- HTTP helpers ----------
   async function getJson(url) {
@@ -72,12 +76,14 @@
       window.setMsg("#" + id, kind, text || "");
     }
   }
-  async function withBusy(btn, fn) {
+  async function withBusy(btn, fn, busyLabel) {
     if (!btn) return fn();
     var label = btn.textContent;
     btn.disabled = true;
     btn.dataset.prevLabel = label;
-    btn.textContent = "Saving…";
+    // Optional override so non-save callers (Accept / Reject / Suggest)
+    // get an accurate progress label instead of the misleading "Saving…".
+    btn.textContent = busyLabel || "Saving…";
     try {
       return await fn();
     } finally {
@@ -373,6 +379,16 @@
     if (rEl) body.reasoning_effort = rEl.value;
     if (_settingsVersion != null) body._if_match = _settingsVersion;
     setMsg("phases-msg", "");
+    // Re-fetch the settings version if the form has been open for more
+    // than ~2 minutes — _if_match would otherwise reject the save under
+    // optimistic concurrency even though no one else actually edited the
+    // yaml. Threshold is short enough to catch the common "left tab open"
+    // case without re-querying on every fast edit.
+    var STALE_MS = 2 * 60 * 1000;
+    if (_settingsLoadedAt && (Date.now() - _settingsLoadedAt) > STALE_MS) {
+      try { await loadAllSettings(); } catch (_) { /* ignore — save will surface 409 */ }
+      if (_settingsVersion != null) body._if_match = _settingsVersion;
+    }
     try {
       await withBusy(btn, function () { return postJson("/api/models/phase", body); });
       setMsg("phases-msg", "Saved " + ph, "good");
@@ -517,6 +533,21 @@
         // Successful apply: there are no longer pending updates. Force the
         // state to reflect that until the next workflowCheck() runs.
         _workflowState.hasUpdates = false;
+        // Sync the main.js startup-check cache too — without this the
+        // 6h cache would still report has_updates=true and the banner
+        // would re-appear on the next page load even though we just
+        // applied the update.
+        try {
+          var raw = localStorage.getItem("dash.updateCheck.v2");
+          if (raw) {
+            var cached = JSON.parse(raw);
+            if (cached && cached.data) {
+              cached.data.has_updates = false;
+              if (data.upstream_sha) cached.data.current_sha = data.upstream_sha;
+              localStorage.setItem("dash.updateCheck.v2", JSON.stringify(cached));
+            }
+          }
+        } catch (_) { /* ignore cache write failure */ }
       }
     } catch (e) {
       setWorkflowStatus("Network error: " + e.message, "bad");
@@ -558,6 +589,7 @@
       // Capture the version token (if any) so subsequent saves can include
       // it as `_if_match` to detect concurrent edits.
       _settingsVersion = data.version != null ? data.version : null;
+      _settingsLoadedAt = Date.now();
       fillImprover(data.improver || {});
       fillAutoSelect(data.auto_select || {});
       renderPhasesTable(data.phases || {}, data.auto_select || {});

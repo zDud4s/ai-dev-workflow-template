@@ -251,6 +251,9 @@
       if (!modal) return;  // partial-DOM bail
       const myEpoch = ++_agentDetailEpoch;
       modal.hidden = false;
+      if (typeof window.trapFocusInModal === "function") {
+        window.trapFocusInModal(modal, closeAgentDetail);
+      }
       const cached = _agentsState.all.find((x) => x.path === path);
       const titleEl = $("#agent-detail-title");
       if (titleEl) titleEl.textContent = name + (cached ? ` - ${cached.source_label}` : "");
@@ -299,6 +302,9 @@
     function closeAgentDetail() {
       const modal = $("#agent-detail-modal");
       if (modal) modal.hidden = true;
+      if (typeof window.releaseFocusTrap === "function") {
+        window.releaseFocusTrap();
+      }
     }
 
     // ----- Agent suggestions (POST /api/agents/suggest -> proposals) -----
@@ -405,6 +411,9 @@
       _currentAgentProposalId = id;
       const modal    = $("#agent-proposal-modal");
       if (!modal) return;  // partial-DOM bail — modal scaffold missing
+      if (typeof window.trapFocusInModal === "function") {
+        window.trapFocusInModal(modal, closeAgentProposalModal);
+      }
       const titleEl  = $("#agent-proposal-title");
       const metaEl   = $("#agent-proposal-meta");
       const bodyEl   = $("#agent-proposal-body");
@@ -465,6 +474,9 @@
     function closeAgentProposalModal() {
       const modal = $("#agent-proposal-modal");
       if (modal) modal.hidden = true;
+      if (typeof window.releaseFocusTrap === "function") {
+        window.releaseFocusTrap();
+      }
       _currentAgentProposalId = null;
     }
 

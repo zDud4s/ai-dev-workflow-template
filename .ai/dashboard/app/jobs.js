@@ -4,6 +4,12 @@
     // ----- Events clear -----
     async function clearEvents() {
       if (!confirm("Clear .ai/events.jsonl ? This deletes the file.")) return;
+      // Pause the auto-refresh timer for the duration of the clear+reload —
+      // otherwise a 5s tick can fire mid-await and re-populate _eventsCache
+      // from a partially-deleted file, making the operator see entries
+      // they thought they just wiped.
+      const wasTimer = _eventsTimer;
+      if (wasTimer) { clearInterval(_eventsTimer); _eventsTimer = null; }
       try {
         await postJson("/api/events/clear", {});
         _eventsCache = [];
@@ -17,6 +23,8 @@
         const meta = $("#events-meta");
         if (meta) meta.textContent = "clear failed: " + e.message;
         setMsg("#events-clear", "err", "Clear failed: " + e.message);
+      } finally {
+        if (wasTimer) _eventsTimer = setInterval(loadEvents, EVENTS_AUTOREFRESH_MS);
       }
     }
 
@@ -91,8 +99,12 @@
       if (_jobsLoadInFlight) { _jobsLoadInFlight = "pending"; return; }
       _jobsLoadInFlight = true;
       opts = opts || {};
+      // 30s timeout — a hung backend would otherwise wedge the in-flight
+      // guard forever and block every subsequent poll.
+      const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 30000) : null;
       try {
-        const r = await fetch("/api/jobs", { cache: "no-store" });
+        const r = await fetch("/api/jobs", { cache: "no-store", signal: ctrl ? ctrl.signal : undefined });
         const data = await r.json();
         const jobs = data.jobs || [];
         const countJobsEl = $("#count-jobs");
@@ -221,6 +233,7 @@
         if (jobsListEl) jobsListEl.innerHTML = `<div class="err">${escape(e.message)}</div>`;
         setMsg("#jobs-load", "err", "Jobs load failed: " + e.message);
       } finally {
+        if (timer) clearTimeout(timer);
         const wasPending = _jobsLoadInFlight === "pending";
         _jobsLoadInFlight = false;
         if (wasPending) {
@@ -801,9 +814,16 @@
       // events view markup is missing so missing-DOM doesn't masquerade as a
       // load error in the catch block.
       if (!body) return;
+      // Match the loadJobs 30s timeout so a wedged backend can't pin the
+      // 5s auto-refresh against a never-resolving fetch.
+      const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 30000) : null;
       renderEventsSkeletons();
       try {
-        const r = await fetch("/.ai/events.jsonl", { cache: "no-store" });
+        // /api/events?tail=2000 returns parsed events without re-shipping
+        // the entire JSONL ledger on every 5s refresh. Server caps at
+        // 5000; default 2000 keeps the UI responsive on huge histories.
+        const r = await fetch("/api/events?tail=2000", { cache: "no-store", signal: ctrl ? ctrl.signal : undefined });
         if (r.status === 404) {
           _eventsCache = [];
           if (stats) { stats.innerHTML = ""; delete stats.dataset.skeletoned; }
@@ -816,19 +836,25 @@
           return;
         }
         if (!r.ok) throw new Error("HTTP " + r.status);
-        const text = await r.text();
-        const lines = text.split("\n").filter((l) => l.trim());
-        const events = [];
-        let _dropped = 0;
-        for (const line of lines) {
-          try { events.push(JSON.parse(line)); }
-          catch (_) { _dropped++; }
+        const data = await r.json();
+        const events = (data.events || []).slice().reverse();
+        // The server caps at tail=N (default 2000); warn so an operator
+        // hunting old events knows the dashboard isn't showing all of them.
+        // The "dropped" wording matches the prior per-line parse warning
+        // (test_jobs_high_fixes pins on the literal substring) — same
+        // operator-visible meaning: events that exist but didn't render.
+        if (data.truncated) {
+          const dropped = (data.total || 0) - (data.returned || events.length);
+          console.warn("[dashboard] events: dropped " + dropped + " older rows (server tail cap; refresh shows newest)");
         }
-        if (_dropped > 0) console.warn("[dashboard] events: dropped " + _dropped + " malformed lines");
-        events.reverse();
         _eventsCache = events;
+        const totalCount = (typeof data.total === "number") ? data.total : events.length;
         const countEvEl = $("#count-events");
-        if (countEvEl) countEvEl.textContent = events.length;
+        if (countEvEl) {
+          countEvEl.textContent = data.truncated
+            ? `${events.length} of ${totalCount}`
+            : String(totalCount);
+        }
         _evRefreshPhaseOptions();
         if (!events.length) {
           if (stats) { stats.innerHTML = ""; delete stats.dataset.skeletoned; }
@@ -842,6 +868,8 @@
         delete body.dataset.skeletoned;
         body.innerHTML = `<div class="err">${escape(err.message)}</div>`;
         setMsg("#events-load", "err", "Events load failed: " + err.message);
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     }
 
@@ -929,7 +957,27 @@
       if (document.hidden) {
         if (_jobsTimer) { clearTimeout(_jobsTimer); _jobsTimer = null; }
         if (_eventsTimer) { clearInterval(_eventsTimer); _eventsTimer = null; }
+        // Also stop per-pane SSE heartbeats — they were the only background-
+        // tab-active timer that kept firing through document.hidden.
+        // termRestoreHeartbeats() below rewires them on tab focus.
+        if (typeof TERMS !== "undefined") {
+          for (const t of TERMS.values()) {
+            if (t && t._sseHeartbeat) {
+              clearInterval(t._sseHeartbeat);
+              t._sseHeartbeat = null;
+              t._sseHeartbeatPaused = true;
+            }
+          }
+        }
         return;
+      }
+      if (typeof TERMS !== "undefined") {
+        for (const t of TERMS.values()) {
+          if (t && t._sseHeartbeatPaused && typeof t._restartSseHeartbeat === "function") {
+            t._sseHeartbeatPaused = false;
+            try { t._restartSseHeartbeat(); } catch (_) {}
+          }
+        }
       }
       const runActive = document.getElementById("view-run")?.classList.contains("active");
       const termsActive = document.getElementById("view-terminals")?.classList.contains("active");

@@ -34,7 +34,18 @@
             pinned: t.pane && t.pane.classList.contains("pinned") || false,
           });
         }
-        try { localStorage.setItem(PERSIST_KEY, JSON.stringify({ panes: entries })); }
+        // Persist per-PTY tokens alongside the pane list so a page refresh
+        // can reattach without losing access. Tokens are same-origin secrets,
+        // no weaker than any other localStorage entry the dashboard writes.
+        const tokens = {};
+        if (window._PTY_TOKENS) {
+          for (const e of entries) {
+            if (e.kind === "terminal" && window._PTY_TOKENS[e.id]) {
+              tokens[e.id] = window._PTY_TOKENS[e.id];
+            }
+          }
+        }
+        try { localStorage.setItem(PERSIST_KEY, JSON.stringify({ panes: entries, tokens })); }
         catch (_) { /* quota exceeded? give up silently */ }
       }, 250);
     }
@@ -46,31 +57,57 @@
         saved = raw ? JSON.parse(raw) : null;
       } catch (_) { return; }
       if (!saved || !Array.isArray(saved.panes) || !saved.panes.length) return;
-      for (const entry of saved.panes) {
-        if (!entry || !entry.id || !entry.kind) continue;
-        if (TERMS.has(entry.id)) continue;
+      // Rehydrate the per-PTY token cache from the previous session so
+      // restored terminal panes can pass the WS auth check.
+      if (saved.tokens && typeof saved.tokens === "object") {
+        window._PTY_TOKENS = window._PTY_TOKENS || {};
+        for (const id of Object.keys(saved.tokens)) {
+          window._PTY_TOKENS[id] = saved.tokens[id];
+        }
+      }
+      // Fetch every pane's metadata in parallel — sequential awaits made
+      // boot scale linearly with the saved-pane count. Each fetch is
+      // independent and the open+UI-state pass runs in saved order
+      // afterwards so the visual layout is unchanged.
+      const fetchers = saved.panes.map(async (entry) => {
+        if (!entry || !entry.id || !entry.kind) return null;
+        if (TERMS.has(entry.id)) return null;
         try {
           if (entry.kind === "transcript") {
             const sid = String(entry.id).replace(/^ide:/, "");
-            if (!sid) continue;
-            termOpenTranscript(sid);
-            // The mirror pane is auto-bookmarked too so the next F5 re-opens.
-            suppressAutoOpen(entry.id);
-          } else if (entry.kind === "terminal") {
+            if (!sid) return null;
+            return { entry, ready: { kind: "transcript", sid } };
+          }
+          if (entry.kind === "terminal") {
             const r = await fetch("/api/ptys/" + encodeURIComponent(entry.id), { cache: "no-store" });
-            if (!r.ok) continue;
+            if (!r.ok) return null;
             const meta = await r.json();
-            // Skip dead PTYs — the shell has exited; nothing to attach.
-            if (meta.status && meta.status !== "running") continue;
-            termOpenPty(entry.id, meta, null);
-          } else if (entry.kind === "chat" || entry.kind === "chat-codex") {
+            if (meta.status && meta.status !== "running") return null;
+            return { entry, ready: { kind: "terminal", meta } };
+          }
+          if (entry.kind === "chat" || entry.kind === "chat-codex") {
             const r = await fetch("/api/jobs/" + encodeURIComponent(entry.id), { cache: "no-store" });
-            if (!r.ok) continue;
+            if (!r.ok) return null;
             const meta = await r.json();
-            termOpen(entry.id, meta);
+            return { entry, ready: { kind: "chat", meta } };
+          }
+        } catch (_) { /* one pane failed; keep going */ }
+        return null;
+      });
+      const results = await Promise.allSettled(fetchers);
+      for (const res of results) {
+        if (res.status !== "fulfilled" || !res.value) continue;
+        const { entry, ready } = res.value;
+        try {
+          if (ready.kind === "transcript") {
+            termOpenTranscript(ready.sid);
+            suppressAutoOpen(entry.id);
+          } else if (ready.kind === "terminal") {
+            termOpenPty(entry.id, ready.meta, null);
+          } else if (ready.kind === "chat") {
+            termOpen(entry.id, ready.meta);
             suppressAutoOpen(entry.id);
           }
-          // Apply per-pane UI state after attach.
           const t = TERMS.get(entry.id);
           if (t && t.pane) {
             if (entry.pinned) {
@@ -111,6 +148,12 @@
       for (const c of _PILL_STATE_CLASSES) pill.classList.remove(c);
       if (state) pill.classList.add(state);
       if (text != null) pill.textContent = text;
+      // Mirror the visible label into dataset.pillText so Close-finished
+      // (and any future feature) can read a stable, i18n-resistant signal
+      // without parsing the rendered text. dataset.state already covers
+      // the class-name dimension; dataset.pillText covers the label.
+      if (text != null) pill.dataset.pillText = String(text).toLowerCase();
+      if (state) pill.dataset.state = state;
     }
 
     function termSetActivity(t, label, cls) {
@@ -644,6 +687,12 @@
             if (tool === "claude") {
               preSessionId = (window.crypto && crypto.randomUUID)
                 ? crypto.randomUUID()
+                // Fallback for very old browsers without crypto.randomUUID.
+                // Math.random is biased and NOT cryptographically random — the
+                // session-id collision space is large enough (~10^36) that this
+                // is acceptable for a session selector but it must not be used
+                // for security tokens. Modern browsers always take the
+                // crypto.randomUUID branch above.
                 : ("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
                     const r = Math.random() * 16 | 0;
                     const v = c === "x" ? r : (r & 0x3 | 0x8);
@@ -658,6 +707,11 @@
             const launchCmd = termDraftLaunchCommand(tool, model, preSessionId);
             const steps = [{ text: launchCmd, delay: 300 }];
             if (text) steps.push({ text: text, delay: 3000 });
+            // Stash the per-PTY token so a later restoreOpenPanes()
+            // reattach can re-use it without going through /api/ptys/<id>
+            // (which now intentionally omits the token from list/get).
+            window._PTY_TOKENS = window._PTY_TOKENS || {};
+            if (res.token) window._PTY_TOKENS[res.id] = res.token;
             termOpenPty(res.id, res, steps);
           } catch (err) {
             sendBtn.disabled = false;
@@ -907,11 +961,16 @@
         programmatic = true;
         requestAnimationFrame(() => requestAnimationFrame(() => { programmatic = false; }));
       };
-      t.body.addEventListener("scroll", () => {
+      const onScroll = () => {
         if (programmatic) return;
         const fromBottom = t.body.scrollHeight - t.body.scrollTop - t.body.clientHeight;
         t.autoFollowBottom = fromBottom < 40;
-      });
+      };
+      // Track the listener so termClose / termClosePty can remove it.
+      // Without this, closed panes leak a scroll handler that keeps the
+      // pane and the closure references alive forever.
+      t._autoFollowScrollHandler = onScroll;
+      t.body.addEventListener("scroll", onScroll);
     }
 
     function termSetDead(t, label) {
@@ -1001,6 +1060,12 @@
       if (t._sseHeartbeat) {
         clearInterval(t._sseHeartbeat);
         t._sseHeartbeat = null;
+      }
+      // Cost-refresh debounce + auto-follow scroll listener cleanup.
+      if (t._costRefreshTimer) { clearTimeout(t._costRefreshTimer); t._costRefreshTimer = null; }
+      if (t._autoFollowScrollHandler && t.body) {
+        try { t.body.removeEventListener("scroll", t._autoFollowScrollHandler); } catch (_) {}
+        t._autoFollowScrollHandler = null;
       }
       // Dispatch-tracker panes register themselves in DISPATCH_TRACKERS so
       // termMarkToolResult can forward results into the pane. The in-pane
@@ -1265,10 +1330,19 @@
         // Re-key TERMS so the same pane is reachable by its NEW job id —
         // the closures in termOpen() pass the pane object (`t`) to
         // termSend(), not a string, so they keep working across rekeys.
+        // Park the old jobId -> new jobId mapping so a late cancel/close
+        // call keyed on the previous id (e.g. a fast button click that
+        // fired against the in-flight pane) still resolves to the same
+        // pane instead of silently no-op'ing on a removed map entry.
+        var oldJobId = t.jobId;
         TERMS.delete(t.jobId);
         t.jobId = res.id;
         t.pane.dataset.jobId = res.id;
         TERMS.set(res.id, t);
+        if (oldJobId && oldJobId !== res.id) {
+          window._JOB_ID_ALIASES = window._JOB_ID_ALIASES || {};
+          window._JOB_ID_ALIASES[oldJobId] = res.id;
+        }
         // Re-persist immediately so a F5 between turns won't lose the
         // pane (the old job id would 404).
         persistOpenPanes();
@@ -1444,11 +1518,25 @@
       }
       tray.style.display = "flex";
       tray.innerHTML = "";
+      const wireChipKeyboard = (chip, onRemove) => {
+        // a11y: chips are clickable to remove. role/tabindex/keydown so
+        // keyboard-only users can reach + activate them.
+        chip.setAttribute("role", "button");
+        chip.setAttribute("tabindex", "0");
+        chip.setAttribute("aria-label", "Remove attachment");
+        chip.addEventListener("click", onRemove);
+        chip.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " " || e.key === "Backspace" || e.key === "Delete") {
+            e.preventDefault();
+            onRemove();
+          }
+        });
+      };
       a.files.forEach((f, i) => {
         const chip = document.createElement("span");
         chip.className = "attach-chip";
         chip.textContent = "@ " + f + "  ×";
-        chip.addEventListener("click", () => { a.files.splice(i, 1); termRenderAttachments(t); });
+        wireChipKeyboard(chip, () => { a.files.splice(i, 1); termRenderAttachments(t); });
         tray.appendChild(chip);
       });
       a.images.forEach((img, i) => {
@@ -1456,12 +1544,22 @@
         chip.className = "attach-chip";
         const src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
         chip.innerHTML = `<img src="${src}" style="height:18px;vertical-align:middle;border-radius:2px;margin-right:6px"/>image  ×`;
-        chip.addEventListener("click", () => { a.images.splice(i, 1); termRenderAttachments(t); });
+        wireChipKeyboard(chip, () => { a.images.splice(i, 1); termRenderAttachments(t); });
         tray.appendChild(chip);
       });
     }
 
+    var _IMAGE_PASTE_MAX_BYTES = 5 * 1024 * 1024;
     function termPasteImage(t, file) {
+      // Cap pasted/dropped images so a misclick on a 50 MB phone photo
+      // doesn't balloon into ~67 MB base64 in the composer (which then
+      // round-trips as part of every turn). 5 MB raw is generous for
+      // screenshots / dashboard captures.
+      if (file && typeof file.size === "number" && file.size > _IMAGE_PASTE_MAX_BYTES) {
+        const mb = (file.size / (1024 * 1024)).toFixed(1);
+        setMsg("#term-msg", "warn", `Image too large (${mb} MB); 5 MB max.`, 5000);
+        return;
+      }
       const reader = new FileReader();
       reader.onload = () => {
         const r = reader.result || "";
@@ -1649,7 +1747,12 @@
       return parts.join(" · ");
     }
 
-    async function termRefreshCost(t) {
+    // Trailing-edge debounce per pane so a burst of turn-end events doesn't
+    // hammer /api/jobs/<id> with a refresh per call. 800ms keeps the chip
+    // visibly fresh without amplifying load when several models stream
+    // in parallel.
+    var _COST_REFRESH_DEBOUNCE_MS = 800;
+    async function _termRefreshCostNow(t) {
       if (!t || !t.pane.isConnected) return;
       if (t.kind !== "chat" && t.kind !== "chat-codex") return;
       try {
@@ -1664,6 +1767,14 @@
           ? verbose + "  ·  job " + (t.jobId || "").slice(0, 8)
           : "aggregated cost / turns / time for this session";
       } catch (_) { /* ignore */ }
+    }
+    function termRefreshCost(t) {
+      if (!t) return;
+      if (t._costRefreshTimer) clearTimeout(t._costRefreshTimer);
+      t._costRefreshTimer = setTimeout(() => {
+        t._costRefreshTimer = null;
+        _termRefreshCostNow(t);
+      }, _COST_REFRESH_DEBOUNCE_MS);
     }
 
     function termAutoScroll(t) {
@@ -1700,13 +1811,34 @@
       const complete = joined.slice(0, lastNl);
       const remnant = joined.slice(lastNl + 1);
       t.jsonBuf = remnant ? [remnant] : [];
-      for (const line of complete.split("\n")) {
+      const carry = [];
+      for (let i = 0; i < complete.split("\n").length; i++) {}
+      const lines = complete.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
         const trimmed = line.trim();
         if (!trimmed) continue;
         let obj;
         try { obj = JSON.parse(trimmed); }
-        catch (_) { termRenderRaw(t, line); continue; }
+        catch (_) {
+          // A line that opens with `{` but didn't parse is almost certainly
+          // a stream-json object whose tail landed in the NEXT delta — the
+          // server emits one JSON object per newline-terminated line so a
+          // partial `{...` here will be completed by the next chunk. Carry
+          // it forward instead of dumping it through termRenderRaw (which
+          // would create a phantom system message and the real completion
+          // would later parse standalone).
+          if (trimmed.startsWith("{") && !trimmed.endsWith("}") && i === lines.length - 1) {
+            carry.push(line);
+            continue;
+          }
+          termRenderRaw(t, line);
+          continue;
+        }
         termRenderJsonObject(t, obj);
+      }
+      if (carry.length) {
+        t.jsonBuf = (t.jsonBuf || []).concat(carry);
       }
       termAutoScroll(t);
     }
@@ -1891,6 +2023,13 @@
       const wrap = document.createElement("div");
       const pill = document.createElement("span");
       pill.className = "tool-pill";
+      // a11y: pill is a clickable disclosure trigger. role=button +
+      // tabindex makes it keyboard-reachable; keydown handles Enter/Space
+      // since native <button> would inherit submit-form semantics that
+      // we don't want here.
+      pill.setAttribute("role", "button");
+      pill.setAttribute("tabindex", "0");
+      pill.setAttribute("aria-expanded", "false");
       const argSummary = termSummariseToolInput(input);
       pill.textContent = name + (argSummary ? "  " + argSummary : "");
 
@@ -1917,7 +2056,17 @@
         detail.textContent = JSON.stringify(input ?? {}, null, 2);
       }
 
-      pill.addEventListener("click", () => detail.classList.toggle("open"));
+      const togglePill = () => {
+        const open = detail.classList.toggle("open");
+        pill.setAttribute("aria-expanded", open ? "true" : "false");
+      };
+      pill.addEventListener("click", togglePill);
+      pill.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          togglePill();
+        }
+      });
       wrap.appendChild(pill);
       wrap.appendChild(detail);
       textEl.appendChild(wrap);
@@ -2520,9 +2669,12 @@
       return typeof Terminal === "undefined" || typeof FitAddon === "undefined";
     }
 
-    function termPtyWsUrl(ptyId) {
+    function termPtyWsUrl(ptyId, token) {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      return `${proto}//${location.host}/api/ptys/${encodeURIComponent(ptyId)}/io`;
+      const base = `${proto}//${location.host}/api/ptys/${encodeURIComponent(ptyId)}/io`;
+      return token
+        ? `${base}?token=${encodeURIComponent(token)}`
+        : base;
     }
 
     function termOpenPty(ptyId, meta, initialCommand) {
@@ -2666,7 +2818,13 @@
       requestAnimationFrame(initialFit);
 
       // ----- WebSocket -----
-      const ws = new WebSocket(termPtyWsUrl(ptyId));
+      // meta?.token is set by /api/ptys (POST) for newly-spawned PTYs.
+      // _PTY_TOKENS is the runtime cache for restoreOpenPanes / reattach
+      // — it survives the page lifetime so refreshing the dashboard keeps
+      // existing PTYs reachable as long as the original spawner is the
+      // same browser tab.
+      const token = (meta && meta.token) || (window._PTY_TOKENS && window._PTY_TOKENS[ptyId]);
+      const ws = new WebSocket(termPtyWsUrl(ptyId, token));
       ws.binaryType = "arraybuffer";
       t.source = ws;
       // ``stream: true`` is critical: bytes from the PTY arrive as
@@ -2699,8 +2857,14 @@
         // control messages (resize, etc.) and would be silently dropped
         // by the server's parser. \r at the end fires Enter.
         const enc = new TextEncoder();
+        // Track every queued initial-command timer so termClosePty can
+        // cancel them. Otherwise a recursive runStep tail keeps ws + term
+        // alive until the last delay fires even after the user closed
+        // the pane.
+        t._runStepTimers = t._runStepTimers || [];
         const runStep = (i) => {
           if (i >= steps.length) return;
+          if (t._closed) return;
           const s = steps[i] || {};
           const text = s.text != null ? String(s.text) : "";
           const appendCR = s.appendCR !== false;
@@ -2710,12 +2874,14 @@
           }
           if (i + 1 < steps.length) {
             const nextDelay = Math.max(0, Number(steps[i + 1].delay) || 0);
-            setTimeout(() => runStep(i + 1), nextDelay);
+            const tm = setTimeout(() => runStep(i + 1), nextDelay);
+            t._runStepTimers.push(tm);
           }
         };
         if (steps.length) {
           const firstDelay = Math.max(0, Number(steps[0].delay) || 0);
-          setTimeout(() => runStep(0), firstDelay);
+          const tm = setTimeout(() => runStep(0), firstDelay);
+          t._runStepTimers.push(tm);
         }
         term.focus();
       };
@@ -2810,6 +2976,21 @@
     function termClosePty(ptyId) {
       const t = TERMS.get(ptyId);
       if (!t) return;
+      t._closed = true;
+      // Cancel any pending initial-command timers so their closures
+      // release ws + term references instead of keeping them alive
+      // until the last delay fires.
+      if (Array.isArray(t._runStepTimers)) {
+        for (const tm of t._runStepTimers) {
+          try { clearTimeout(tm); } catch (_) {}
+        }
+        t._runStepTimers = [];
+      }
+      if (t._costRefreshTimer) { clearTimeout(t._costRefreshTimer); t._costRefreshTimer = null; }
+      if (t._autoFollowScrollHandler && t.body) {
+        try { t.body.removeEventListener("scroll", t._autoFollowScrollHandler); } catch (_) {}
+        t._autoFollowScrollHandler = null;
+      }
       try { t._resizeObserver && t._resizeObserver.disconnect(); } catch (_) {}
       // Mirror the ResizeObserver cleanup for the legacy window-resize fallback.
       if (t._resizeFallback) {
@@ -3080,6 +3261,29 @@
       // if no event has arrived in 60s we force the close path ourselves.
       t._lastSSEEvent = Date.now();
       const SSE_STALE_MS = 60_000;
+      // Expose a restarter the visibilitychange handler in jobs.js can
+      // call after a pause-on-hidden. Closes over `t`, `es`, `statusPill`
+      // so the resumed timer reuses the same SSE + DOM refs.
+      t._restartSseHeartbeat = () => {
+        if (t._sseHeartbeat) return;
+        t._sseHeartbeat = setInterval(heartbeatTick, 15_000);
+      };
+      const heartbeatTick = () => {
+        if (!t.pane || !t.pane.isConnected) return;
+        if (t.pane.classList.contains("dead")) return;
+        if (typeof document !== "undefined" && document.hidden) return;
+        if (Date.now() - (t._lastSSEEvent || 0) < SSE_STALE_MS) return;
+        try { es.close(); } catch (_) {}
+        termSetPillState(statusPill, "warn", "disconnected");
+        termSetActivity(t, "disconnected", "ended");
+        if (t.kind === "chat-codex") {
+          termCodexAwaitNextTurn(t);
+        } else {
+          termSetDead(t, "ended");
+        }
+        clearInterval(t._sseHeartbeat);
+        t._sseHeartbeat = null;
+      };
       t._sseHeartbeat = setInterval(() => {
         if (!t.pane || !t.pane.isConnected) return;
         if (t.pane.classList.contains("dead")) return;
@@ -3703,7 +3907,13 @@
       // anchoring on it keeps the button predictable.
       const pill = t.pane.querySelector(".status-pill");
       if (pill) {
-        const txt = (pill.textContent || "").trim().toLowerCase();
+        // Prefer dataset.pillText (mirrored by termSetPillState) over the
+        // rendered textContent so i18n / "ending…" spinners don't desync
+        // the sweep from the real state.
+        const txt = (
+          pill.dataset.pillText
+          || (pill.textContent || "").trim().toLowerCase()
+        );
         if (_FINISHED_PILL_TEXTS.has(txt)) return true;
       }
       return false;

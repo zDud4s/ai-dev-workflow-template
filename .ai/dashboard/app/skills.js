@@ -215,6 +215,9 @@
       if (!modal) return;  // partial-DOM bail — the rest of this opener
                            // assumes the modal scaffold exists.
       modal.hidden = false;
+      if (typeof window.trapFocusInModal === "function") {
+        window.trapFocusInModal(modal, closeSkillDetail);
+      }
       const titleEl = $("#skill-detail-title");
       if (titleEl) titleEl.textContent = name + (cached ? ` · ${cached.source_label}` : "");
       const contentEl = $("#skill-detail-content");
@@ -256,11 +259,20 @@
       if (epoch !== _skillDetailEpoch) return;
       if (_currentSkillKey !== key) return;
 
+      // Shared AbortController so a rapid navigate-away cancels all three
+      // in-flight fetches at the network layer instead of just dropping
+      // their responses on the floor via the epoch check.
+      const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+      if (window._skillDetailController) {
+        try { window._skillDetailController.abort(); } catch (_) {}
+      }
+      window._skillDetailController = ctrl;
+      const sig = ctrl ? ctrl.signal : undefined;
       // Kick off the three fetches in parallel.
       const [content, metrics, hist] = await Promise.allSettled([
-        fetch(`/api/skills/content?source=${encodeURIComponent(source)}&name=${encodeURIComponent(name)}`, { cache: "no-store" }).then((r) => r.json()),
-        fetch(`/api/skills/metrics?skill=${encodeURIComponent(name)}`, { cache: "no-store" }).then((r) => r.ok ? r.json() : null),
-        fetch(`/api/skills/improvements?skill=${encodeURIComponent(name)}`, { cache: "no-store" }).then((r) => r.json()),
+        fetch(`/api/skills/content?source=${encodeURIComponent(source)}&name=${encodeURIComponent(name)}`, { cache: "no-store", signal: sig }).then((r) => r.json()),
+        fetch(`/api/skills/metrics?skill=${encodeURIComponent(name)}`, { cache: "no-store", signal: sig }).then((r) => r.ok ? r.json() : null),
+        fetch(`/api/skills/improvements?skill=${encodeURIComponent(name)}`, { cache: "no-store", signal: sig }).then((r) => r.json()),
       ]);
 
       // Bail if the user already navigated to a different skill mid-flight.
@@ -350,6 +362,9 @@
     function closeSkillDetail() {
       const modal = $("#skill-detail-modal");
       if (modal) modal.hidden = true;
+      if (typeof window.releaseFocusTrap === "function") {
+        window.releaseFocusTrap();
+      }
       _currentSkillKey = null;
     }
 
@@ -439,6 +454,9 @@
       const modal = $("#proposal-modal");
       if (!modal) return;  // partial-DOM bail — modal scaffold missing
       modal.hidden = false;
+      if (typeof window.trapFocusInModal === "function") {
+        window.trapFocusInModal(modal, closeProposalModal);
+      }
       const msgEl = $("#proposal-msg");
       if (msgEl) msgEl.innerHTML = `<span class="spinner"></span> loading…`;
       const titleEl = $("#proposal-modal-title");
@@ -511,6 +529,9 @@
     function closeProposalModal() {
       const modal = $("#proposal-modal");
       if (modal) modal.hidden = true;
+      if (typeof window.releaseFocusTrap === "function") {
+        window.releaseFocusTrap();
+      }
       _currentProposalId = null;
     }
 
@@ -704,7 +725,12 @@
 
     function lcsTable(a, b) {
       const n = a.length, m = b.length;
-      const t = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+      // Int32Array rows beat Array-of-Array-of-Object slots: typed-array
+      // memory is ~1/4 the size at large diffs (4-byte ints vs object
+      // boxes), and V8 stays monomorphic on numeric reads. Keep the
+      // outer 2-D shape so callers can still do t[i][j].
+      const t = new Array(n + 1);
+      for (let i = 0; i <= n; i++) t[i] = new Int32Array(m + 1);
       for (let i = 1; i <= n; i++) {
         for (let j = 1; j <= m; j++) {
           t[i][j] = a[i - 1] === b[j - 1] ? t[i - 1][j - 1] + 1

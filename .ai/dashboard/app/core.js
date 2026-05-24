@@ -307,10 +307,18 @@
       `;
     }
 
+    var _tokenUsageInFlight = false;
     async function loadTokenUsage() {
       if (!$("#ov-claude-total")) return;
+      // In-flight sentinel: token usage is also fetched on every tab focus
+      // and a 5s poll. Without this guard a slow /api/usage/total would
+      // stack callers and overwrite each other's results.
+      if (_tokenUsageInFlight) return;
+      _tokenUsageInFlight = true;
+      const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 30000) : null;
       try {
-        const r = await fetch("/api/usage/total", { cache: "no-store" });
+        const r = await fetch("/api/usage/total", { cache: "no-store", signal: ctrl ? ctrl.signal : undefined });
         if (!r.ok) {
           // Surface the failure so operators can correlate "—" cards with the
           // underlying 500/404. A silent return was the previous behaviour.
@@ -319,16 +327,24 @@
         }
         const u = await r.json();
         const c = u.claude || {};
-        document.getElementById("ov-claude-total").textContent = formatTokens(c.all && c.all.total);
-        document.getElementById("ov-claude-5h").innerHTML  = renderWindowLine("5h",  c["5h"]);
-        document.getElementById("ov-claude-7d").innerHTML  = renderWindowLine("7d",  c["7d"]);
-        document.getElementById("ov-claude-all").innerHTML = renderWindowLine("all", c.all);
+        const setText = (id, val) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = val;
+        };
+        const setHTML = (id, val) => {
+          const el = document.getElementById(id);
+          if (el) el.innerHTML = val;
+        };
+        setText("ov-claude-total", formatTokens(c.all && c.all.total));
+        setHTML("ov-claude-5h",  renderWindowLine("5h",  c["5h"]));
+        setHTML("ov-claude-7d",  renderWindowLine("7d",  c["7d"]));
+        setHTML("ov-claude-all", renderWindowLine("all", c.all));
 
         const x = u.codex || {};
-        document.getElementById("ov-codex-total").textContent = formatTokens(x.all && x.all.total);
-        document.getElementById("ov-codex-5h").innerHTML  = renderWindowLine("5h",  x["5h"]);
-        document.getElementById("ov-codex-7d").innerHTML  = renderWindowLine("7d",  x["7d"]);
-        document.getElementById("ov-codex-all").innerHTML = renderWindowLine("all", x.all);
+        setText("ov-codex-total", formatTokens(x.all && x.all.total));
+        setHTML("ov-codex-5h",  renderWindowLine("5h",  x["5h"]));
+        setHTML("ov-codex-7d",  renderWindowLine("7d",  x["7d"]));
+        setHTML("ov-codex-all", renderWindowLine("all", x.all));
 
         const codex5hEl   = document.getElementById("ov-rl-codex-5h");
         const codexWeekEl = document.getElementById("ov-rl-codex-week");
@@ -417,6 +433,9 @@
         } else {
           console.warn("[dashboard] " + msg + " (no msg element available)");
         }
+      } finally {
+        if (timer) clearTimeout(timer);
+        _tokenUsageInFlight = false;
       }
     }
 
@@ -714,6 +733,74 @@ function renderMarkdown(el, text) {
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
       }[c]));
     }
+    // Preferred alias for new code — `escape` shadows the legacy
+    // `window.escape` (URL escaping) which is a footgun for readers
+    // skimming for HTML escaping. Existing call sites keep working; the
+    // IIFE-local escape helpers in other files can be migrated to escHtml
+    // incrementally without a sweeping rename.
+    var escHtml = escape;
+
+    // ----- Modal focus trap -----
+    // aria-modal="true" tells AT to treat outside as inert, but
+    // keyboard users can still Tab into the background. trapFocusInModal()
+    // captures the previously-focused element, moves focus into the modal
+    // pane (or first focusable child), and intercepts Tab/Shift+Tab so
+    // focus stays inside until releaseFocusTrap() runs. Escape also fires
+    // an optional onEscape callback so callers can close + restore in
+    // one step. Idempotent: a second activate replaces the prior trap.
+    var _focusTrapState = null;
+    function _focusableInside(root) {
+      if (!root) return [];
+      var sel = [
+        'a[href]', 'button:not([disabled])', 'input:not([disabled])',
+        'select:not([disabled])', 'textarea:not([disabled])',
+        '[tabindex]:not([tabindex="-1"])',
+      ].join(",");
+      return Array.from(root.querySelectorAll(sel))
+        .filter(function (el) { return el.offsetParent !== null; });
+    }
+    function trapFocusInModal(modal, onEscape) {
+      if (!modal) return;
+      releaseFocusTrap();
+      var prev = document.activeElement;
+      var pane = modal.querySelector('[tabindex="-1"]') || modal;
+      // Move focus inside on the next frame so the modal's display:flex
+      // transition has settled before we start measuring focusable nodes.
+      requestAnimationFrame(function () {
+        var nodes = _focusableInside(modal);
+        (nodes[0] || pane).focus();
+      });
+      function onKey(e) {
+        if (e.key === "Escape" && typeof onEscape === "function") {
+          e.preventDefault();
+          onEscape();
+          return;
+        }
+        if (e.key !== "Tab") return;
+        var nodes = _focusableInside(modal);
+        if (!nodes.length) { e.preventDefault(); pane.focus(); return; }
+        var first = nodes[0], last = nodes[nodes.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault(); last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault(); first.focus();
+        }
+      }
+      modal.addEventListener("keydown", onKey);
+      _focusTrapState = { modal: modal, prev: prev, onKey: onKey };
+    }
+    function releaseFocusTrap() {
+      if (!_focusTrapState) return;
+      try { _focusTrapState.modal.removeEventListener("keydown", _focusTrapState.onKey); } catch (_) {}
+      var prev = _focusTrapState.prev;
+      _focusTrapState = null;
+      // Restore prior focus if it's still in the DOM and focusable.
+      if (prev && typeof prev.focus === "function" && document.contains(prev)) {
+        try { prev.focus(); } catch (_) {}
+      }
+    }
+    window.trapFocusInModal = trapFocusInModal;
+    window.releaseFocusTrap = releaseFocusTrap;
 
     // ----- POST helper -----
     async function postJson(path, body) {
