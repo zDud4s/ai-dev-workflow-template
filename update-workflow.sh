@@ -117,17 +117,16 @@ copy_if_different "$SCRIPT_DIR/.claude/skills/agent-improver/references/agent-te
 copy_if_different "$SCRIPT_DIR/.claude/skills/agent-creator/SKILL.md" "$TARGET_DIR/.claude/skills/agent-creator/SKILL.md"
 copy_if_different "$SCRIPT_DIR/.claude/skills/agent-creator/references/agent-template.md" "$TARGET_DIR/.claude/skills/agent-creator/references/agent-template.md"
 
-# Cross-tool dispatch skills under .agents/skills/ have no .claude/skills/ counterpart
-# — they describe how a non-Claude host (Codex) invokes the target tool.
-# Each is its own source of truth, not a mirror of anything under .claude/skills/.
+# Cross-tool dispatch skill `claude` lives only under .agents/skills/ (no .claude/skills/
+# counterpart) — it describes how a non-Claude host (Codex) invokes Claude CLI.
 copy_if_different "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agents/skills/claude/SKILL.md"
-copy_if_different "$SCRIPT_DIR/.agents/skills/codex/SKILL.md" "$TARGET_DIR/.agents/skills/codex/SKILL.md"
 
 # Project-local mirror of shared skills: .claude/skills/<name>/ -> .agents/skills/<name>/.
 # .claude/skills/ is the source of truth; direct edits in .agents/skills/<shared>/ get overwritten.
-# `codex` / `claude` are excluded: cross-tool dispatch skills are independent files,
-# not mirrors (see copy_if_different block above).
-for skill in bootstrap planner reviewer maintenance rescue orchestrate; do
+# `codex` is included: its canonical source is .claude/skills/codex/SKILL.md and Codex needs
+# the mirror in .agents/skills/codex/ so the home-dir mirror below can reach it.
+# `claude` is excluded: it has no .claude/skills/ counterpart (see copy_if_different above).
+for skill in bootstrap planner reviewer maintenance rescue orchestrate codex; do
   copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
 done
 

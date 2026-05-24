@@ -85,19 +85,18 @@ copy_if_missing "$SCRIPT_DIR/.claude/skills/agent-improver/references/agent-temp
 copy_if_missing "$SCRIPT_DIR/.claude/skills/agent-creator/SKILL.md" "$TARGET_DIR/.claude/skills/agent-creator/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/agent-creator/references/agent-template.md" "$TARGET_DIR/.claude/skills/agent-creator/references/agent-template.md"
 
-# Cross-tool dispatch skills under .agents/skills/ have no .claude/skills/ counterpart
-# — they describe how a non-Claude host (Codex) invokes the target tool.
-# Each is its own source of truth, not a mirror of anything under .claude/skills/.
+# Cross-tool dispatch skill `claude` lives only under .agents/skills/ (no .claude/skills/
+# counterpart) — it describes how a non-Claude host (Codex) invokes Claude CLI.
 copy_if_missing "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agents/skills/claude/SKILL.md"
-copy_if_missing "$SCRIPT_DIR/.agents/skills/codex/SKILL.md" "$TARGET_DIR/.agents/skills/codex/SKILL.md"
 
 # Project-local mirror of shared skills: .claude/skills/<name>/ -> .agents/skills/<name>/.
 # Keeps Codex's view of skills visible in-repo alongside Claude's. Always synced
 # from .claude/skills/ — edit there, not here. copy_if_different so customizations
 # in .claude/skills/ propagate; direct edits to .agents/skills/<shared>/ are overwritten.
-# `codex` / `claude` are excluded: cross-tool dispatch skills are NOT mirrored,
-# they are independent files per discovery path (see copy_if_missing block above).
-for skill in bootstrap planner reviewer maintenance rescue orchestrate; do
+# `codex` is included: its canonical source is .claude/skills/codex/SKILL.md and Codex
+# needs the mirror in .agents/skills/codex/ so the home-dir mirror below can reach it.
+# `claude` is excluded: it has no .claude/skills/ counterpart (see copy_if_missing above).
+for skill in bootstrap planner reviewer maintenance rescue orchestrate codex; do
   copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
 done
 
