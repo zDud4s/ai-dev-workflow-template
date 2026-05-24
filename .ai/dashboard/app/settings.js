@@ -484,14 +484,13 @@
       var line = "Upstream " + shortUp + " · installed " + shortCur;
       setWorkflowStatus(line + " — " + (data.message || ""),
                         data.has_updates ? "warn" : "good");
-      // Update the single state object; renderWorkflowButtons (called via
-      // setWorkflowBusy(false) below) will derive the button state. We
-      // also flip .disabled inline here so the visual change is immediate
-      // (before the finally block runs); both writes land on the same
-      // value because they read from the same `data.has_updates`.
+      // Single source of truth: mutate _workflowState and let
+      // renderWorkflowButtons() derive .disabled. The visual update is
+      // still immediate (renderWorkflowButtons runs synchronously) without
+      // duplicating the has_updates -> .disabled mapping at the call site.
       _workflowState.checked = true;
       _workflowState.hasUpdates = !!data.has_updates;
-      $q("#btn-workflow-update").disabled = !data.has_updates;
+      renderWorkflowButtons();
       showWorkflowLog(data.commits || []);
     } catch (e) {
       setWorkflowStatus("Network error: " + e.message, "bad");

@@ -160,7 +160,7 @@
         const cls = lastRecord.stale ? "as-meta-fresh is-stale" : "as-meta-fresh";
         metaHtml += ` · last record <span class="${cls}">${escape(lastRecord.label)}</span>`;
       }
-      meta.innerHTML = metaHtml;
+      if (meta) meta.innerHTML = metaHtml;
       delete root.dataset.skeletoned;
       if (groups.length === 0) {
         root.innerHTML =
@@ -172,7 +172,7 @@
       }
       root.innerHTML = groups.map(renderGroup).join("");
     } catch (err) {
-      meta.textContent = "load failed";
+      if (meta) meta.textContent = "load failed";
       delete root.dataset.skeletoned;
       root.innerHTML =
         `<div class="tl-empty">Failed to load: ${escape(err && err.message ? err.message : String(err))}.</div>`;
