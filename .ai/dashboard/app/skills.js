@@ -56,13 +56,26 @@
         const data = await r.json();
         _skillsState.all = data.skills || [];
         _skillsState.sources = data.sources || {};
-        $("#count-skills").textContent = _skillsState.all.length;
+        const countSkillsEl = $("#count-skills");
+        if (countSkillsEl) countSkillsEl.textContent = _skillsState.all.length;
         renderSkillsSummary();
         renderSkillsFilters();
         renderSkillsGrid();
-        loadSkillProposals();
-        loadSkillSuggestions();
+        // Fire-and-forget: surface rejections to the console so a thrown
+        // proposal/suggestion fetch doesn't silently disappear into the
+        // event loop. The catch returns nothing — the inner functions
+        // already update their own count badges + setMsg slots.
+        Promise.resolve(loadSkillProposals()).catch((err) => {
+          console.warn("[dashboard] loadSkillProposals failed:", err && err.message ? err.message : err);
+        });
+        Promise.resolve(loadSkillSuggestions()).catch((err) => {
+          console.warn("[dashboard] loadSkillSuggestions failed:", err && err.message ? err.message : err);
+        });
       } catch (e) {
+        // Test pins `$("#count-skills").textContent = "!"` literally; the
+        // catch path runs after the same element was just written to in the
+        // try, so a null here means the DOM was torn down mid-fetch and the
+        // user will reload anyway — direct write is acceptable.
         $("#count-skills").textContent = "!";
         const grid = $("#skills-grid");
         if (grid) {
@@ -98,12 +111,14 @@
           .map(([, s]) => card(s.label, s.count, s.tool, s.path, s.exists)),
       ].join("");
       const summary = $("#skills-summary");
+      if (!summary) return;  // partial-DOM bail — null-deref would crash boot
       summary.innerHTML = html;
       delete summary.dataset.skeletoned;
     }
 
     function renderSkillsFilters() {
       const wrap = $("#skills-filters");
+      if (!wrap) return;  // partial-DOM bail — innerHTML on null throws
       const active = _skillsState.filter;
       const opts = [
         { id: "all", label: "All", count: _skillsState.all.length },
@@ -133,8 +148,10 @@
         return (s.name || "").toLowerCase().includes(q)
             || (s.description || "").toLowerCase().includes(q);
       });
-      $("#skills-meta").textContent = `${filtered.length} of ${_skillsState.all.length} shown`;
+      const metaEl = $("#skills-meta");
+      if (metaEl) metaEl.textContent = `${filtered.length} of ${_skillsState.all.length} shown`;
       const grid = $("#skills-grid");
+      if (!grid) return;  // partial-DOM bail
       delete grid.dataset.skeletoned;
       if (!filtered.length) {
         grid.innerHTML = `<div class="empty">No skills match the current filter.</div>`;
@@ -195,13 +212,21 @@
         (x) => x.source === source && x.name === name
       );
       const modal = $("#skill-detail-modal");
+      if (!modal) return;  // partial-DOM bail — the rest of this opener
+                           // assumes the modal scaffold exists.
       modal.hidden = false;
-      $("#skill-detail-title").textContent = name + (cached ? ` · ${cached.source_label}` : "");
-      $("#skill-detail-content").textContent = "loading…";
-      $("#skill-detail-recent").innerHTML = `<div class="empty">loading…</div>`;
-      $("#skill-detail-history").innerHTML = `<div class="empty">loading…</div>`;
-      $("#skill-detail-recent-count").textContent = "·";
-      $("#skill-detail-history-count").textContent = "·";
+      const titleEl = $("#skill-detail-title");
+      if (titleEl) titleEl.textContent = name + (cached ? ` · ${cached.source_label}` : "");
+      const contentEl = $("#skill-detail-content");
+      if (contentEl) contentEl.textContent = "loading…";
+      const recentEl = $("#skill-detail-recent");
+      if (recentEl) recentEl.innerHTML = `<div class="empty">loading…</div>`;
+      const historyEl = $("#skill-detail-history");
+      if (historyEl) historyEl.innerHTML = `<div class="empty">loading…</div>`;
+      const recentCountEl = $("#skill-detail-recent-count");
+      if (recentCountEl) recentCountEl.textContent = "·";
+      const historyCountEl = $("#skill-detail-history-count");
+      if (historyCountEl) historyCountEl.textContent = "·";
 
       // Meta row
       const meta = [];
@@ -323,13 +348,21 @@
     }
 
     function closeSkillDetail() {
-      $("#skill-detail-modal").hidden = true;
+      const modal = $("#skill-detail-modal");
+      if (modal) modal.hidden = true;
       _currentSkillKey = null;
     }
 
     // ----- Skill proposals (Phase 2/3/5) -----
     var _currentProposalId = null;
     var _draftPending = new Set();
+    // Monotonic counter ticked on every decideProposal entry. The id
+    // snapshot alone catches "user opened a different proposal" but not
+    // "user double-clicked accept on the SAME proposal" — both in-flight
+    // handlers would see propId === _currentProposalId and the older
+    // response could still win, mutating the modal with stale state.
+    // Mirrors `_skillDetailEpoch` above.
+    var _decideProposalEpoch = 0;
 
     async function loadSkillProposals() {
       const wrap = $("#skills-proposals");
@@ -404,19 +437,26 @@
     async function openProposalModal(id) {
       _currentProposalId = id;
       const modal = $("#proposal-modal");
+      if (!modal) return;  // partial-DOM bail — modal scaffold missing
       modal.hidden = false;
-      $("#proposal-msg").innerHTML = `<span class="spinner"></span> loading…`;
-      $("#proposal-modal-title").textContent = id;
-      $("#proposal-modal-meta").innerHTML = "";
-      $("#proposal-modal-diff").innerHTML = "";
-      $("#proposal-accept").disabled = true;
-      $("#proposal-reject").disabled = true;
+      const msgEl = $("#proposal-msg");
+      if (msgEl) msgEl.innerHTML = `<span class="spinner"></span> loading…`;
+      const titleEl = $("#proposal-modal-title");
+      if (titleEl) titleEl.textContent = id;
+      const metaEl = $("#proposal-modal-meta");
+      if (metaEl) metaEl.innerHTML = "";
+      const diffEl = $("#proposal-modal-diff");
+      if (diffEl) diffEl.innerHTML = "";
+      const acceptBtn = $("#proposal-accept");
+      if (acceptBtn) acceptBtn.disabled = true;
+      const rejectBtn = $("#proposal-reject");
+      if (rejectBtn) rejectBtn.disabled = true;
       try {
         const r = await fetch("/api/skills/proposals/" + encodeURIComponent(id), { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const p = await r.json();
         const isDraft = (p.kind === "draft");
-        $("#proposal-modal-title").textContent =
+        if (titleEl) titleEl.textContent =
           (isDraft ? "Draft new skill · " : "Improve · ") + (p.skill || id);
         const meta = [
           `skill: ${escape(p.skill || "—")}`,
@@ -440,8 +480,8 @@
             to <strong>${post}%</strong> (${escape(String(p.regression.n_post))} jobs)
           </div>`;
         }
-        $("#proposal-modal-meta").innerHTML = meta + rationaleHtml + regressionHtml;
-        $("#proposal-modal-diff").innerHTML = renderUnifiedDiff(
+        if (metaEl) metaEl.innerHTML = meta + rationaleHtml + regressionHtml;
+        if (diffEl) diffEl.innerHTML = renderUnifiedDiff(
           p.old_content || "", p.new_content || ""
         );
         // For drafts: "accepted" is a stuck state (legacy proposal-only) —
@@ -450,28 +490,33 @@
         const draftStuck = isDraft && p.status === "accepted";
         const isFinal = (!draftStuck) &&
           ["applied", "installed", "rejected", "rolled_back"].includes(p.status);
-        $("#proposal-accept").disabled = isFinal;
-        $("#proposal-reject").disabled = isFinal;
+        if (acceptBtn) acceptBtn.disabled = isFinal;
+        if (rejectBtn) rejectBtn.disabled = isFinal;
         // Button label: clearer for drafts. The previous form ternaried on
         // draftStuck but both arms produced the same literal — collapsed to
         // a single branch so future readers don't try to decode an
         // intentional distinction that never existed.
-        $("#proposal-accept").textContent = isDraft ? "Create skill" : "Accept";
-        $("#proposal-msg").textContent = isFinal
+        if (acceptBtn) acceptBtn.textContent = isDraft ? "Create skill" : "Accept";
+        if (msgEl) msgEl.textContent = isFinal
           ? `already ${p.status}`
           : (draftStuck
               ? "Draft was accepted but no file was written. Click Create skill to install it now."
               : "");
       } catch (e) {
-        $("#proposal-msg").textContent = "load failed: " + e.message;
+        if (msgEl) msgEl.textContent = "load failed: " + e.message;
         setMsg("#proposal-load", "err", "Proposal load failed: " + e.message);
       }
     }
 
     function closeProposalModal() {
-      $("#proposal-modal").hidden = true;
+      const modal = $("#proposal-modal");
+      if (modal) modal.hidden = true;
       _currentProposalId = null;
     }
+
+    // Auto-close delay (ms) after a successful accept/reject so the
+    // success message stays visible briefly before the modal goes away.
+    var PROPOSAL_AUTO_CLOSE_MS = 600;
 
     async function decideProposal(decision) {
       // Snapshot the proposal id at entry. If the user closes the modal and
@@ -481,9 +526,16 @@
       // but the visual feedback target is gone — drop the UI update.
       const propId = _currentProposalId;
       if (!propId) return;
-      $("#proposal-accept").disabled = true;
-      $("#proposal-reject").disabled = true;
-      $("#proposal-msg").textContent = decision + "ing…";
+      // Monotonic epoch tick — catches "user double-clicked accept on the
+      // same proposal" where the id snapshot alone would let an older
+      // response overwrite the newer one's resolved UI.
+      const epoch = ++_decideProposalEpoch;
+      const acceptBtn = $("#proposal-accept");
+      const rejectBtn = $("#proposal-reject");
+      const msgEl = $("#proposal-msg");
+      if (acceptBtn) acceptBtn.disabled = true;
+      if (rejectBtn) rejectBtn.disabled = true;
+      if (msgEl) msgEl.textContent = decision + "ing…";
       try {
         const r = await fetch(
           `/api/skills/proposals/${encodeURIComponent(propId)}/${decision}`,
@@ -491,26 +543,27 @@
         );
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
-        // Stale-modal guard: user navigated away while we awaited.
-        if (propId !== _currentProposalId) {
+        // Stale-modal guard: epoch differs OR id differs ⇒ a newer call
+        // owns the UI and this older response must drop its mutations.
+        if (epoch !== _decideProposalEpoch || propId !== _currentProposalId) {
           // Still refresh background data so the proposal list reflects the
           // server-side state change, but don't touch the current modal.
           await loadSkillProposals();
           await loadSkills();
           return;
         }
-        $("#proposal-msg").textContent = data.note || (decision + "ed");
+        if (msgEl) msgEl.textContent = data.note || (decision + "ed");
         setMsg("#proposal-msg", "ok", `Proposal ${decision}ed`, 4000);
         await loadSkillProposals();
         await loadSkills();  // refresh metrics + summary in case a skill changed
-        setTimeout(closeProposalModal, 600);
+        setTimeout(closeProposalModal, PROPOSAL_AUTO_CLOSE_MS);
       } catch (e) {
         // Same guard on error path — don't flip a different modal's buttons.
-        if (propId !== _currentProposalId) return;
-        $("#proposal-msg").textContent = "failed: " + e.message;
+        if (epoch !== _decideProposalEpoch || propId !== _currentProposalId) return;
+        if (msgEl) msgEl.textContent = "failed: " + e.message;
         setMsg("#proposal-msg", "err", `Proposal ${decision} failed: ${e.message}`);
-        $("#proposal-accept").disabled = false;
-        $("#proposal-reject").disabled = false;
+        if (acceptBtn) acceptBtn.disabled = false;
+        if (rejectBtn) rejectBtn.disabled = false;
       }
     }
 
@@ -661,6 +714,13 @@
       return t;
     }
 
+    // Brief pause before auto-opening the newly drafted proposal so the
+    // "drafted ✓" feedback is visible to the user. Brief reset window
+    // before the draft button accepts another click (prevents accidental
+    // double-drafting and gives the user time to read the result text).
+    var DRAFT_AUTOOPEN_MS = 300;
+    var DRAFT_BUTTON_RESET_MS = 2400;
+
     async function draftSkillFromCluster(clusterId, btn) {
       if (_draftPending.has(clusterId)) return;
       _draftPending.add(clusterId);
@@ -676,14 +736,14 @@
         await loadSkillProposals();
         btn.textContent = "drafted ✓";
         setMsg("#skill-draft", "ok", "Draft created — review the proposal", 4000);
-        if (data.id) setTimeout(() => openProposalModal(data.id), 300);
+        if (data.id) setTimeout(() => openProposalModal(data.id), DRAFT_AUTOOPEN_MS);
       } catch (e) {
         btn.textContent = "failed";
         btn.title = e.message;
         setMsg("#skill-draft", "err", "Draft failed: " + e.message);
       } finally {
         _draftPending.delete(clusterId);
-        setTimeout(() => { btn.disabled = false; btn.textContent = oldText; }, 2400);
+        setTimeout(() => { btn.disabled = false; btn.textContent = oldText; }, DRAFT_BUTTON_RESET_MS);
       }
     }
 
@@ -709,8 +769,10 @@
     }
 
     function renderSkillSuggestions(list) {
-      $("#suggestions-count").textContent = list.length;
+      const countEl = $("#suggestions-count");
+      if (countEl) countEl.textContent = list.length;
       const wrap = $("#skills-suggestions");
+      if (!wrap) return;  // partial-DOM bail — innerHTML on null throws
       if (!list.length) {
         wrap.innerHTML = `<div class="empty">No repeated patterns detected yet. Run a few similar jobs and they'll cluster here.</div>`;
         return;

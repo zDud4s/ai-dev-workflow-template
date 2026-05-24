@@ -101,12 +101,20 @@
         const data = await r.json();
         _agentsState.all = data.agents || [];
         _agentsState.sources = data.sources || {};
-        $("#count-agents").textContent = _agentsState.all.length;
+        const countEl = $("#count-agents");
+        if (countEl) countEl.textContent = _agentsState.all.length;
         renderAgentsSummary();
         renderAgentsFilters();
         renderAgentsGrid();
-        loadAgentProposals();  // surface any pending proposals alongside the catalog
+        // Fire-and-forget: surface rejections to the console so a failed
+        // proposals fetch doesn't silently disappear into the event loop.
+        Promise.resolve(loadAgentProposals()).catch((err) => {
+          console.warn("[dashboard] loadAgentProposals failed:", err && err.message ? err.message : err);
+        });
       } catch (e) {
+        // Test pins `$("#count-agents").textContent = "!"` literally; direct
+        // assignment in the catch is acceptable — same element just succeeded
+        // a write in the try path moments ago.
         $("#count-agents").textContent = "!";
         const grid = $("#agents-grid");
         if (grid) grid.innerHTML = `<div class="err">${escape(e.message)}</div>`;
@@ -139,12 +147,14 @@
           .map(([, s]) => card(s.label, s)),
       ].join("");
       const summary = $("#agents-summary");
+      if (!summary) return;  // partial-DOM bail
       summary.innerHTML = html;
       delete summary.dataset.skeletoned;
     }
 
     function renderAgentsFilters() {
       const wrap = $("#agents-filters");
+      if (!wrap) return;  // partial-DOM bail
       const active = _agentsState.filter;
       const opts = [
         { id: "all", label: "All", count: _agentsState.all.length },
@@ -175,8 +185,10 @@
         return (a.name || "").toLowerCase().includes(q)
             || (a.description || "").toLowerCase().includes(q);
       });
-      $("#agents-meta").textContent = `${filtered.length} of ${_agentsState.all.length} shown`;
+      const metaEl = $("#agents-meta");
+      if (metaEl) metaEl.textContent = `${filtered.length} of ${_agentsState.all.length} shown`;
       const grid = $("#agents-grid");
+      if (!grid) return;  // partial-DOM bail
       delete grid.dataset.skeletoned;
       if (!filtered.length) {
         const srcCount = filter === "all"
@@ -231,10 +243,13 @@
 
     async function openAgentDetail(path, name, source) {
       const modal = $("#agent-detail-modal");
+      if (!modal) return;  // partial-DOM bail
       modal.hidden = false;
       const cached = _agentsState.all.find((x) => x.path === path);
-      $("#agent-detail-title").textContent = name + (cached ? ` - ${cached.source_label}` : "");
-      $("#agent-detail-content").textContent = "loading...";
+      const titleEl = $("#agent-detail-title");
+      if (titleEl) titleEl.textContent = name + (cached ? ` - ${cached.source_label}` : "");
+      const contentEl = $("#agent-detail-content");
+      if (contentEl) contentEl.textContent = "loading...";
       const meta = [];
       if (cached) {
         meta.push(`source: ${escape(cached.source_label || cached.source)}`);
@@ -246,7 +261,8 @@
       const rationaleHtml = cached && cached.description
         ? `<div style="margin-top:6px;color:var(--text-2)">${escape(cached.description)}</div>`
         : "";
-      $("#agent-detail-meta").innerHTML =
+      const metaEl = $("#agent-detail-meta");
+      if (metaEl) metaEl.innerHTML =
         meta.map((s) => `<span>${s}</span>`).join("") + rationaleHtml;
       try {
         const r = await fetch("/api/agents/content?path=" + encodeURIComponent(path), { cache: "no-store" });
@@ -257,6 +273,7 @@
         const data = await r.json();
         const text = data.content || "";
         const el = $("#agent-detail-content");
+        if (!el) return;
         try { el.innerHTML = DOMPurify.sanitize(marked.parse(text)); }
         catch (_) { el.textContent = text; }
         if (data.truncated) {
@@ -264,13 +281,15 @@
             `<div style="margin-top:8px;color:var(--warn)">...content truncated at 256 KB</div>`);
         }
       } catch (e) {
-        $("#agent-detail-content").innerHTML =
+        const el = $("#agent-detail-content");
+        if (el) el.innerHTML =
           `<div class="err">Failed to load agent file: ${escape(e.message)}</div>`;
       }
     }
 
     function closeAgentDetail() {
-      $("#agent-detail-modal").hidden = true;
+      const modal = $("#agent-detail-modal");
+      if (modal) modal.hidden = true;
     }
 
     // ----- Agent suggestions (POST /api/agents/suggest -> proposals) -----
@@ -280,6 +299,13 @@
     // and surfaced here until the user accepts (materialises the agent at
     // .claude/agents/<slug>.md) or rejects (kept on disk, status=rejected).
     var _currentAgentProposalId = null;
+    // Monotonic counter ticked on every decideAgentProposal entry. The
+    // id snapshot alone catches "user opened a different proposal" but
+    // not "user double-clicked accept on the SAME proposal" — both
+    // in-flight handlers see propId === _currentAgentProposalId and the
+    // older response can still win, mutating the modal with stale state.
+    // Mirrors the `_skillDetailEpoch` pattern in skills.js.
+    var _decideAgentProposalEpoch = 0;
 
     async function loadAgentProposals() {
       const wrap  = $("#agent-suggestions-wrap");
@@ -369,6 +395,7 @@
     async function openAgentProposalModal(id) {
       _currentAgentProposalId = id;
       const modal    = $("#agent-proposal-modal");
+      if (!modal) return;  // partial-DOM bail — modal scaffold missing
       const titleEl  = $("#agent-proposal-title");
       const metaEl   = $("#agent-proposal-meta");
       const bodyEl   = $("#agent-proposal-body");
@@ -376,12 +403,12 @@
       const rejectBtn = $("#agent-proposal-reject");
       const msgEl    = $("#agent-proposal-msg");
       modal.hidden = false;
-      titleEl.textContent = id;
-      metaEl.innerHTML = "";
-      bodyEl.innerHTML = `<span class="spinner"></span> loading…`;
-      msgEl.textContent = "";
-      acceptBtn.disabled = true;
-      rejectBtn.disabled = true;
+      if (titleEl) titleEl.textContent = id;
+      if (metaEl) metaEl.innerHTML = "";
+      if (bodyEl) bodyEl.innerHTML = `<span class="spinner"></span> loading…`;
+      if (msgEl) msgEl.textContent = "";
+      if (acceptBtn) acceptBtn.disabled = true;
+      if (rejectBtn) rejectBtn.disabled = true;
       try {
         const r = await fetch("/api/agents/proposals/" + encodeURIComponent(id), { cache: "no-store" });
         if (!r.ok) {
@@ -389,7 +416,7 @@
           throw new Error(errJson.error || ("HTTP " + r.status));
         }
         const p = await r.json();
-        titleEl.textContent = "Suggested agent · " + (p.name || p.slug || id);
+        if (titleEl) titleEl.textContent = "Suggested agent · " + (p.name || p.slug || id);
         const targetShort = p.installed_path
           ? shortPath(p.installed_path)
           : (p.target_path ? shortPath(p.target_path) : "");
@@ -410,24 +437,32 @@
                 .map((t) => `<span class="metric-pill">${escape(t)}</span>`).join(" ")
             }</div>`
           : "";
-        metaEl.innerHTML = meta + rationale + triggers;
+        if (metaEl) metaEl.innerHTML = meta + rationale + triggers;
         const body = p.body || "";
-        try { bodyEl.innerHTML = DOMPurify.sanitize(marked.parse(body)); }
-        catch (_) { bodyEl.textContent = body; }
+        if (bodyEl) {
+          try { bodyEl.innerHTML = DOMPurify.sanitize(marked.parse(body)); }
+          catch (_) { bodyEl.textContent = body; }
+        }
         const isFinal = ["accepted", "applied", "installed", "rejected"].includes(p.status);
-        acceptBtn.disabled = isFinal;
-        rejectBtn.disabled = isFinal;
-        msgEl.textContent = isFinal ? `already ${p.status}` : "";
+        if (acceptBtn) acceptBtn.disabled = isFinal;
+        if (rejectBtn) rejectBtn.disabled = isFinal;
+        if (msgEl) msgEl.textContent = isFinal ? `already ${p.status}` : "";
       } catch (e) {
-        bodyEl.innerHTML = `<div class="err">Failed to load proposal: ${escape(e.message)}</div>`;
-        msgEl.textContent = "load failed";
+        if (bodyEl) bodyEl.innerHTML = `<div class="err">Failed to load proposal: ${escape(e.message)}</div>`;
+        if (msgEl) msgEl.textContent = "load failed";
       }
     }
 
     function closeAgentProposalModal() {
-      $("#agent-proposal-modal").hidden = true;
+      const modal = $("#agent-proposal-modal");
+      if (modal) modal.hidden = true;
       _currentAgentProposalId = null;
     }
+
+    // Auto-close delay (ms) for the agent proposal modal after a
+    // successful accept/reject; brief window so the user sees the
+    // success line before the modal disappears.
+    var AGENT_PROPOSAL_AUTO_CLOSE_MS = 700;
 
     async function decideAgentProposal(decision) {
       // Snapshot at entry so async work can detect if the user navigated
@@ -436,12 +471,17 @@
       // close, etc.) intended for the original proposal A.
       var propId = _currentAgentProposalId;
       if (!propId) return;
+      // Monotonic epoch tick. The id snapshot misses the same-id
+      // double-click case; the epoch catches it because every entry to
+      // this function gets a strictly larger value than any in-flight
+      // older call could ever observe.
+      const epoch = ++_decideAgentProposalEpoch;
       const acceptBtn = $("#agent-proposal-accept");
       const rejectBtn = $("#agent-proposal-reject");
       const msgEl = $("#agent-proposal-msg");
-      acceptBtn.disabled = true;
-      rejectBtn.disabled = true;
-      msgEl.textContent = decision + "ing…";
+      if (acceptBtn) acceptBtn.disabled = true;
+      if (rejectBtn) rejectBtn.disabled = true;
+      if (msgEl) msgEl.textContent = decision + "ing…";
       try {
         const r = await fetch(
           `/api/agents/proposals/${encodeURIComponent(propId)}/${decision}`,
@@ -449,8 +489,12 @@
         );
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+        // Stale-modal guard: either a newer call ticked the epoch, or the
+        // user swapped to a different proposal id. Either way, drop our
+        // UI mutations on the floor.
+        if (epoch !== _decideAgentProposalEpoch) return;
         if (propId !== _currentAgentProposalId) return;  // user navigated away
-        msgEl.textContent = decision === "accept"
+        if (msgEl) msgEl.textContent = decision === "accept"
           ? `installed at ${shortPath(data.target_path || data.installed_path || ".claude/agents/")}`
           : "rejected";
         setMsg("#agent-proposal-msg", "ok", `Proposal ${decision}ed`, 4000);
@@ -459,14 +503,16 @@
           // The new agent should appear in the catalog now.
           await loadAgents();
         }
+        if (epoch !== _decideAgentProposalEpoch) return;  // re-check post extra awaits
         if (propId !== _currentAgentProposalId) return;  // re-check after extra awaits
-        setTimeout(closeAgentProposalModal, 700);
+        setTimeout(closeAgentProposalModal, AGENT_PROPOSAL_AUTO_CLOSE_MS);
       } catch (e) {
+        if (epoch !== _decideAgentProposalEpoch) return;  // stale-handler guard
         if (propId !== _currentAgentProposalId) return;  // same guard on error path
-        msgEl.textContent = "failed: " + e.message;
+        if (msgEl) msgEl.textContent = "failed: " + e.message;
         setMsg("#agent-proposal-msg", "err", `Proposal ${decision} failed: ${e.message}`);
-        acceptBtn.disabled = false;
-        rejectBtn.disabled = false;
+        if (acceptBtn) acceptBtn.disabled = false;
+        if (rejectBtn) rejectBtn.disabled = false;
       }
     }
 
