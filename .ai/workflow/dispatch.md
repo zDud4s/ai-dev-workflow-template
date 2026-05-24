@@ -4,7 +4,7 @@ Shared rules for any controller (currently the orchestrator) that dispatches wor
 
 ## Dispatch contract
 
-A controller never substitutes its own model for a configured workflow phase. For every phase (`plan`, `execute`, `review`, `rescue`, `maintenance`, `bootstrap`):
+A controller never substitutes its own model for a configured workflow phase. For every phase (`plan`, `execute`, `review`, `rescue`, `maintenance`):
 
 1. Read `<phase>.tool` and `<phase>.model` from `.ai/models.yaml`.
 2. Build a standalone prompt packet for that phase, containing:

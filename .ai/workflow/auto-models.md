@@ -37,3 +37,4 @@ Rows evaluated in order, first match wins. `*` matches any value.
 - `effort` is consumed by both claude (`--effort`) and codex (`--config model_reasoning_effort`). Claude accepts `{low, medium, high, xhigh, max}`; codex accepts `{low, medium, high, xhigh}` — `max` is claude-only. Use `n/a` to keep the tool's default; the planner omits `reasoning_effort` from the emitted line in that case.
 - The `trivial` size never reaches downstream phases — the planner emits `TRIVIAL: ...` and stops. No row needed.
 - When no row matches a `(phase, size, risk, budget)` tuple, the planner omits the line for that phase and the orchestrator falls back to `models.yaml`.
+- `plan`, `maintenance`, and `bootstrap` are intentionally NOT listed. They are always served from `.ai/models.yaml` regardless of `auto_select.enabled` — auto-selection is reserved for the per-task phases (`execute`, `review`, `rescue`) whose model choice the planner can vary.

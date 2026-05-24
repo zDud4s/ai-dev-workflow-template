@@ -33,5 +33,5 @@ Filled packets flow via stdin/temp files (see `dispatch.md`); never Edit/Write `
 2. Bootstrap may NOT rewrite the workflow core nor implement product changes; preserve existing repository instructions.
 3. Executor must fill the Handoff section before declaring done. `Validation evidence` is mandatory — one block per validation command (exit code + output tail). Self-reported success without evidence is not acceptable.
 4. Prefer the smallest correct change; do not broaden scope silently.
-5. A phase only counts as correctly executed if launched through the tool/model configured in `.ai/models.yaml`.
+5. A phase SHOULD be launched through the tool/model configured in `.ai/models.yaml` (or the planner's `## Selected models` block when auto-select is enabled). Manual runs that bypass dispatch don't generate a `.ai/metrics.jsonl` row, so they can't be scored by the adaptive selector and won't appear in `## Phase execution log` — the orchestrator surfaces them as `source=manual` if a user later replays them through the pipeline.
 6. Review runs when Risk level is `elevated` OR Size is `medium`/`large`. Size alone never bypasses risk.

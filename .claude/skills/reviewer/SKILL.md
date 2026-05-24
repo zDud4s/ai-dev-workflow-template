@@ -25,7 +25,7 @@ Before checking scope, contracts, or regressions, verify the evidence trail. If 
 3. Every entry shows `exit: 0`, OR an explicit `could not run: <reason>` statement that you accept as legitimate (missing tooling, env unavailable). Self-reported "looks good" without a command block is NOT acceptable.
 4. The output tails are consistent with passing (no obvious failure lines like "FAIL", "error:", stack traces) — if a command exits 0 but the tail shows failure text, flag it.
 5. `Tests added` block exists in the Handoff. If the planning packet's `Tests to add` was non-empty, every planned test is accounted for: either marked `added` (and runs in Validation evidence with exit 0), or carries a concrete skip reason. Vague skips ("did not test", "skipped for time") fail this gate.
-6. Plan/execute test mismatch. The plan packet's `Tests to add:` and the execute packet's `## Tests / To add:` must agree. If one says `none` and the other lists tests (or vice versa), the plan was internally inconsistent — fail this gate and report which side was wrong.
+6. Plan/execute test mismatch. The plan packet's `Tests to add:` and the execute packet's `## Tests / To add:` must agree **after normalization** — strip leading/trailing whitespace, lowercase, treat empty `none`/`-` lists as equivalent. Byte-identical comparison is too strict because the packet templates use different syntax for the same data (field vs heading). If one names a test the other doesn't, or counts differ, the plan was internally inconsistent — fail this gate and report which side was wrong.
 
 Only after these gates pass do you proceed.
 

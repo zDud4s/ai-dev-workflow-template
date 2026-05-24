@@ -74,12 +74,12 @@ If accepted without changes, surface unresolved findings under `Risks` with "Rev
 ## Phase 4 - Wrap up
 
 1. **Pending deletions.** Ask for confirmation before any deletion; report declined deletions as unresolved.
-2. **Memory updates.** Collect executor/reviewer updates; dispatch maintenance with `consolidate: true` if updates exceed `.ai/project.yaml` threshold or contradict `.ai/memory.md`.
+2. **Memory updates.** Collect executor/reviewer updates and append them to `.ai/memory.md`. Maintenance auto-detects whether a consolidation pass is needed (size, contradictions, density triggers in its SKILL — no flag from the orchestrator). Dispatch maintenance only when there are pending updates to apply.
 3. **Report to user:** Summary, Files changed, Validation, Risks, Memory updates applied, and Phase execution log. Per-phase log line columns: `tool`, `model`, `source=auto|config` (`auto` when the value came from the planner's `## Selected models` block, `config` when from `.ai/models.yaml`), and when `source=auto`, the `reason` from the planner. `configured`, `resolved`, and `command` columns are unchanged.
 
 Examples:
-`plan tool=claude model=claude-sonnet-4-6 source=config configured=auto resolved=inline command=inline`
-`execute tool=codex model=gpt-5.4 source=auto reason="small/low/medium-budget" configured=auto resolved=dispatcher command=codex exec ...`
+`plan tool=claude model=claude-opus-4-7 source=config configured=auto resolved=inline command=inline`
+`execute tool=codex model=gpt-5.5 source=auto reason="small/low/medium-budget" configured=auto resolved=dispatcher command=codex exec ...`
 
 ## Dispatched-phase prompt contents
 

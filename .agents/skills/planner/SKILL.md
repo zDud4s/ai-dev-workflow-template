@@ -17,8 +17,8 @@ Triage has two axes: **Size** controls plan complexity. **Risk level** controls 
 
 ### Step 1 — Size
 
-- **trivial**: single file, <10 lines, no cross-cutting concern. Output only: `TRIVIAL: [one-line instruction]` and stop, UNLESS Risk level is `elevated` — in that case promote to `small` and emit a full packet.
-- **small**: 1-3 files, clear scope. Produce a minimal execution packet.
+- **trivial**: 1 file AND <10 lines AND no cross-cutting concern. Output only: `TRIVIAL: [one-line instruction]` and stop, UNLESS Risk level is `elevated` — in that case promote to `small` and emit a full packet.
+- **small**: 1-3 files OR (1 file with ≥10 lines), clear scope. Produce a minimal execution packet.
 - **medium**: 4-10 files or crosses subsystem boundaries. Full plan + execution packet(s).
 - **large**: >10 files or unclear architecture. Full plan + execution packet(s).
 

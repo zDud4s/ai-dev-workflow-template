@@ -44,7 +44,7 @@ Sum the six criterion scores to a total `NN/100` and assign a letter grade using
 - Single-sentence vague description such as `description: helps with code`.
 - Starts with a noun or adjective instead of a verb.
 
-**Good example** (from `~/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/agents/code-reviewer.md`):
+**Good example** (from `~/.claude/plugins/cache/claude-plugins-official/superpowers/*/agents/code-reviewer.md`):
 
 ```yaml
 description: |
