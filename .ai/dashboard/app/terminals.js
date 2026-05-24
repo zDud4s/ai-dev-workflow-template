@@ -267,6 +267,20 @@
     // via the Run / Sessions tabs.
     var PICKER_MAX_PER_GROUP = 50;
 
+    // Auto-grow composer textareas up to this many CSS pixels so multi-
+    // line prompts don't get clipped to one row but the composer also
+    // doesn't eat the entire pane. Previously hardcoded as the literal
+    // ``220`` at five sites (draft, regular chat, transcript fork,
+    // resume reset, codex-rekey reset).
+    var COMPOSER_AUTOSIZE_MAX_PX = 220;
+
+    // Default duration for #term-msg toast messages. The pre-existing
+    // call sites all used the literal ``4000``; this single source of
+    // truth keeps subsequent UX tweaks (e.g. lower to 3000 for snappier
+    // feedback) one-line affairs and prevents the linter-eye from
+    // mistaking 4000-ms toasts for a stream-timeout / network constant.
+    var TERM_MSG_DURATION_MS = 4000;
+
     async function termRefreshPicker(jobs) {
       const sel = $("#term-picker");
       if (!sel) return;
@@ -508,7 +522,7 @@
       // Auto-grow the textarea exactly like real panes do.
       const autosize = () => {
         input.style.height = "auto";
-        const next = Math.min(input.scrollHeight, 220);
+        const next = Math.min(input.scrollHeight, COMPOSER_AUTOSIZE_MAX_PX);
         input.style.height = next + "px";
       };
       input.addEventListener("input", autosize);
@@ -595,7 +609,7 @@
         const typeSelected = parseType();
         const text = input.value.trim();
         if (!model) {
-          setMsg("#term-msg", "err", "Pick a model before sending.", 4000);
+          setMsg("#term-msg", "err", "Pick a model before sending.", TERM_MSG_DURATION_MS);
           return;
         }
 
@@ -648,7 +662,7 @@
             note.style.color = "var(--bad)";
             note.textContent = "[open shell failed: " + err.message + "]";
             body.appendChild(note);
-            setMsg("#term-msg", "err", "Open shell failed: " + err.message, 4000);
+            setMsg("#term-msg", "err", "Open shell failed: " + err.message, TERM_MSG_DURATION_MS);
           }
           return;
         }
@@ -668,7 +682,7 @@
           if (attached.images.length || attached.files.length) {
             setMsg("#term-msg", "warn",
               "Type a first message — attachments need a text turn to send with.",
-              4000);
+              TERM_MSG_DURATION_MS);
           }
           input.focus();
           return;
@@ -710,7 +724,7 @@
           note.style.color = "var(--bad)";
           note.textContent = "[start failed: " + err.message + "]";
           body.appendChild(note);
-          setMsg("#term-msg", "err", "Start failed: " + err.message, 4000);
+          setMsg("#term-msg", "err", "Start failed: " + err.message, TERM_MSG_DURATION_MS);
         }
       };
 
@@ -777,6 +791,14 @@
       if (m) m.textContent = "0 / 0";
     }
 
+    // Defensive cap on text-node scan per termRunSearch invocation. A
+    // chat pane that's been streaming for an hour can accumulate tens of
+    // thousands of text nodes; combined with the existing 150ms debounce
+    // this bound keeps a single search call bounded even on enormous
+    // panes. The previous text scrolls off-screen but stays in DOM so
+    // anchoring on the most-recent N keeps the search responsive.
+    var TERM_SEARCH_NODE_CAP = 20000;
+
     function termRunSearch(t) {
       termClearSearchHighlights(t);
       const q = t.pane.querySelector(".term-search input").value;
@@ -784,7 +806,11 @@
       const lower = q.toLowerCase();
       const walker = document.createTreeWalker(t.body, NodeFilter.SHOW_TEXT, null);
       const targets = [];
+      // Bound the walk so panes with extremely large DOM trees don't
+      // burn 100ms per search call even after the input debounce.
+      let scanned = 0;
       while (walker.nextNode()) {
+        if (++scanned > TERM_SEARCH_NODE_CAP) break;
         const n = walker.currentNode;
         if (!n.nodeValue) continue;
         if (n.parentElement.closest(".term-search, mark.term-hit")) continue;
@@ -1073,7 +1099,7 @@
         // past the bottom or the pane is collapsed in list mode, the
         // inline ``[input failed]`` line is invisible. setMsg is the only
         // reliable signal that the operator's click did not land.
-        setMsg("#term-msg", "err", "Send failed: " + e.message, 4000);
+        setMsg("#term-msg", "err", "Send failed: " + e.message, TERM_MSG_DURATION_MS);
         if (/not running|409/i.test(e.message)) termSetDead(t, "ended");
       } finally {
         t.sendBtn.disabled = false;
@@ -1123,7 +1149,7 @@
         err.style.color = "var(--bad)";
         err.textContent = `[resume failed: ${e.message}]`;
         t.body.appendChild(err);
-        setMsg("#term-msg", "err", "Resume failed: " + e.message, 4000);
+        setMsg("#term-msg", "err", "Resume failed: " + e.message, TERM_MSG_DURATION_MS);
       } finally {
         t.sendBtn.disabled = false;
         try { t.input.focus(); } catch (_) {}
@@ -1212,7 +1238,7 @@
         err.style.color = "var(--bad)";
         err.textContent = "[codex session id unavailable — wait for the current turn to finish before sending again]";
         t.body.appendChild(err);
-        setMsg("#term-msg", "err", "Codex session not yet captured; try again in a moment.", 4000);
+        setMsg("#term-msg", "err", "Codex session not yet captured; try again in a moment.", TERM_MSG_DURATION_MS);
         return;
       }
       // Render the operator's message locally before the new job spawns
@@ -1282,7 +1308,7 @@
         err.style.color = "var(--bad)";
         err.textContent = `[next turn failed: ${e.message}]`;
         t.body.appendChild(err);
-        setMsg("#term-msg", "err", "next turn failed: " + e.message, 4000);
+        setMsg("#term-msg", "err", "next turn failed: " + e.message, TERM_MSG_DURATION_MS);
         if (t.input) t.input.disabled = false;
         if (t.sendBtn) { t.sendBtn.disabled = false; t.sendBtn.textContent = "send"; }
         termSetActivity(t, "error", "ended");
@@ -1905,7 +1931,10 @@
       if (/\bcodex\s+exec(\s|$)/.test(cmd)) return true;
       // Claude CLI dispatch in non-interactive mode.
       if (/\bclaude(\.[a-z]+)?\s+(-p\b|--print\b)/i.test(cmd)) return true;
-      if (/\bclaude(\.[a-z]+)?\s+.*--input-format\s+stream-json/.test(cmd)) return true;
+      // ``/i`` mirrors the -p/--print sibling — Windows shells (cmd.exe)
+      // commonly receive flag names in mixed case (``--Input-Format``)
+      // and dropping the flag here caused us to miss dispatching.
+      if (/\bclaude(\.[a-z]+)?\s+.*--input-format\s+stream-json/i.test(cmd)) return true;
       return false;
     }
 
@@ -1926,7 +1955,11 @@
       const grid = $("#terms-grid");
       if (!grid) return;
       const cmd = input?.command || "";
-      const isCodex = /\bcodex\s+exec/.test(cmd);
+      // Anchor with (\s|$) — mirrors the termIsLLMDispatchCommand pattern
+      // so the label correctly resolves "Codex" only for ``codex exec``
+      // invocations and never matches ``codex executor`` or similar
+      // identifier prefixes embedded in a longer Bash command.
+      const isCodex = /\bcodex\s+exec(\s|$)/.test(cmd);
       // tool_use_ids look like `toolu_01XXXXX...` — slice past the prefix
       // so the label shows characters that actually distinguish dispatches
       // instead of the literal "toolu_".
@@ -2114,6 +2147,11 @@
       ];
     }
 
+    // LCS DP grid cliff. Above this cell count we bail out to
+    // _fallbackDiffStub before allocating (n+1) Int32Arrays of size
+    // (m+1) — browsers freeze noticeably above ~100k cells.
+    var SIMPLE_LINE_DIFF_CELL_CAP = 100_000;
+
     // Line-level diff using LCS backtrace. Falls back to a stub for huge
     // edits to bound memory. The cliff is tightened to
     // oldLines.length * newLines.length > 100_000 (was 200_000) — at
@@ -2123,7 +2161,7 @@
       const oldLines = oldStr.split("\n");
       const newLines = newStr.split("\n");
       const n = oldLines.length, m = newLines.length;
-      if (oldLines.length * newLines.length > 100000) {
+      if (oldLines.length * newLines.length > SIMPLE_LINE_DIFF_CELL_CAP) {
         return _fallbackDiffStub(oldLines, newLines);
       }
       const a = oldLines, b = newLines;
@@ -2563,7 +2601,7 @@
         try {
           await postJson(`/api/ptys/${ptyId}/kill`, {});
         } catch (err) {
-          setMsg("#term-msg", "err", "Kill failed: " + err.message, 4000);
+          setMsg("#term-msg", "err", "Kill failed: " + err.message, TERM_MSG_DURATION_MS);
         }
       });
 
@@ -2858,7 +2896,7 @@
       // get clipped to one line but also don't eat the entire pane.
       const autosize = () => {
         input.style.height = "auto";
-        const next = Math.min(input.scrollHeight, 220);
+        const next = Math.min(input.scrollHeight, COMPOSER_AUTOSIZE_MAX_PX);
         input.style.height = next + "px";
       };
       input.addEventListener("input", autosize);
@@ -2958,7 +2996,7 @@
           // Previously this branch silently swallowed errors — the operator
           // clicked "cancel", nothing happened, no toast, no log. Surface
           // the failure so they know the cancel did not actually land.
-          setMsg("#term-msg", "err", "Cancel failed: " + err.message, 4000);
+          setMsg("#term-msg", "err", "Cancel failed: " + err.message, TERM_MSG_DURATION_MS);
         }
       });
       pane.querySelector(".stop-btn")?.addEventListener("click", async (e) => {
@@ -2971,7 +3009,7 @@
           note.style.color = "var(--bad)";
           note.textContent = "[stop failed: " + err.message + "]";
           t.body.appendChild(note);
-          setMsg("#term-msg", "err", "Stop failed: " + err.message, 4000);
+          setMsg("#term-msg", "err", "Stop failed: " + err.message, TERM_MSG_DURATION_MS);
         }
       });
       pane.querySelector(".pin-btn")?.addEventListener("click", (e) => {
@@ -3251,7 +3289,7 @@
           err.style.color = "var(--bad)";
           err.textContent = `[fork failed: ${e.message}]`;
           t.body.appendChild(err);
-          setMsg("#term-msg", "err", "Fork failed: " + e.message, 4000);
+          setMsg("#term-msg", "err", "Fork failed: " + e.message, TERM_MSG_DURATION_MS);
           // Restore the composer so the operator can retry.
           t.input.value = text;
           t.input.disabled = false;
@@ -3274,7 +3312,7 @@
       // one line meant the operator couldn't see what they were writing.
       const transcriptAutosize = () => {
         t.input.style.height = "auto";
-        t.input.style.height = Math.min(t.input.scrollHeight, 220) + "px";
+        t.input.style.height = Math.min(t.input.scrollHeight, COMPOSER_AUTOSIZE_MAX_PX) + "px";
       };
       t.input.addEventListener("input", transcriptAutosize);
 
@@ -3591,7 +3629,7 @@
           }
         }
       } catch (e) {
-        setMsg("#term-msg", "err", "jobs: " + e.message, 4000);
+        setMsg("#term-msg", "err", "jobs: " + e.message, TERM_MSG_DURATION_MS);
       }
       try {
         const r = await fetch("/api/transcripts", { cache: "no-store" });
@@ -3614,16 +3652,16 @@
           }
         }
       } catch (e) {
-        setMsg("#term-msg", "err", "transcripts: " + e.message, 4000);
+        setMsg("#term-msg", "err", "transcripts: " + e.message, TERM_MSG_DURATION_MS);
       }
       if (!opened && !already) {
-        setMsg("#term-msg", "warn", `nothing active (scanned ${scanned} job/transcript entr(ies))`, 4000);
+        setMsg("#term-msg", "warn", `nothing active (scanned ${scanned} job/transcript entr(ies))`, TERM_MSG_DURATION_MS);
         return;
       }
       const msg = opened
         ? `opened ${opened}${already ? `, ${already} already open` : ""}`
         : `${already} already open — nothing to do`;
-      setMsg("#term-msg", opened ? "ok" : "warn", msg, 4000);
+      setMsg("#term-msg", opened ? "ok" : "warn", msg, TERM_MSG_DURATION_MS);
     }
 
     // Status-pill texts that mean "this pane is finished and can be
@@ -3700,7 +3738,7 @@
           termFocusNewPane(id);
           await loadJobs();
         } catch (e) {
-          setMsg("#term-msg", "err", e.message, 4000);
+          setMsg("#term-msg", "err", e.message, TERM_MSG_DURATION_MS);
         }
       });
       $("#term-new")?.addEventListener("click", termOpenDraft);
