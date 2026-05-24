@@ -16,6 +16,26 @@
     // their parent stream) are intentionally excluded.
     var PERSIST_KEY = "dash.openPanes.v1";
     var _persistTimer = null;
+
+    // Shared, short-lived /api/transcripts fetch so a burst of pane opens
+    // (restoreOpenPanes spinning up 6 panes, the picker refreshing, etc.)
+    // collapses into one HTTP request. Each transcript entry carries the
+    // ``task`` preview the server already extracts, so a collapsed pane
+    // can render a meaningful label without opening its SSE stream.
+    var _transcriptsListPromise = null;
+    function fetchTranscriptsListCached() {
+      if (_transcriptsListPromise) return _transcriptsListPromise;
+      _transcriptsListPromise = fetch("/api/transcripts", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : { transcripts: [] }))
+        .catch(() => ({ transcripts: [] }));
+      // Hold the cached promise for a short window so concurrent callers
+      // share it, then drop it so a later open sees fresh data. 2s is
+      // long enough to cover a restoreOpenPanes burst (which fires N
+      // termOpenTranscript synchronously) and short enough that the
+      // picker's next refresh re-fetches.
+      setTimeout(() => { _transcriptsListPromise = null; }, 2000);
+      return _transcriptsListPromise;
+    }
     function persistOpenPanes() {
       // Debounce so a burst of mutations (open + collapse + scroll) only
       // serialises once.
@@ -194,6 +214,18 @@
       t.pane.classList.toggle("collapsed", !!collapsed);
       const btn = t.pane.querySelector(".expand-btn");
       if (btn) btn.textContent = collapsed ? "expand" : "collapse";
+      // Lazy transcript streaming: collapsed transcript panes don't hold
+      // an EventSource (which would consume one of the browser's ~6
+      // HTTP/1.1 connection slots per origin). Expand attaches the
+      // stream; collapse releases it. See termOpenTranscript for the
+      // rationale.
+      if (t.kind === "transcript") {
+        if (collapsed) {
+          if (typeof t.closeStream === "function") t.closeStream();
+        } else {
+          if (typeof t.openStream === "function") t.openStream();
+        }
+      }
       if (!collapsed) {
         // Operator opened the pane — clear the "new activity" indicator
         // and pulse so the row isn't shouting anymore.
@@ -1079,7 +1111,7 @@
         termClosePty(jobId);
         return;
       }
-      try { t.source.close(); } catch (e) { console.warn("[terminals] termClose: SSE close failed: " + (e && e.message ? e.message : e)); }
+      try { t.source && t.source.close(); } catch (e) { console.warn("[terminals] termClose: SSE close failed: " + (e && e.message ? e.message : e)); }
       // Stop the SSE heartbeat watchdog so the closed pane doesn't keep
       // a timer alive that calls termSetDead on an already-removed pane.
       if (t._sseHeartbeat) {
@@ -3556,33 +3588,81 @@
       };
       t.input.addEventListener("input", transcriptAutosize);
 
-      const es = new EventSource(`/api/transcripts/${sessionId}/stream`);
-      t.source = es;
       const statusPill = pane.querySelector(".status-pill");
-      es.onopen = () => {
-        // ``IDE live`` keeps the "claude" tool-identity class for colour
-        // while running. We don't add a state class here — running is the
-        // implicit default for an active mirror.
-        statusPill.textContent = "IDE live";
-        termSetActivity(t, "mirroring…", "busy");
+      // Stream is lazy: only attach the EventSource while the pane is
+      // expanded. Browsers cap HTTP/1.1 connections per origin at ~6, so
+      // 6 restored transcript panes auto-streaming at once would starve
+      // every other AJAX request (jobs polling, sessions, etc.) and make
+      // the dashboard appear stuck. Collapsed panes are passive observers
+      // — there's nothing to render — so they don't need to hold a slot.
+      // termSetCollapsed wires expand -> openStream / collapse -> close.
+      t.openStream = () => {
+        if (t.source) return;
+        const es = new EventSource(`/api/transcripts/${sessionId}/stream`);
+        t.source = es;
+        es.onopen = () => {
+          // ``IDE live`` keeps the "claude" tool-identity class for colour
+          // while running. We don't add a state class here — running is the
+          // implicit default for an active mirror.
+          statusPill.textContent = "IDE live";
+          termSetActivity(t, "mirroring…", "busy");
+        };
+        es.onmessage = (ev) => termHandleTranscriptChunk(t, ev.data + "\n");
+        es.addEventListener("end", () => {
+          termSetPillState(statusPill, "done", "IDE ended");
+          termSetActivity(t, "ended", "ready");
+          try { es.close(); } catch (_) {}
+          t.source = null;
+        });
+        es.onerror = () => {
+          // Same rationale as the chat-pane onerror: don't paint the pane
+          // as "disconnected" while the browser is still trying to reconnect
+          // (readyState === CONNECTING). Only flip the status when the
+          // browser has given up (CLOSED). Otherwise a momentary network
+          // glitch turns a perfectly healthy mirror pane red until F5.
+          if (t.pane.classList.contains("dead")) return;
+          if (es.readyState !== EventSource.CLOSED) return;
+          termSetPillState(statusPill, "warn", "disconnected");
+          termSetActivity(t, "disconnected", "ended");
+        };
       };
-      es.onmessage = (ev) => termHandleTranscriptChunk(t, ev.data + "\n");
-      es.addEventListener("end", () => {
-        termSetPillState(statusPill, "done", "IDE ended");
-        termSetActivity(t, "ended", "ready");
-        try { es.close(); } catch (_) {}
-      });
-      es.onerror = () => {
-        // Same rationale as the chat-pane onerror: don't paint the pane
-        // as "disconnected" while the browser is still trying to reconnect
-        // (readyState === CONNECTING). Only flip the status when the
-        // browser has given up (CLOSED). Otherwise a momentary network
-        // glitch turns a perfectly healthy mirror pane red until F5.
-        if (t.pane.classList.contains("dead")) return;
-        if (es.readyState !== EventSource.CLOSED) return;
-        termSetPillState(statusPill, "warn", "disconnected");
-        termSetActivity(t, "disconnected", "ended");
+      t.closeStream = () => {
+        if (!t.source) return;
+        try { t.source.close(); } catch (_) {}
+        t.source = null;
+        statusPill.textContent = "IDE paused";
+        termSetActivity(t, "paused (expand to resume)", "ready");
       };
+      // Transcript panes always start collapsed (see the classList.add
+      // above), so we deliberately do NOT openStream here — the lazy
+      // path keeps the browser's connection budget free for AJAX until
+      // the operator actually expands the pane. Render the same idle
+      // state closeStream() uses so a never-opened pane and a
+      // collapsed-after-open pane are visually indistinguishable,
+      // instead of leaving the stale "mirroring…" template text.
+      statusPill.textContent = "IDE paused";
+      termSetActivity(t, "paused (expand to resume)", "ready");
+
+      // Hydrate the pane's task label from /api/transcripts without
+      // opening the SSE stream. The list endpoint already returns the
+      // first-user-message preview the picker uses, so a collapsed pane
+      // can show "Maintenance tasks and updates" instead of the generic
+      // "IDE chat dd75841c…" template until the operator decides to
+      // expand. Fire-and-forget — the label updates a tick later but the
+      // pane is already on screen.
+      fetchTranscriptsListCached().then((data) => {
+        const entry = (data.transcripts || []).find((e) => e.session_id === sessionId);
+        if (!entry || !entry.task) return;
+        const preview = String(entry.task).replace(/\s+/g, " ").trim().slice(0, 80);
+        if (!preview) return;
+        const taskEl = pane.querySelector(".task");
+        if (taskEl) {
+          taskEl.textContent = preview;
+          taskEl.title = preview + "  ·  session " + sessionId;
+        }
+        t.task = preview;
+      }).catch(() => { /* label stays as the SID placeholder */ });
+
       termRenderEmptyState();
       termRefreshTranscriptPicker();
       persistOpenPanes();
