@@ -49,6 +49,7 @@ import os
 import queue as _stdqueue
 import re
 import secrets
+import select
 import shutil
 import socket
 import socketserver
@@ -5911,6 +5912,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if time.monotonic() - session_start > MAX_SSE_SESSION_S:
                 self._write_sse_event("end", '{"reason":"max_session"}')
                 return
+            # Wait up to 1s for either the file to grow OR the client to
+            # disconnect. Replaces the previous unconditional sleep(1.0):
+            # the cadence for file-stat polling is unchanged, but disconnect
+            # is now detected within milliseconds via FIN on the socket
+            # read-side instead of waiting for a future wfile.write to
+            # surface a broken pipe — which on Windows can be delayed
+            # for many minutes while small chunks still fit in the kernel
+            # send buffer, accumulating phantom request threads.
+            try:
+                readable, _, _ = select.select([self.connection], [], [], 1.0)
+            except (OSError, ValueError):
+                return
+            if readable and self._sse_client_gone():
+                return
             try:
                 size = path.stat().st_size
             except OSError:
@@ -5933,7 +5948,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     return
-            time.sleep(1.0)
         self._write_sse_event("end", "{}")
 
     def _handle_sessions_list(self) -> None:
@@ -6405,6 +6419,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if time.monotonic() - session_start > MAX_SSE_SESSION_S:
                     self._write_sse_event("end", '{"reason":"max_session"}')
                     return
+                # Catch client disconnect between chunks. A chatty job
+                # whose chunks all fit in the kernel send buffer would
+                # otherwise spin through ``_write_sse_frame`` indefinitely
+                # after the browser has closed the EventSource — broken
+                # pipe is only surfaced once the buffer fills, which on
+                # Windows can take minutes.
+                if self._sse_client_gone():
+                    return
                 try:
                     chunk = q.get(timeout=15)
                 except _queue.Empty:
@@ -6449,6 +6471,40 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             return False
         return True
+
+    def _sse_client_gone(self) -> bool:
+        """Non-blocking probe: has the SSE peer half-closed the socket?
+
+        SSE is one-way (server -> client); the client never pushes bytes.
+        So a readable signal on the request socket is either FIN (peer
+        closed cleanly, MSG_PEEK returns b"") or RST (raises OSError).
+        Both mean: drop the request thread now.
+
+        Why this exists: ``wfile.write`` only surfaces a broken pipe once
+        the OS has given up on the peer. On Windows that can be minutes
+        as long as small outbound chunks still fit in the kernel send
+        buffer — a chatty transcript or job stream therefore keeps
+        feeding a phantom client and pins a thread + file handle until
+        the 30-minute wall-clock cap. Polling the read side closes that
+        gap to milliseconds.
+        """
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            if not readable:
+                return False
+            data = self.connection.recv(1, socket.MSG_PEEK)
+            if not data:
+                return True
+            # Stray bytes from the client (SSE shouldn't have any). Drain
+            # them so the next select doesn't keep firing on the same
+            # buffered data, and treat the connection as still alive.
+            try:
+                self.connection.recv(4096)
+            except (OSError, ValueError):
+                return True
+            return False
+        except (OSError, ValueError):
+            return True
 
     def _handle_dispatch_mode(self, body: dict) -> None:
         mode = (body.get("mode") or "").strip()
