@@ -125,14 +125,22 @@ _TRUSTED_SHELL_DIRS: tuple[str, ...] = (
 def _is_under_trusted_dir(path: str) -> bool:
     """Return True iff ``path`` lives under one of ``_TRUSTED_SHELL_DIRS``.
 
-    Case-insensitive on Windows; uses ``os.path.normpath`` to collapse
-    ``..`` segments and normalize separators so an attacker can't escape
-    the check with e.g. ``C:\\Windows\\System32\\..\\..\\evil.exe``.
+    Case-insensitive on Windows; uses ``os.path.realpath`` to resolve
+    symlinks/junctions so the ACTUAL binary (not the link) is what gets
+    checked. A symlink at e.g. ``/usr/local/bin/bash`` pointing at
+    ``/home/attacker/evil`` would otherwise pass the prefix check on
+    the link itself even when the target is unauthorized. Falls back
+    to ``os.path.normpath`` only when ``realpath`` raises (e.g. broken
+    link or transient FS error) so the function still returns a
+    deterministic answer.
     """
     if not path:
         return False
     try:
-        norm = os.path.normpath(path)
+        try:
+            norm = os.path.realpath(path)
+        except OSError:
+            norm = os.path.normpath(path)
     except (TypeError, ValueError):
         return False
     if sys.platform == "win32":
