@@ -49,6 +49,7 @@ import os
 import queue as _stdqueue
 import re
 import shutil
+import socket
 import socketserver
 import struct
 import subprocess
@@ -68,6 +69,12 @@ from pathlib import Path
 import pty_session as _pty_session  # noqa: E402 — sibling module
 
 PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
+# The actually-bound port. Diverges from PORT when main()'s dynamic-port
+# fallback picks a different candidate (e.g. another project already holds
+# PORT). CSRF allowlist and /api/system/info read this so a second
+# concurrent dashboard validates Origins against its real port instead of
+# the stale configured one.
+BOUND_PORT = PORT
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 _SERVER_STARTED_AT = time.time()
 # Source of truth for the workflow template. /api/workflow/check and
@@ -938,16 +945,23 @@ class _WsClosed(Exception):
 
 
 def _origin_allowed(headers) -> bool:
-    """Origin allowlist for PTY endpoints. Returns True iff:
-      - the Origin header is absent (curl / programmatic clients), OR
-      - it exactly matches http://127.0.0.1:<PORT> or http://localhost:<PORT>.
+    """Origin allowlist for state-changing requests. Returns True iff:
+      - the Origin header is present, AND
+      - it exactly matches a loopback dashboard origin for the bound port.
     'null' Origin (sandboxed iframes / file://) is rejected. No trailing-
-    slash tolerance -- Origin per RFC6454 has no path.
+    slash tolerance -- Origin per RFC6454 has no path. Validates against
+    BOUND_PORT (the port the server is actually listening on) rather than
+    the configured PORT, so the dynamic-port-fallback in main() doesn't
+    break CSRF for the second concurrent dashboard.
     """
     origin = headers.get("Origin")
     if origin is None:
-        return True
-    allowed = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
+        return False
+    allowed = {
+        f"http://127.0.0.1:{BOUND_PORT}",
+        f"http://localhost:{BOUND_PORT}",
+        f"http://[::1]:{BOUND_PORT}",
+    }
     return origin in allowed
 
 
@@ -3764,6 +3778,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
+        if not self._csrf_guard():
+            return
         body = self._read_json_body()
         if body is None:
             return  # already responded with 400
@@ -3830,6 +3846,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # otherwise a Ctrl+F5 is required after every change.
         self.send_header("Cache-Control", "no-store, must-revalidate")
         super().end_headers()
+
+    def _csrf_guard(self) -> bool:
+        if not _origin_allowed(self.headers):
+            self._json(403, {"error": "origin not allowed"})
+            return False
+        return True
 
     def _read_json_body(self) -> dict | None:
         # Reject oversized bodies up front using only the Content-Length
@@ -4448,7 +4470,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             host, port = self.server.server_address[0], self.server.server_address[1]
         except Exception as e:
             print(f"[serve] system_info: server_address read failed: {e}", flush=True)
-            host, port = "127.0.0.1", PORT
+            host, port = "127.0.0.1", BOUND_PORT
         self._json(200, {
             "host": host,
             "port": port,
@@ -5703,9 +5725,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json(200, summary)
 
     def _handle_pty_create(self, body: dict) -> None:
-        if not _origin_allowed(self.headers):
-            self._json(403, {"error": "origin not allowed"})
-            return
         shell = body.get("shell")
         if shell is not None and not isinstance(shell, str):
             self._json(400, {"error": "shell must be a string"})
@@ -6281,12 +6300,30 @@ class _ThreadedServer(socketserver.ThreadingTCPServer):
     JSONL ledgers, corrupting them. With daemon threads the process exits
     cleanly on Ctrl+C and threads are torn down with the process.
 
-    ``allow_reuse_address`` lets the dashboard restart immediately after
-    Ctrl+C without waiting for the TIME_WAIT socket window to expire.
+    Port-exclusivity is platform-specific. On POSIX, ``SO_REUSEADDR`` lets
+    the dashboard restart immediately after Ctrl+C without waiting for the
+    TIME_WAIT window to expire, *without* breaking exclusivity — two
+    processes can never both bind to the same loopback address. On Windows
+    the same flag has opposite semantics: two processes that both set
+    ``SO_REUSEADDR`` silently share the address and the kernel splits
+    incoming connections between them unpredictably. We therefore disable
+    ``SO_REUSEADDR`` on Windows and set ``SO_EXCLUSIVEADDRUSE`` in
+    ``server_bind`` instead — that flag enforces exclusivity while still
+    permitting fast restart. Net effect: when a second ``python serve.py``
+    launches in another project, its bind to the configured port fails
+    cleanly with WSAEADDRINUSE and ``main()``'s dynamic port fallback
+    actually fires.
     """
 
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = (sys.platform != "win32")
+
+    def server_bind(self) -> None:
+        if sys.platform == "win32":
+            self.socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
+            )
+        super().server_bind()
 
 
 def main() -> None:
@@ -6316,6 +6353,12 @@ def main() -> None:
             continue
     if httpd is None or bound is None:
         raise SystemExit(f"could not bind to any port starting at {PORT}: {last_err}")
+    # Publish the bound port so _origin_allowed (CSRF) and /api/system/info
+    # validate against the port the server is actually listening on, not
+    # the configured one. Critical when the fallback above picked a
+    # different candidate.
+    global BOUND_PORT
+    BOUND_PORT = bound
     with httpd:
         url = f"http://localhost:{bound}/.ai/dashboard/"
         if bound != PORT:
