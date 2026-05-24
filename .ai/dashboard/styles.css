@@ -3410,9 +3410,20 @@
     }
 
     /* ---------------- Responsive ---------------- */
-    @media (max-width: 920px) {
+    /* Portrait tablets (768-1100px wide, taller than wide) hit the same
+       layout failure as narrow phones: 272px sidebar reserves space for
+       a nav that should already be horizontal at the top. Trigger the
+       full collapse here, not just the inner .split / toast tweaks. */
+    @media (max-width: 920px),
+           (max-width: 1100px) and (orientation: portrait) {
       body {
         grid-template-columns: 1fr;
+        /* Header + nav are intrinsic, main absorbs the remainder. The
+           desktop default `grid-template-rows: auto 1fr` would put the
+           1fr on the NAV row in this 3-row template, stretching it to
+           fill the viewport and shoving main far off-screen — the gap
+           that made portrait look broken. */
+        grid-template-rows: auto auto 1fr;
         grid-template-areas: "header" "nav" "main";
       }
       header {
@@ -3424,9 +3435,14 @@
       nav {
         flex-direction: row;
         flex-wrap: wrap;
+        /* Defensive: keep wrapped rows packed at the top regardless of
+           the grid cell's allocated height. Without this, `align-content:
+           stretch` (the default) makes each row absorb half the cell. */
+        align-content: flex-start;
         border-right: 0;
         border-bottom: 1px solid var(--border);
         padding: var(--s-2) var(--s-3);
+        overflow-y: visible;
       }
       nav::before { display: none; }
       nav .section-label { display: none; }
