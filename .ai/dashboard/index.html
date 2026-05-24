@@ -427,11 +427,16 @@
       <div class="form-card run-form">
         <h3>Trigger a workflow run</h3>
 
-        <div class="run-mode-tabs" role="tablist" aria-label="Run mode">
-          <button type="button" class="run-mode-tab active" data-run-mode="chat" role="tab" aria-controls="run-kind" aria-selected="true">
+        <!-- Segmented toggle, not a tablist: these buttons filter the
+             options inside #run-kind; they don't switch between
+             tabpanels. role=tab + aria-controls pointing at a <select>
+             was wrong (WCAG 4.1.2). Group + aria-pressed is the toggle-
+             button pattern. -->
+        <div class="run-mode-tabs" role="group" aria-label="Run mode">
+          <button type="button" class="run-mode-tab active" data-run-mode="chat" aria-pressed="true">
             Chat <span class="run-mode-sub">interactive session</span>
           </button>
-          <button type="button" class="run-mode-tab" data-run-mode="workflow" role="tab" aria-controls="run-kind" aria-selected="false">
+          <button type="button" class="run-mode-tab" data-run-mode="workflow" aria-pressed="false">
             Workflow <span class="run-mode-sub">background plan / orchestrate</span>
           </button>
         </div>

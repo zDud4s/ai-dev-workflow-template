@@ -445,7 +445,7 @@
       document.querySelectorAll(".run-mode-tab").forEach((b) => {
         const active = b.dataset.runMode === mode;
         b.classList.toggle("active", active);
-        b.setAttribute("aria-selected", active ? "true" : "false");
+        b.setAttribute("aria-pressed", active ? "true" : "false");
       });
       updateRunHint();
       if (typeof loadSessions === "function") loadSessions();
