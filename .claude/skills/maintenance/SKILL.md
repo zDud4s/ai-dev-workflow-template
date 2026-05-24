@@ -14,7 +14,7 @@ If `.ai/project.yaml` has `project_name: unknown` and `stack` empty, STOP: "Run 
 
 The workflow core is immutable by default. Only maintain the mutable project layer unless the user explicitly asks for a core change.
 
-Immutable core: root AGENTS.md, escalation policy, packet schemas, planner/reviewer/rescue/bootstrap behavior, safety boundaries.
+Immutable core: root AGENTS.md, escalation policy, packet schemas (`.ai/packets/*.md`), all files under `.claude/skills/*/SKILL.md` and `.agents/skills/*/SKILL.md` (planner, reviewer, rescue, maintenance, bootstrap, orchestrate, codex, agent-creator, agent-improver, plus any future skill), safety boundaries.
 
 Mutable layer: `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md`, local AGENTS.md inside subdirectories.
 

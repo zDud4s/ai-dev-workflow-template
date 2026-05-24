@@ -23,7 +23,7 @@ tools: Read, Bash, AskUserQuestion
 
 ### Running a Task
 
-Use `AskUserQuestion` once to ask for model (`gpt-5.4`, `gpt-5.3-codex-spark`, or `gpt-5.3-codex`) and reasoning effort (`xhigh`, `high`, `medium`, or `low`). Use `--skip-git-repo-check`, `-C <dir>` when needed, and append `2>/dev/null` unless debugging requires stderr.
+Use `AskUserQuestion` once to ask for model (`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, or `gpt-5.3-codex`) and reasoning effort (`xhigh`, `high`, `medium`, or `low`). Use `--skip-git-repo-check`, `-C <dir>` when needed, and append `2>/dev/null` unless debugging requires stderr.
 
 For write-capable runs on Windows, prefer `--dangerously-bypass-approvals-and-sandbox`; ask permission first in direct mode. Pass the prompt via stdin from a temp file when quoting may be fragile.
 
