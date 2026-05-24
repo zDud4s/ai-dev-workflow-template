@@ -411,9 +411,6 @@
       _currentAgentProposalId = id;
       const modal    = $("#agent-proposal-modal");
       if (!modal) return;  // partial-DOM bail — modal scaffold missing
-      if (typeof window.trapFocusInModal === "function") {
-        window.trapFocusInModal(modal, closeAgentProposalModal);
-      }
       const titleEl  = $("#agent-proposal-title");
       const metaEl   = $("#agent-proposal-meta");
       const bodyEl   = $("#agent-proposal-body");
@@ -421,6 +418,9 @@
       const rejectBtn = $("#agent-proposal-reject");
       const msgEl    = $("#agent-proposal-msg");
       modal.hidden = false;
+      if (typeof window.trapFocusInModal === "function") {
+        window.trapFocusInModal(modal, closeAgentProposalModal);
+      }
       if (titleEl) titleEl.textContent = id;
       if (metaEl) metaEl.innerHTML = "";
       if (bodyEl) bodyEl.innerHTML = `<span class="spinner"></span> loading…`;

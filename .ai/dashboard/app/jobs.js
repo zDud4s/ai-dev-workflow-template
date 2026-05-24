@@ -105,6 +105,7 @@
       const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 30000) : null;
       try {
         const r = await fetch("/api/jobs", { cache: "no-store", signal: ctrl ? ctrl.signal : undefined });
+        if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();
         const jobs = data.jobs || [];
         const countJobsEl = $("#count-jobs");
