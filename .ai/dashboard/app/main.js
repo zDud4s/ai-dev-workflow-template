@@ -228,10 +228,15 @@
       });
     }
 
+    // Matches the 220ms CSS transition on `.update-banner.out`. Kept as a
+    // local constant rather than reaching into core.js so this loader stays
+    // self-contained against script-load-order changes.
+    var BANNER_EXIT_ANIM_MS = 220;
+
     function dismissUpdateBanner(el) {
       el.classList.remove("in");
       el.classList.add("out");
-      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, BANNER_EXIT_ANIM_MS);
     }
 
     checkWorkflowUpdateOnStartup();

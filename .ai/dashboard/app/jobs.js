@@ -49,6 +49,16 @@
     var _jobsLoadInFlight = false;
     var _jobsListDelegationWired = false;
     var _jobsDocDelegationWired = false;
+    // Truncate task previews in the row strip so a single 10KB task doesn't
+    // blow out the list width. The actual job task is still rendered in
+    // full in the job-detail panel.
+    var JOB_TASK_PREVIEW_LEN = 80;
+    // Default `?tail=N` on /api/jobs/<id> — tunes how much log history the
+    // detail panel renders.
+    var JOB_LOG_TAIL_LINES = 400;
+    // Pixel slop for "is the log scrolled to the bottom?" before we
+    // re-pin scrollTop to scrollHeight after a refresh.
+    var JOB_LOG_BOTTOM_SLOP_PX = 50;
 
     // Local defensive whitelist for tool names before they reach
     // pillTool() (owned by core.js, which interpolates raw). Anything
@@ -126,7 +136,7 @@
             if (ts) metaParts.push(`<span>${escape(ts)}</span>`);
             if (dur) metaParts.push(`<span>${escape(dur)}</span>`);
             const inner = `<div class="job-row-head">${statusPill(j.status)} ${pillTool(_jobsSafeTool(tool))} <span class="job-row-kind">${escape((j.kind || "").toUpperCase())}</span></div>
-              <div class="sub" style="margin-top:4px;white-space:normal">${escape(taskPreview.slice(0, 80))}${taskPreview.length > 80 ? "…" : ""}</div>
+              <div class="sub" style="margin-top:4px;white-space:normal">${escape(taskPreview.slice(0, JOB_TASK_PREVIEW_LEN))}${taskPreview.length > JOB_TASK_PREVIEW_LEN ? "…" : ""}</div>
               ${metaParts.length ? `<div class="job-row-meta">${metaParts.join(" · ")}</div>` : ""}`;
             return { id: j.id, inner };
           });
@@ -231,7 +241,7 @@
       const docEl = $("#jobs-doc");
       if (!docEl) return;
       try {
-        const r = await fetch("/api/jobs/" + _selectedJobId + "?tail=400", { cache: "no-store" });
+        const r = await fetch("/api/jobs/" + _selectedJobId + "?tail=" + JOB_LOG_TAIL_LINES, { cache: "no-store" });
         if (!r.ok) {
           docEl.innerHTML = `<div class="err">HTTP ${r.status}</div>`;
           return;
@@ -243,7 +253,7 @@
         if (j.started_at) timeParts.push(`<span class="job-time-k">started</span> ${escape(j.started_at)}`);
         if (j.ended_at)   timeParts.push(`<span class="job-time-k">ended</span> ${escape(j.ended_at)}`);
         const prevLog = $("#job-log");
-        const wasAtBottom = prevLog ? (prevLog.scrollHeight - prevLog.scrollTop - prevLog.clientHeight < 50) : true;
+        const wasAtBottom = prevLog ? (prevLog.scrollHeight - prevLog.scrollTop - prevLog.clientHeight < JOB_LOG_BOTTOM_SLOP_PX) : true;
         docEl.innerHTML = `
           <div class="job-head">
             <div class="job-status">${statusPill(j.status)} ${j.exit_code != null ? `<span class="job-exit">exit ${j.exit_code}</span>` : ""} <span class="job-row-kind">${escape((j.kind || "").toUpperCase())}</span></div>
@@ -255,7 +265,7 @@
             <code class="mono">${escape(j.command || "—")}</code>
           </details>
           <div class="job-id-row"><span class="job-time-k">id</span> <span class="mono">${escape(j.id)}</span></div>
-          <div style="margin-bottom:6px;font-size:11px;color:var(--fg-dim);text-transform:uppercase;letter-spacing:0.5px">log (last 400 lines)</div>
+          <div style="margin-bottom:6px;font-size:11px;color:var(--fg-dim);text-transform:uppercase;letter-spacing:0.5px">log (last ${JOB_LOG_TAIL_LINES} lines)</div>
           <pre class="log" id="job-log">${escape(j.log_tail || "(no output yet)")}</pre>
           <div class="form-actions" style="margin-top:10px">
             ${cancelable ? `<button class="btn danger" data-job-cancel="${escape(j.id)}" aria-label="Cancel job ${escape(j.id)}" title="Cancel this job">Cancel job</button>` : ""}
@@ -595,10 +605,10 @@
 
     // ----- Events state -----
     var _eventsCache = [];
-    var _eventsState = { phase: "", exit: "", search: "", range: "24h", group: false, expanded: null };
-    if (typeof _eventsState.expanded === "object" || _eventsState.expanded === null) {
-      _eventsState.expanded = new Set();
-    }
+    // `expanded` is a Set keyed by `${ts}|${session_id}|${phase}` (see
+    // _evRenderFlat). The previous shape initialised it to null then ran a
+    // typeof-object || === null check that was always true — dead branch.
+    var _eventsState = { phase: "", exit: "", search: "", range: "24h", group: false, expanded: new Set() };
 
     function _evRangeMs(range) {
       if (range === "24h") return 24 * 3600 * 1000;
@@ -830,13 +840,17 @@
     }
 
     var _eventsTimer = null;
+    // Auto-refresh cadence for the Events table when the user opts in via
+    // the "auto-refresh" checkbox. Same interval is reused after a
+    // visibilitychange wake-up below.
+    var EVENTS_AUTOREFRESH_MS = 5000;
     document.addEventListener("change", (e) => {
       if (!e.target) return;
       if (e.target.id === "events-autorefresh") {
         if (_eventsTimer) { clearInterval(_eventsTimer); _eventsTimer = null; }
         if (e.target.checked) {
           loadEvents();
-          _eventsTimer = setInterval(loadEvents, 5000);
+          _eventsTimer = setInterval(loadEvents, EVENTS_AUTOREFRESH_MS);
         }
       } else if (e.target.id === "ev-phase") {
         _eventsState.phase = e.target.value; renderEvents();
@@ -893,10 +907,14 @@
     // are dropped.
     var _lastVisibilityState = null;
     var _lastVisibilityAt = 0;
+    // Debounce window for back-to-back visibilitychange events (Safari +
+    // older Chrome with bfcache fire twice). 250ms is short enough to
+    // ignore the dup pair without delaying a real tab-switch refresh.
+    var VISIBILITY_DEDUPE_MS = 250;
     document.addEventListener("visibilitychange", () => {
       const state = document.hidden ? "hidden" : "visible";
       const now = Date.now();
-      if (_lastVisibilityState === state && (now - _lastVisibilityAt) < 250) {
+      if (_lastVisibilityState === state && (now - _lastVisibilityAt) < VISIBILITY_DEDUPE_MS) {
         // Duplicate fire within the debounce window — ignore.
         return;
       }
@@ -916,7 +934,7 @@
         loadEvents();
         const cb = document.getElementById("events-autorefresh");
         if (cb && cb.checked && !_eventsTimer) {
-          _eventsTimer = setInterval(loadEvents, 5000);
+          _eventsTimer = setInterval(loadEvents, EVENTS_AUTOREFRESH_MS);
         }
       }
       if (tlActive && typeof loadTimeline === "function") loadTimeline();

@@ -735,6 +735,14 @@ function renderMarkdown(el, text) {
     // reuse the element so updates read as one continuous message.
     // position:fixed at top-center of the viewport so layouts never shift.
     var TOASTS = new Map();   // channel -> { el, timer }
+    // Named constants for the toast dismiss cadences. Errors stay on screen
+    // longer because operators want to read them; warnings get a medium
+    // window; everything else (ok / info) auto-dismisses quickest. The
+    // 220ms exit transition matches the CSS `.toast.out` keyframe.
+    var TOAST_DISMISS_MS_OK = 3500;
+    var TOAST_DISMISS_MS_WARN = 4500;
+    var TOAST_DISMISS_MS_ERR = 6000;
+    var TOAST_EXIT_ANIM_MS = 220;
 
     function _toastRoot() {
       // index.html declares <div id="toast-root"> already, so on the normal
@@ -764,7 +772,7 @@ function renderMarkdown(el, text) {
       entry.el.classList.add("out");
       setTimeout(() => {
         if (entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
-      }, 220);
+      }, TOAST_EXIT_ANIM_MS);
     }
 
     function showToast(channel, kind, text, timeoutMs) {
@@ -801,7 +809,7 @@ function renderMarkdown(el, text) {
       // time on screen — operator wants to read those, not just "saved".
       const dismissAfter = (timeoutMs != null)
         ? timeoutMs
-        : (kind === "err" ? 6000 : kind === "warn" ? 4500 : 3500);
+        : (kind === "err" ? TOAST_DISMISS_MS_ERR : kind === "warn" ? TOAST_DISMISS_MS_WARN : TOAST_DISMISS_MS_OK);
       if (dismissAfter > 0) {
         entry.timer = setTimeout(() => hideToast(channel), dismissAfter);
       }
