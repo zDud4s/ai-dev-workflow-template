@@ -264,6 +264,14 @@ MAX_WS_PAYLOAD = 1024 * 1024  # 1 MiB
 # is observationally invisible.
 MAX_SSE_SESSION_S = 1800  # 30 minutes
 
+# Upper bound on the initial catch-up flush in ``_handle_transcript_stream``.
+# Transcript JSONLs grow into the tens of MB over long IDE sessions and the
+# old code did one unbounded ``fh.read()`` per SSE subscriber, so N parallel
+# streams scaled memory pressure linearly with file size. We cap the catch-up
+# at 4 MiB and tail from the last line boundary inside that window — live tail
+# then picks up from EOF so new records still arrive.
+MAX_TRANSCRIPT_CATCHUP_BYTES = 4 * 1024 * 1024  # 4 MiB
+
 # Directories the fallback ``ROOT.rglob("*")`` walk in ``_handle_files_list``
 # must not descend into. Without this, the autocomplete endpoint walks the
 # entire repo on every keystroke when ``git ls-files`` is unavailable —
@@ -4254,15 +4262,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if len(task) > 4000:
             self._json(400, {"error": "task must be 4000 chars or fewer"})
             return
-        if resume_session_id and len(resume_session_id) > 80:
-            self._json(400, {"error": "resume_session_id must be 80 chars or fewer"})
+        if resume_session_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", resume_session_id):
+            self._json(400, {"error": "resume_session_id must match [A-Za-z0-9][A-Za-z0-9._-]{0,79}"})
             return
         # Optional fork: like resume but adds --fork-session so the new
         # turns land in a fresh session id instead of overwriting the
         # original transcript.
         fork_session_id = (body.get("fork_session_id") or "").strip() or None
-        if fork_session_id and len(fork_session_id) > 80:
-            self._json(400, {"error": "fork_session_id must be 80 chars or fewer"})
+        if fork_session_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", fork_session_id):
+            self._json(400, {"error": "fork_session_id must match [A-Za-z0-9][A-Za-z0-9._-]{0,79}"})
             return
         if fork_session_id and resume_session_id:
             self._json(400, {"error": "set either fork_session_id or resume_session_id, not both"})
@@ -5627,7 +5635,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not source or not name:
             self._json(400, {"error": "source and name are required"})
             return
-        if not re.fullmatch(r"[a-zA-Z0-9_:\-.]+", name):
+        # Reject `..` and `.` in any segment: the regex below already
+        # forbids `/` and `\`, but `..` would otherwise resolve outside the
+        # skills root (e.g. `?source=codex_global&name=..` -> ~/.codex/SKILL.md).
+        if not re.fullmatch(r"[a-zA-Z0-9_:-][a-zA-Z0-9_:\-.]*", name) or ".." in name.split("."):
             self._json(400, {"error": "invalid skill name"})
             return
         home = Path.home()
@@ -5641,6 +5652,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {"error": f"unknown source: {source}"})
             return
         skill_md = root / name / "SKILL.md"
+        try:
+            # Containment check: even with the regex above, resolve() +
+            # relative_to() is the canonical defense against symlink/junction
+            # escapes inside the skills tree.
+            skill_md.resolve(strict=False).relative_to(root.resolve())
+        except ValueError:
+            self._json(403, {"error": "path is outside the skills root"})
+            return
+        except OSError as e:
+            print(f"[serve] skill content resolve failed for {skill_md}: {e}", flush=True)
+            self._json(500, {"error": "resolve failed"})
+            return
         try:
             if not skill_md.is_file():
                 self._json(404, {"error": "skill not found",
@@ -5729,6 +5752,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         # only protected the slow rglob fallback.
                         if any(part in SKIP_DIRS for part in line.split("/")):
                             continue
+                        # Don't reveal secret-named files in the autocomplete
+                        # suggestion list either — _handle_file_read blocks
+                        # reading them but mere discovery is also a leak.
+                        base = line.rsplit("/", 1)[-1].lower()
+                        if (base in self._BLOCKED_NAMES
+                                or base.startswith(self._BLOCKED_NAME_PREFIXES)
+                                or base.endswith(self._BLOCKED_NAME_SUFFIXES)):
+                            continue
                         if prefix and prefix not in line.lower():
                             continue
                         files.append(line)
@@ -5753,6 +5784,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         continue
                     if not p.is_file():
                         continue
+                    base = parts[-1].lower()
+                    if (base in self._BLOCKED_NAMES
+                            or base.startswith(self._BLOCKED_NAME_PREFIXES)
+                            or base.endswith(self._BLOCKED_NAME_SUFFIXES)):
+                        continue
                     rel = "/".join(parts)
                     if prefix and prefix not in rel.lower():
                         continue
@@ -5762,6 +5798,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except OSError as e:
                 print(f"[serve] files-list fallback walk failed: {e}", flush=True)
         self._json(200, {"files": files})
+
+    def _is_blocked_path(self, resolved) -> bool:
+        """Return True when the already-resolved path matches the secrets
+        blocklist (basename in _BLOCKED_NAMES / prefix / suffix, or path
+        under any _BLOCKED_PATHS prefix). Caller is responsible for the
+        repo-root containment check; this helper only enforces the
+        secrets-name/path policy used by ``_handle_file_read`` and the
+        multimodal composer."""
+        resolved_norm = os.path.normcase(str(resolved)).replace("/", os.sep)
+        base = os.path.basename(resolved_norm)
+        if (base in self._BLOCKED_NAMES
+                or base.startswith(self._BLOCKED_NAME_PREFIXES)
+                or base.endswith(self._BLOCKED_NAME_SUFFIXES)):
+            return True
+        for blocked in self._BLOCKED_PATHS:
+            blocked_norm = blocked.replace("/", os.sep)
+            if resolved_norm == blocked_norm or resolved_norm.startswith(blocked_norm + os.sep):
+                return True
+        return False
 
     def _handle_file_read(self, qs: dict[str, list[str]]) -> None:
         """Read a repo-relative file's content. Refuses paths that escape
@@ -5779,18 +5834,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except (ValueError, OSError):
             self._json(403, {"error": "path outside repo root"})
             return
-        resolved_norm = os.path.normcase(str(resolved)).replace("/", os.sep)
-        base = os.path.basename(resolved_norm)
-        if (base in self._BLOCKED_NAMES
-                or base.startswith(self._BLOCKED_NAME_PREFIXES)
-                or base.endswith(self._BLOCKED_NAME_SUFFIXES)):
+        if self._is_blocked_path(resolved):
             self._json(403, {"error": "path is blocked"})
             return
-        for blocked in self._BLOCKED_PATHS:
-            blocked_norm = blocked.replace("/", os.sep)
-            if resolved_norm == blocked_norm or resolved_norm.startswith(blocked_norm + os.sep):
-                self._json(403, {"error": "path is blocked"})
-                return
         if not resolved.is_file():
             self._json(404, {"error": "not a file"})
             return
@@ -5826,15 +5872,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
 
-        # Catch-up: flush existing content first.
+        # Catch-up: flush existing content first, capped so a multi-MB
+        # transcript doesn't pin the whole file in memory per subscriber.
+        # When the file is over cap, seek to ``size - cap`` and discard up to
+        # the first newline so the catch-up never emits a partial JSONL line.
         try:
             with path.open("rb") as fh:
+                fh.seek(0, 2)  # SEEK_END
+                size = fh.tell()
+                truncated = size > MAX_TRANSCRIPT_CATCHUP_BYTES
+                if truncated:
+                    fh.seek(size - MAX_TRANSCRIPT_CATCHUP_BYTES)
+                    # Drop the partial line at the head of the window.
+                    fh.readline()
+                else:
+                    fh.seek(0)
                 existing = fh.read()
                 pos = fh.tell()
         except OSError:
             return
         if existing:
-            if not self._write_sse_frame(existing.decode("utf-8", "replace").replace("\r\n", "\n")):
+            text = existing.decode("utf-8", "replace").replace("\r\n", "\n")
+            if not self._write_sse_frame(text):
                 return
 
         # Live tail: poll for appended bytes. Exit when client disconnects,
@@ -6236,6 +6295,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 resolved.relative_to(ROOT.resolve())
             except (ValueError, OSError):
                 return 403, {"error": f"file path outside repo: {rel}"}
+            if self._is_blocked_path(resolved):
+                return 403, {"error": f"file is blocked: {rel}"}
             if not resolved.is_file():
                 return 404, {"error": f"file not found: {rel}"}
             try:
