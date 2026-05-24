@@ -30,9 +30,8 @@ plan:
   model: claude-opus-4-7
 
 execute:
-  tool: claude
-  model: claude-sonnet-4-6
-  # timeout_seconds: 1800
+  tool: codex
+  model: gpt-5.5
 
 review:
   tool: claude
