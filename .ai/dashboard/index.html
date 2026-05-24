@@ -244,11 +244,11 @@
         <div id="skills-proposals" class="cards skill-grid"></div>
       </section>
 
-      <div class="proposal-modal" id="proposal-modal" hidden>
+      <div class="proposal-modal" id="proposal-modal" role="dialog" aria-modal="true" aria-labelledby="proposal-modal-title" hidden>
         <div class="proposal-modal-pane">
           <header>
             <h3 id="proposal-modal-title">Proposal</h3>
-            <button class="refresh" id="proposal-modal-close">close</button>
+            <button class="refresh" id="proposal-modal-close" aria-label="Close proposal modal">close</button>
           </header>
           <div class="proposal-modal-meta" id="proposal-modal-meta"></div>
           <div class="proposal-modal-diff" id="proposal-modal-diff"></div>
@@ -260,11 +260,11 @@
         </div>
       </div>
 
-      <div class="proposal-modal" id="skill-detail-modal" hidden>
+      <div class="proposal-modal" id="skill-detail-modal" role="dialog" aria-modal="true" aria-labelledby="skill-detail-title" hidden>
         <div class="proposal-modal-pane">
           <header>
             <h3 id="skill-detail-title">Skill</h3>
-            <button class="refresh" id="skill-detail-close">close</button>
+            <button class="refresh" id="skill-detail-close" aria-label="Close skill detail modal">close</button>
           </header>
           <div class="proposal-modal-meta" id="skill-detail-meta"></div>
           <div class="skill-detail-body" id="skill-detail-body">
@@ -345,11 +345,11 @@
         <div class="card skill-card agent-card skeleton-agent-card"><span class="skeleton skeleton-h"></span><span class="skeleton skeleton-desc-1"></span><span class="skeleton skeleton-desc-2"></span><span class="skeleton skeleton-desc-3"></span><span class="skeleton skeleton-tools"></span><span class="skeleton skeleton-path"></span><span class="skeleton skeleton-meta"></span></div>
       </div>
 
-      <div class="proposal-modal" id="agent-detail-modal" hidden>
+      <div class="proposal-modal" id="agent-detail-modal" role="dialog" aria-modal="true" aria-labelledby="agent-detail-title" hidden>
         <div class="proposal-modal-pane">
           <header>
             <h3 id="agent-detail-title">Agent</h3>
-            <button class="refresh" id="agent-detail-close">close</button>
+            <button class="refresh" id="agent-detail-close" aria-label="Close agent detail modal">close</button>
           </header>
           <div class="proposal-modal-meta" id="agent-detail-meta"></div>
           <div class="skill-detail-body">
@@ -361,11 +361,11 @@
         </div>
       </div>
 
-      <div class="proposal-modal" id="agent-proposal-modal" hidden>
+      <div class="proposal-modal" id="agent-proposal-modal" role="dialog" aria-modal="true" aria-labelledby="agent-proposal-title" hidden>
         <div class="proposal-modal-pane">
           <header>
             <h3 id="agent-proposal-title">Suggested agent</h3>
-            <button class="refresh" id="agent-proposal-close">close</button>
+            <button class="refresh" id="agent-proposal-close" aria-label="Close suggested agent modal">close</button>
           </header>
           <div class="proposal-modal-meta" id="agent-proposal-meta"></div>
           <div class="skill-detail-body">

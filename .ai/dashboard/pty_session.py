@@ -44,6 +44,19 @@ from abc import ABC, abstractmethod
 MAX_PTY_SESSIONS = 32
 PTY_IDLE_TIMEOUT_S = 1800
 
+# Reap-loop timing constants. Named so the meaning is obvious at the
+# call site (a bare ``0.5`` / ``0.05`` was previously sprinkled across
+# ``kill()`` / ``read()`` / ``_reap_with_timeout`` with no comment).
+# - ``REAP_TIMEOUT_S``: hard budget per SIGTERM (and per SIGKILL) before
+#   we stop waiting for the child to clear from the process table.
+# - ``REAP_POLL_INTERVAL_S``: sleep between non-blocking waitpid checks.
+# - ``EOF_REAP_TIMEOUT_S``: shorter budget for the EOF-triggered reap on
+#   POSIX read() — the child has already closed its PTY end, so it's
+#   effectively gone; don't block the reader on a full half-second.
+REAP_TIMEOUT_S = 0.5
+REAP_POLL_INTERVAL_S = 0.05
+EOF_REAP_TIMEOUT_S = 0.05
+
 # Module-level logger. The caller is responsible for wiring handlers
 # (serve.py / dashboard process); we install a NullHandler so that
 # ``pty_session`` never crashes or emits "no handler found" warnings
@@ -412,10 +425,16 @@ class Pty(ABC):
 
 class _PosixPty(Pty):
     def __init__(self, argv, cwd, env, cols, rows):
+        # ``fcntl`` and ``termios`` are POSIX-only; importing them at the
+        # module top would break the import on Windows hosts that still
+        # need to load this file so they reach ``_WindowsPty``. ``pty``
+        # is also POSIX-only. ``struct`` is already available at module
+        # top (used in the exception handler below), so no local alias
+        # needed — the previous ``import struct as _struct`` was a dead
+        # alias of an already-imported name.
         import pty as _pty
         import fcntl as _fcntl
         import termios as _termios
-        import struct as _struct
 
         self._argv = list(argv)
         pid, fd = _pty.fork()
@@ -462,7 +481,7 @@ class _PosixPty(Pty):
         self._closed = False
         # Apply requested winsize before any output streams.
         try:
-            ws = _struct.pack("HHHH", rows, cols, 0, 0)
+            ws = struct.pack("HHHH", rows, cols, 0, 0)
             _fcntl.ioctl(fd, _termios.TIOCSWINSZ, ws)
         except (OSError, struct.error):
             pass
@@ -498,11 +517,12 @@ class _PosixPty(Pty):
         if not data:
             # EOF on the master: child closed its end. Proactively reap
             # so we don't leave a zombie sitting around waiting for the
-            # next alive() call. Use a very short timeout — the child
-            # has already closed its PTY end, so it's effectively gone.
+            # next alive() call. Use ``EOF_REAP_TIMEOUT_S`` (shorter than
+            # the full ``REAP_TIMEOUT_S``) — the child has already closed
+            # its PTY end, so it's effectively gone.
             self._closed = True
             try:
-                self._reap_with_timeout(0.05)
+                self._reap_with_timeout(EOF_REAP_TIMEOUT_S)
             except Exception:
                 pass
         return data
@@ -537,18 +557,28 @@ class _PosixPty(Pty):
     def resize(self, cols: int, rows: int) -> None:
         if self._closed:
             return
+        # POSIX-only stdlib pair; see ``_PosixPty.__init__`` for why these
+        # are imported inside the method rather than at module top.
+        # ``struct`` is already module-level (used in the except clause
+        # below); the previous ``import struct as _struct`` local was a
+        # dead alias.
         import fcntl as _fcntl
         import termios as _termios
-        import struct as _struct
         try:
-            ws = _struct.pack("HHHH", rows, cols, 0, 0)
+            ws = struct.pack("HHHH", rows, cols, 0, 0)
             _fcntl.ioctl(self._fd, _termios.TIOCSWINSZ, ws)
         except (OSError, struct.error):
             pass
 
     def kill(self) -> None:
+        # ``signal`` is the only stdlib module specific to this method;
+        # imported here (not at module top) because the entire POSIX
+        # branch — including kill() — must stay loadable on Windows hosts
+        # where stdlib ``signal`` lacks SIGTERM/SIGKILL constants used by
+        # the ``os.kill`` calls below. A previous version also imported
+        # ``time`` here, but it was never used inside this method (only
+        # in ``_reap_with_timeout``) — dead branch, removed.
         import signal as _signal
-        import time as _time
 
         # Idempotent by design: a second kill() call must NOT try to
         # close an already-closed fd (which would yield EBADF and be
@@ -559,7 +589,7 @@ class _PosixPty(Pty):
             os.kill(self._pid, _signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             pass
-        if not self._reap_with_timeout(0.5):
+        if not self._reap_with_timeout(REAP_TIMEOUT_S):
             _log.warning(
                 "PTY kill: SIGKILL escalation for pid=%d", self._pid
             )
@@ -567,7 +597,7 @@ class _PosixPty(Pty):
                 os.kill(self._pid, _signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-            self._reap_with_timeout(0.5)
+            self._reap_with_timeout(REAP_TIMEOUT_S)
         try:
             os.close(self._fd)
         except OSError:
@@ -577,10 +607,12 @@ class _PosixPty(Pty):
         Pty._unregister(self)
 
     def _reap_with_timeout(self, timeout: float) -> bool:
-        import time as _time
-
-        deadline = _time.monotonic() + timeout
-        while _time.monotonic() < deadline:
+        # ``time`` is already imported at module top as ``_time_mod`` for
+        # the registry/idle-tracking helpers; reuse that handle instead
+        # of a redundant per-call import so a tracing tool / mock can
+        # patch a single name.
+        deadline = _time_mod.monotonic() + timeout
+        while _time_mod.monotonic() < deadline:
             try:
                 pid, _ = os.waitpid(self._pid, os.WNOHANG)
             except ChildProcessError:
@@ -589,7 +621,7 @@ class _PosixPty(Pty):
                 return False
             if pid != 0:
                 return True
-            _time.sleep(0.05)
+            _time_mod.sleep(REAP_POLL_INTERVAL_S)
         return False
 
     def alive(self) -> bool:
