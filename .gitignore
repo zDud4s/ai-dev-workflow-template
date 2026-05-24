@@ -8,21 +8,38 @@ Thumbs.db
 .ai/metrics.jsonl
 .ai/dashboard/jobs/
 .ai/dashboard/jobs.jsonl
+.ai/dashboard/improvements.jsonl
+.ai/dashboard/skill_metrics.jsonl
+.ai/dashboard/skill_proposals/
+.ai/dashboard/.server-*.log
+.ai/dashboard/.server-*.err
 
-# Track .ai/plans and .ai/specs as empty folders; ignore their contents
+
+# Track .ai/plans, .ai/specs, and .ai/dashboard/agent_proposals as empty
+# folders; ignore their generated contents.
 .ai/plans/*
 .ai/specs/*
+.ai/dashboard/agent_proposals/*
 !.ai/plans/.gitkeep
 !.ai/specs/.gitkeep
+!.ai/dashboard/agent_proposals/.gitkeep
 
-# Test runner
+# Python cache / pytest cache (but keep pytest.ini tracked)
 .pytest_cache/
-pytest*
 __pycache__/
-/tests/
+
+# Inside tests/: track only files whose name starts with "test_".
+tests/*
+!tests/test_*
+!tests/conftest.py
+!tests/_diff_render_runner.js
 
 # Workflow script testbed (install.sh / update-workflow.sh integration tests)
 /test-env/
 
+# Local reference docs (design-system / superpowers mirror + ad-hoc notes)
 /docs/
 
+# Scratch directory
+/tmp/
+/assets/
