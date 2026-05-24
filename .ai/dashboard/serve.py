@@ -246,6 +246,15 @@ _IMPROVER_DEFAULTS = {
 # composer with inlined files, which is capped client-side at ~256 KB).
 MAX_JSON_BODY = 1024 * 1024  # 1 MiB
 
+# Cap on a single inbound WebSocket frame payload. The WS framing format
+# allows a 64-bit extended length, so without an explicit cap a client
+# can declare a multi-GB payload and pin the reader thread on
+# ``self._rfile.read(length)`` while attempting allocation. PTY input is
+# keystrokes (tens of bytes); chat composer frames are JSON capped
+# client-side. 1 MiB matches ``MAX_JSON_BODY`` and is well above any
+# legitimate WS traffic the dashboard sends.
+MAX_WS_PAYLOAD = 1024 * 1024  # 1 MiB
+
 # Hard upper bound on a single Server-Sent Events session, regardless of
 # whether the subscriber is idle or not. ``_handle_job_stream`` already
 # bails on a 4-minute idle window, but a chatty job could keep a single
@@ -1049,6 +1058,32 @@ def _origin_allowed(headers) -> bool:
     return origin in allowed
 
 
+def _browser_cross_origin_blocked(headers) -> bool:
+    """Return True when a long-lived GET (SSE) appears to be a cross-
+    origin browser request and should be rejected.
+
+    SSE endpoints can't go through ``_csrf_guard`` directly because we
+    also want operator ``curl`` / ``wget`` to work — those send no
+    Origin header at all. The actual threat is a cross-origin BROWSER
+    page that issues ``new EventSource(...)``/``fetch(...)`` against
+    a localhost SSE endpoint: the browser blocks reading the response,
+    but the server already allocated a thread + queue slot. Repeated
+    cross-origin requests exhaust the request-handling thread pool.
+
+    Rule: reject only when Origin is set AND not in the loopback
+    allowlist. Origin absent → not a browser context → allow.
+    """
+    origin = headers.get("Origin")
+    if origin is None:
+        return False
+    allowed = {
+        f"http://127.0.0.1:{BOUND_PORT}",
+        f"http://localhost:{BOUND_PORT}",
+        f"http://[::1]:{BOUND_PORT}",
+    }
+    return origin not in allowed
+
+
 class WebSocket:
     """Minimal RFC6455 server endpoint.
 
@@ -1141,6 +1176,8 @@ class WebSocket:
             if len(ext) < 8:
                 raise _WsClosed()
             length = struct.unpack(">Q", ext)[0]
+        if length > MAX_WS_PAYLOAD:
+            raise _WsClosed()
         mask = self._rfile.read(4) if masked else None
         if masked and (mask is None or len(mask) < 4):
             raise _WsClosed()
@@ -5728,7 +5765,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_file_read(self, qs: dict[str, list[str]]) -> None:
         """Read a repo-relative file's content. Refuses paths that escape
-        the repo root."""
+        the repo root, and routes the same ``_BLOCKED_PATHS`` /
+        ``_BLOCKED_NAMES`` blocklist the static handler uses so secrets
+        (``.ssh``, ``.aws``, ``.env``, ``id_rsa``, ``*.pem`` ...) can't
+        leak through this API endpoint either."""
         rel = (qs.get("path", [""])[0] or "").strip()
         if not rel:
             self._json(400, {"error": "path is required"})
@@ -5739,6 +5779,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except (ValueError, OSError):
             self._json(403, {"error": "path outside repo root"})
             return
+        resolved_norm = os.path.normcase(str(resolved)).replace("/", os.sep)
+        base = os.path.basename(resolved_norm)
+        if (base in self._BLOCKED_NAMES
+                or base.startswith(self._BLOCKED_NAME_PREFIXES)
+                or base.endswith(self._BLOCKED_NAME_SUFFIXES)):
+            self._json(403, {"error": "path is blocked"})
+            return
+        for blocked in self._BLOCKED_PATHS:
+            blocked_norm = blocked.replace("/", os.sep)
+            if resolved_norm == blocked_norm or resolved_norm.startswith(blocked_norm + os.sep):
+                self._json(403, {"error": "path is blocked"})
+                return
         if not resolved.is_file():
             self._json(404, {"error": "not a file"})
             return
@@ -5758,6 +5810,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """SSE: tail an IDE transcript JSONL file. Emits any existing
         content first (catch-up), then continues forwarding bytes as the
         file grows (live mirror of the ongoing IDE session)."""
+        if _browser_cross_origin_blocked(self.headers):
+            self._json(403, {"error": "origin not allowed"})
+            return
         tdir = _transcripts_dir_for_cwd(ROOT)
         path = (tdir / f"{session_id}.jsonl") if tdir else None
         if not path or not path.is_file():
@@ -6225,6 +6280,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         indefinitely. The client reconnects transparently, so the
         forced rotation is observationally invisible.
         """
+        if _browser_cross_origin_blocked(self.headers):
+            self._json(403, {"error": "origin not allowed"})
+            return
         import queue as _queue
 
         session_start = time.monotonic()
@@ -6235,7 +6293,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json(404, {"error": "job not found"})
                 return
             log_path = j.get("log_path")
-            status = j.get("status")
             subs = j.setdefault("subscribers", [])
             q: _queue.Queue = _queue.Queue(maxsize=1024)
             subs.append(q)
@@ -6255,7 +6312,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # entire backlog. For non-chat jobs (orchestrate/plan/codex) the
             # log file is dashboard-owned and small; full dump stays.
             with JOBS_LOCK:
-                catchup_kind = JOBS.get(job_id, {}).get("kind")
+                j_now = JOBS.get(job_id)
+                catchup_kind = (j_now or {}).get("kind")
+                # Re-read status fresh: between registration and now the
+                # runner may have published EOF (status -> done/failed) or
+                # _evict_old_jobs may have popped the entry entirely. In
+                # either case the runner won't deliver any more chunks, so
+                # blocking on q.get() below would hang until MAX_SSE_SESSION_S.
+                status = (j_now or {}).get("status")
             if log_path and Path(log_path).exists():
                 try:
                     if catchup_kind == "chat":
@@ -6268,7 +6332,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     self._write_sse_frame(existing)
 
             if status not in {"running", "queued"}:
-                # Job already finished — close immediately after catch-up.
+                # Job already finished (or entry evicted) — close immediately
+                # after catch-up rather than entering the live-tail loop.
                 self._write_sse_event("end", "{}")
                 return
 

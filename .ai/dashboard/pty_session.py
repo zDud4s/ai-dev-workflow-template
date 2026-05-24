@@ -183,15 +183,27 @@ def detect_default_shell() -> list[str]:
     Windows: prefer ``pwsh`` (Powershell 7+) if on PATH, else
     ``powershell`` (Windows PowerShell 5.1), else ``cmd.exe``.
     macOS / Linux: honor ``$SHELL`` if set; otherwise zsh, bash, sh.
+
+    Every path returned here is gated through ``_is_under_trusted_dir``
+    or ``_TRUSTED_SHELL_PATHS`` so a hostile environment that has
+    poisoned ``COMSPEC``/``SHELL`` (or prepended a rogue dir to PATH)
+    can't drive the dashboard into spawning an attacker-controlled
+    binary as the default shell.
     """
     if sys.platform == "win32":
         for cand in ("pwsh.exe", "pwsh", "powershell.exe", "powershell"):
             p = shutil.which(cand)
-            if p:
+            if p and _is_under_trusted_dir(p):
                 return [p]
-        return [os.environ.get("COMSPEC", "cmd.exe")]
+        for cand in _TRUSTED_SHELL_PATHS["cmd"]:
+            if os.path.exists(cand):
+                return [cand]
+        comspec = os.environ.get("COMSPEC")
+        if comspec and _is_under_trusted_dir(comspec):
+            return [comspec]
+        return [r"C:\Windows\System32\cmd.exe"]
     shell = os.environ.get("SHELL")
-    if shell and os.path.exists(shell):
+    if shell and os.path.exists(shell) and _is_under_trusted_dir(shell):
         return [shell, "-l"]
     for cand in ("/bin/zsh", "/bin/bash", "/bin/sh"):
         if os.path.exists(cand):
