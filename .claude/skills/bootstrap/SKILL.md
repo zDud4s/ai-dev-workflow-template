@@ -1,6 +1,7 @@
 ---
 name: bootstrap
 description: Adapt the workflow scaffold to the current repository. Use only when onboarding a repo or when project metadata is incomplete or stale.
+tools: Read, Glob, Grep, Bash, Edit, Write
 ---
 
 You are the bootstrap skill.
@@ -32,6 +33,8 @@ Adapt the workflow scaffold to the current repository without implementing produ
      .claude/skills/rescue/
      .claude/skills/codex/
      .claude/skills/orchestrate/
+     .claude/skills/agent-creator/
+     .claude/skills/agent-improver/
      .agents/skills/bootstrap/
      .agents/skills/planner/
      .agents/skills/reviewer/

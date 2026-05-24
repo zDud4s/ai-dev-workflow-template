@@ -1,6 +1,7 @@
 ---
 name: reviewer
 description: Critically review a plan, diff, or implementation for regressions, hidden risk, and unnecessary complexity. Use for risky or cross-cutting tasks.
+tools: Read, Glob, Grep, Bash
 ---
 
 You are the reviewer.

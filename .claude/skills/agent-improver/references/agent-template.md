@@ -89,9 +89,9 @@ When asked to summarise commits, you will:
 
 ## Reference real-world agents to read for inspiration
 
-The following are canonical examples from the plugin ecosystem. Read at least one before scoring an unfamiliar agent — they show the structural beats in production. Versioned paths may drift over time; if the exact version directory has changed, glob the parent to find the current sibling.
+The following are canonical examples from the plugin ecosystem. Read at least one before scoring an unfamiliar agent — they show the structural beats in production. Paths use a `*` for the version segment so the references survive plugin upgrades; resolve via glob.
 
-- `~/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/agents/code-reviewer.md` — exemplary description (two rich `<example>` blocks) and a clean numbered-responsibilities body.
-- `~/.claude/plugins/cache/claude-plugins-official/code-simplifier/1.0.0/agents/code-simplifier.md` — focused single-purpose agent with tight tool allowlist.
+- `~/.claude/plugins/cache/claude-plugins-official/superpowers/*/agents/code-reviewer.md` — exemplary description (two rich `<example>` blocks) and a clean numbered-responsibilities body.
+- `~/.claude/plugins/cache/claude-plugins-official/code-simplifier/*/agents/code-simplifier.md` — focused single-purpose agent with tight tool allowlist.
 - `~/.claude/plugins/marketplaces/claude-plugins-official/plugins/plugin-dev/agents/agent-creator.md` — the canonical agent that *creates* agents; useful as a meta-reference when judging structure.
 - `~/.claude/plugins/marketplaces/claude-plugins-official/plugins/feature-dev/agents/code-explorer.md` — strong process section and an explicit output format that callers can rely on.

@@ -15,8 +15,8 @@ What it updates by default:
   - .ai/memory.md, .ai/decisions.md         (skeleton merge — adds missing ## sections; entries preserved)
   - .ai/project.yaml, .ai/models.yaml       (skeleton merge — adds missing top-level keys; values preserved)
   - .claude/settings.json                   (merge — adds missing workflow permissions/hooks; user entries preserved)
-  - ~/.agents/skills/{orchestrate,planner,reviewer,maintenance,rescue,bootstrap,claude,codex}/SKILL.md
-    (global mirror so Codex can discover the same skills)
+  - ~/.agents/skills/{orchestrate,planner,reviewer,maintenance,rescue,bootstrap,claude}/SKILL.md
+    (global mirror so Codex can discover the same skills; no `codex` skill — codex is the runner)
 
 What it preserves by default:
   - .ai/packets/*   (must already exist — run install.sh first on new projects)
@@ -75,7 +75,6 @@ mkdir -p "$TARGET_DIR/.agents/skills/maintenance"
 mkdir -p "$TARGET_DIR/.agents/skills/rescue"
 mkdir -p "$TARGET_DIR/.agents/skills/orchestrate"
 mkdir -p "$TARGET_DIR/.agents/skills/claude"
-mkdir -p "$TARGET_DIR/.agents/skills/codex"
 
 copy_if_different() {
   local src="$1"
@@ -123,10 +122,10 @@ copy_if_different "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.age
 
 # Project-local mirror of shared skills: .claude/skills/<name>/ -> .agents/skills/<name>/.
 # .claude/skills/ is the source of truth; direct edits in .agents/skills/<shared>/ get overwritten.
-# `codex` is included: its canonical source is .claude/skills/codex/SKILL.md and Codex needs
-# the mirror in .agents/skills/codex/ so the home-dir mirror below can reach it.
-# `claude` is excluded: it has no .claude/skills/ counterpart (see copy_if_different above).
-for skill in bootstrap planner reviewer maintenance rescue orchestrate codex; do
+# `codex` is NOT mirrored: codex is the runner, it never invokes a "codex skill" to call
+# itself. `claude` is excluded for the symmetric reason and because it has no
+# .claude/skills/ counterpart (see copy_if_different above).
+for skill in bootstrap planner reviewer maintenance rescue orchestrate; do
   copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
 done
 
@@ -655,7 +654,7 @@ mirror_skill_to_home() {
   copy_if_different "$src" "$dst_dir/SKILL.md"
 }
 
-for skill in bootstrap planner reviewer maintenance rescue orchestrate claude codex; do
+for skill in bootstrap planner reviewer maintenance rescue orchestrate claude; do
   src="$TARGET_DIR/.agents/skills/$skill/SKILL.md"
   [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
   mirror_skill_to_home "$src" "$skill"

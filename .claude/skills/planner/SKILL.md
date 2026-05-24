@@ -1,6 +1,7 @@
 ---
 name: planner
 description: Convert a development request into a minimal, executable plan with narrow execution packets. Use for any coding task that is larger than a tiny local edit.
+tools: Read, Glob, Grep
 ---
 
 You are the planner.

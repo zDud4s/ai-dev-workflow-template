@@ -28,7 +28,6 @@ mkdir -p "$TARGET_DIR/.agents/skills/maintenance"
 mkdir -p "$TARGET_DIR/.agents/skills/rescue"
 mkdir -p "$TARGET_DIR/.agents/skills/orchestrate"
 mkdir -p "$TARGET_DIR/.agents/skills/claude"
-mkdir -p "$TARGET_DIR/.agents/skills/codex"
 
 copy_if_missing() {
   local src="$1"
@@ -93,10 +92,10 @@ copy_if_missing "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agent
 # Keeps Codex's view of skills visible in-repo alongside Claude's. Always synced
 # from .claude/skills/ — edit there, not here. copy_if_different so customizations
 # in .claude/skills/ propagate; direct edits to .agents/skills/<shared>/ are overwritten.
-# `codex` is included: its canonical source is .claude/skills/codex/SKILL.md and Codex
-# needs the mirror in .agents/skills/codex/ so the home-dir mirror below can reach it.
-# `claude` is excluded: it has no .claude/skills/ counterpart (see copy_if_missing above).
-for skill in bootstrap planner reviewer maintenance rescue orchestrate codex; do
+# `codex` is NOT mirrored: codex is the runner, it never invokes a "codex skill"
+# to call itself. `claude` is excluded for the symmetric reason and because it
+# has no .claude/skills/ counterpart (see copy_if_missing above).
+for skill in bootstrap planner reviewer maintenance rescue orchestrate; do
   copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
 done
 
