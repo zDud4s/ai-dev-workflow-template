@@ -240,13 +240,18 @@
       // missing-DOM doesn't bury the actual HTTP error.
       const docEl = $("#jobs-doc");
       if (!docEl) return;
+      // Pin the selection at fetch start so a fresh click on a different job
+      // while we're awaiting can't write stale content into the panel.
+      const requestedJobId = _selectedJobId;
       try {
-        const r = await fetch("/api/jobs/" + _selectedJobId + "?tail=" + JOB_LOG_TAIL_LINES, { cache: "no-store" });
+        const r = await fetch("/api/jobs/" + requestedJobId + "?tail=" + JOB_LOG_TAIL_LINES, { cache: "no-store" });
+        if (requestedJobId !== _selectedJobId) return;
         if (!r.ok) {
           docEl.innerHTML = `<div class="err">HTTP ${r.status}</div>`;
           return;
         }
         const j = await r.json();
+        if (requestedJobId !== _selectedJobId) return;
         const cancelable = j.status === "running" || j.status === "queued";
         const timeParts = [];
         if (j.created_at) timeParts.push(`<span class="job-time-k">created</span> ${escape(j.created_at)}`);
@@ -286,6 +291,7 @@
         if (log && wasAtBottom) log.scrollTop = log.scrollHeight;
       } catch (e) {
         // docEl resolved at top of the function — reuse it here.
+        if (requestedJobId !== _selectedJobId) return;
         docEl.innerHTML = `<div class="err">${escape(e.message)}</div>`;
       }
     }
@@ -548,10 +554,10 @@
           chart.innerHTML = bannerHtml + (filterSid
             ? `<div class="tl-empty">No runs match session <code>${escape(filterSid.slice(0, 8))}</code>. Clear the filter to see all runs.</div>`
             : `<div class="tl-empty">No pipeline runs yet. Dispatch a phase via <em>Run</em> or invoke the orchestrate skill — the <code>PostToolUse</code> hook logs subprocess dispatches to <code>.ai/events.jsonl</code> automatically. Inline phases (orchestrator running a phase in its own session) are not captured.</div>`);
-          meta.textContent = filterSid ? "0 runs (filtered)" : "0 runs";
+          if (meta) meta.textContent = filterSid ? "0 runs (filtered)" : "0 runs";
           return;
         }
-        meta.textContent = `${runs.length} session${runs.length === 1 ? "" : "s"}${filterSid ? " (filtered)" : ""}`;
+        if (meta) meta.textContent = `${runs.length} session${runs.length === 1 ? "" : "s"}${filterSid ? " (filtered)" : ""}`;
         chart.innerHTML = bannerHtml + runs.map((run) => {
           const start = Date.parse(run.started_at) || 0;
           const end = Date.parse(run.ended_at) || start;
@@ -596,7 +602,7 @@
             + `</div>`;
         }).join("");
       } catch (err) {
-        meta.textContent = "error";
+        if (meta) meta.textContent = "error";
         delete chart.dataset.skeletoned;
         chart.innerHTML = `<div class="err">${escape(err.message)}</div>`;
         setMsg("#timeline-load", "err", "Timeline load failed: " + err.message);

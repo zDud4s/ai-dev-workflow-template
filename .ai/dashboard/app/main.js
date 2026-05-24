@@ -107,7 +107,9 @@
           renderMarkdown($("#packets-doc"), await getText(".ai/packets/" + name));
         });
 
-        await Promise.all([
+        // allSettled so one failing loader doesn't blank the others; per-loader
+        // catch blocks already surface their own errors into their card slots.
+        await Promise.allSettled([
           loadEvents(),
           loadJobs(),
           loadSessions(),
@@ -161,10 +163,14 @@
             headers: { "Content-Type": "application/json" },
             body: "{}",
           });
-          if (!r.ok) return;
+          if (!r.ok) {
+            console.warn("[dashboard] workflow check HTTP", r.status);
+            return;
+          }
           data = await r.json();
           try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: now, data })); } catch (_) { /* ignore */ }
-        } catch (_) {
+        } catch (e) {
+          console.warn("[dashboard] workflow check failed:", e);
           return;
         }
       }

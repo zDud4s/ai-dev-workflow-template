@@ -1596,7 +1596,7 @@
             const pos = caret - prefix.length - 1 + it.pick.length;
             input.setSelectionRange(pos, pos);
           });
-        } catch (_) { /* ignore */ }
+        } catch (e) { console.warn("[terminals] /api/skills autocomplete failed:", e); }
       } else {
         try {
           const r = await fetch("/api/files/list?prefix=" + encodeURIComponent(prefix), { cache: "no-store" });
@@ -1624,7 +1624,7 @@
             input.setSelectionRange(pos, pos);
             termRenderAttachments(t);
           });
-        } catch (_) { /* ignore */ }
+        } catch (e) { console.warn("[terminals] /api/files/list autocomplete failed:", e); }
       }
     }
 
