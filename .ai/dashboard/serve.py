@@ -48,6 +48,7 @@ import json
 import os
 import queue as _stdqueue
 import re
+import secrets
 import shutil
 import socket
 import socketserver
@@ -82,10 +83,87 @@ _SERVER_STARTED_AT = time.time()
 # the dashboard always reflects the latest upstream version. Override via
 # AI_WORKFLOW_TEMPLATE_URL (useful for forks or for testing against a local
 # bare repo via file:// URL).
-WORKFLOW_TEMPLATE_URL = os.environ.get(
-    "AI_WORKFLOW_TEMPLATE_URL",
-    "https://github.com/zDud4s/ai-dev-workflow-template.git",
+_DEFAULT_WORKFLOW_TEMPLATE_URL = "https://github.com/zDud4s/ai-dev-workflow-template.git"
+# Allowlisted scheme + host pairs for AI_WORKFLOW_TEMPLATE_URL. file:// is kept
+# for local bare-repo testing; https://github.com / https://gitlab.com /
+# https://codeberg.org cover the common fork hosts. Anything else (http://,
+# git://, ssh://, http://attacker/) is rejected and the default is used so a
+# tampered env var can't redirect every dashboard click to a hostile clone.
+_ALLOWED_TEMPLATE_HOSTS = {
+    ("https", "github.com"),
+    ("https", "gitlab.com"),
+    ("https", "codeberg.org"),
+}
+
+
+def _validate_template_url(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+    except Exception:
+        return _DEFAULT_WORKFLOW_TEMPLATE_URL
+    if p.scheme == "file" and p.path:
+        return url
+    if (p.scheme, (p.hostname or "").lower()) in _ALLOWED_TEMPLATE_HOSTS:
+        return url
+    print(
+        f"[serve] AI_WORKFLOW_TEMPLATE_URL rejected (scheme/host not allowlisted): {url!r}",
+        flush=True,
+    )
+    return _DEFAULT_WORKFLOW_TEMPLATE_URL
+
+
+WORKFLOW_TEMPLATE_URL = _validate_template_url(
+    os.environ.get("AI_WORKFLOW_TEMPLATE_URL", _DEFAULT_WORKFLOW_TEMPLATE_URL)
 )
+
+
+def _safe_which(name: str) -> str | None:
+    """Hardened wrapper around ``shutil.which``.
+
+    Drops obviously hostile / accidental PATH entries (empty, ``.``,
+    relative, $TEMP, $HOME/Downloads) BEFORE the lookup so a planted
+    binary in those locations can't shadow the real tool. Returns the
+    absolute resolved path, or ``None`` if no acceptable match was
+    found. Falls back to ``None`` even when the unfiltered ``which``
+    would have matched — callers MUST handle ``None``.
+    """
+    raw_path = os.environ.get("PATH", "")
+    if not raw_path:
+        return None
+    sep = os.pathsep
+    bad_dirs: set[str] = set()
+    for envvar in ("TEMP", "TMP", "TMPDIR"):
+        val = os.environ.get(envvar)
+        if val:
+            try:
+                bad_dirs.add(os.path.normcase(os.path.realpath(val)))
+            except OSError:
+                bad_dirs.add(os.path.normcase(val))
+    home = os.path.expanduser("~")
+    if home and home != "~":
+        for sub in ("Downloads", "Desktop"):
+            cand = os.path.join(home, sub)
+            try:
+                bad_dirs.add(os.path.normcase(os.path.realpath(cand)))
+            except OSError:
+                bad_dirs.add(os.path.normcase(cand))
+    cleaned: list[str] = []
+    for entry in raw_path.split(sep):
+        if not entry or entry in (".", ".."):
+            continue
+        if not os.path.isabs(entry):
+            continue
+        try:
+            resolved = os.path.normcase(os.path.realpath(entry))
+        except OSError:
+            continue
+        if resolved in bad_dirs:
+            continue
+        cleaned.append(entry)
+    if not cleaned:
+        return None
+    return shutil.which(name, path=sep.join(cleaned))
 # One-line file with the upstream sha that produced the currently-installed
 # workflow files. Written by /api/workflow/update after a successful run; read
 # by /api/workflow/check to compute "ahead/behind in commits". Absent on
@@ -244,9 +322,15 @@ def _load_jsonl_cached(path: Path) -> list[dict]:
     # Two concurrent first-callers will parse twice; both writes produce the
     # same list so the race is benign.
     rows: list[dict] = []
+    # Per-line cap: a hostile or wedged producer that emits one giant line
+    # would otherwise be ingested whole here and replicated across every
+    # cached parse. 1 MiB per row is generous for legitimate JSONL events.
+    max_line_bytes = 1 * 1024 * 1024
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
+                if len(line) > max_line_bytes:
+                    continue
                 line = line.strip()
                 if not line:
                     continue
@@ -1135,6 +1219,10 @@ def _pty_spawn(shell: str | None, cwd: str | None, cols: int, rows: int) -> dict
     pty = _pty_session.Pty.spawn(argv, cwd=target_cwd, cols=cols, rows=rows)
     pty_id = str(uuid.uuid4())
     now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    # Per-PTY access token: required on WS attach so an arbitrary
+    # dashboard origin client can't enumerate PTYs and slurp their
+    # 256 KiB scrollback (which often contains API keys / PATs).
+    # Cryptographically random (URL-safe base64) so it's unguessable.
     entry = {
         "id": pty_id,
         "kind": "terminal",
@@ -1151,6 +1239,7 @@ def _pty_spawn(shell: str | None, cwd: str | None, cols: int, rows: int) -> dict
         "_ring": bytearray(),     # accumulated output bytes, capped
         "_subscribers": [],       # list of queue.Queue[bytes|None]
         "_lock": threading.Lock(),
+        "_token": secrets.token_urlsafe(32),
     }
     with PTYS_LOCK:
         PTYS[pty_id] = entry
@@ -1224,8 +1313,8 @@ def _pty_kill(pty_id: str) -> bool:
     return True
 
 
-def _pty_summary(entry: dict) -> dict:
-    return {
+def _pty_summary(entry: dict, *, include_token: bool = False) -> dict:
+    out = {
         "id": entry["id"],
         "kind": entry["kind"],
         "shell": entry["shell"],
@@ -1237,6 +1326,13 @@ def _pty_summary(entry: dict) -> dict:
         "status": entry.get("status"),
         "created_at": entry.get("created_at"),
     }
+    # Token only flows out on the create response so the spawner can
+    # save it locally and use it for subsequent WS attach. List + get
+    # endpoints intentionally omit it so it never crosses the wire
+    # except in the response to the request that created the PTY.
+    if include_token:
+        out["token"] = entry.get("_token")
+    return out
 
 
 def _evict_old_ptys() -> None:
@@ -1822,7 +1918,7 @@ def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
     # IMPORTANT (Windows): pass the prompt via stdin, not argv. Long prompts
     # on argv silently fail (claude emits only a "status:ready" stub and never
     # processes the request) — observed empirically. stdin works for any size.
-    tool_bin = shutil.which(cfg["tool"]) or cfg["tool"]
+    tool_bin = _safe_which(cfg["tool"]) or cfg["tool"]
     argv = [tool_bin, "-p", "--model", cfg["model"]]
     # Pin a session id ONLY for claude — codex doesn't write per-session
     # JSONLs into ~/.claude/projects/ so it doesn't have the same pollution
@@ -1895,8 +1991,8 @@ def _trigger_improvers_for_job(job_id: str, skill_ids: list[str]) -> None:
     cfg = _load_improver_config()
     if not cfg.get("enabled"):
         return
-    if not shutil.which(cfg["tool"]):
-        return  # CLI not on PATH; silently skip
+    if not _safe_which(cfg["tool"]):
+        return  # CLI not on PATH (or on an untrusted PATH entry); silently skip
     proj = _project_skill_index()
     with JOBS_LOCK:
         j = JOBS.get(job_id)
@@ -2467,7 +2563,7 @@ def _spawn_job(
     """
     session = _read_yaml_field(ROOT / ".ai" / "models.yaml", "session")
     model = model_override or session.get("model") or "claude-sonnet-4-6"
-    claude_bin = shutil.which("claude") or "claude"
+    claude_bin = _safe_which("claude") or "claude"
 
     if kind == "chat":
         # Three possible session strategies:
@@ -2509,7 +2605,7 @@ def _spawn_job(
         # session.model if no separate codex one is configured. An explicit
         # ``model_override`` from the caller still wins over both.
         codex_model = model_override or codex_session.get("codex_model") or model
-        codex_bin = shutil.which("codex") or "codex"
+        codex_bin = _safe_which("codex") or "codex"
         argv = _build_codex_chat_argv(
             model=codex_model,
             session_id=resume_session_id,
@@ -2577,7 +2673,7 @@ def _build_chat_argv(
                                         operator is the only consent gate.
     """
     if claude_bin is None:
-        claude_bin = shutil.which("claude") or "claude"
+        claude_bin = _safe_which("claude") or "claude"
     argv = [
         claude_bin,
         "--print",
@@ -2625,7 +2721,7 @@ def _build_codex_chat_argv(model: str, session_id: str | None, codex_bin: str | 
     we don't have to shell-quote arbitrary user text.
     """
     if codex_bin is None:
-        codex_bin = shutil.which("codex") or "codex"
+        codex_bin = _safe_which("codex") or "codex"
     argv = [codex_bin, "exec"]
     if session_id:
         argv += ["resume", session_id]
@@ -3685,14 +3781,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def translate_path(self, path):
         real = super().translate_path(path)
-        resolved = os.path.normcase(os.path.realpath(real))
+        # On Windows the http path uses `/` but os.sep is `\`. Normalize
+        # both sides before the prefix sweep so `.git/objects/...` does
+        # not slip past a `c:\...\.git` comparison just because the
+        # incoming path was forward-slash-separated.
+        resolved = os.path.normcase(os.path.realpath(real)).replace("/", os.sep)
         base = os.path.basename(resolved)
         if (base in self._BLOCKED_NAMES
                 or base.startswith(self._BLOCKED_NAME_PREFIXES)
                 or base.endswith(self._BLOCKED_NAME_SUFFIXES)):
             return os.path.join(real, "__blocked_sensitive_path__")
         for blocked in self._BLOCKED_PATHS:
-            if resolved == blocked or resolved.startswith(blocked + os.sep):
+            blocked_norm = blocked.replace("/", os.sep)
+            if resolved == blocked_norm or resolved.startswith(blocked_norm + os.sep):
                 return os.path.join(real, "__blocked_sensitive_path__")
         return real
 
@@ -3716,6 +3817,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/timeline":
             self._handle_timeline()
+            return
+        if parsed.path == "/api/events":
+            self._handle_events_list(urllib.parse.parse_qs(parsed.query))
             return
         if parsed.path == "/api/auto-select":
             self._handle_auto_select(parsed)
@@ -3788,7 +3892,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         m = re.fullmatch(r"/api/ptys/([0-9a-f-]+)/io", parsed.path)
         if m:
-            self._handle_pty_ws(m.group(1))
+            self._handle_pty_ws(m.group(1), urllib.parse.parse_qs(parsed.query))
             return
         m = re.fullmatch(r"/api/ptys/([0-9a-f-]+)", parsed.path)
         if m:
@@ -3880,12 +3984,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # dashboard traffic; the largest known payload is the chat
         # composer with inlined files, which is capped client-side at
         # ~256 KB.
+        raw_len = self.headers.get("Content-Length") or "0"
+        # Reject obviously-malformed headers (negatives, "+0", whitespace
+        # padding, plus-prefixed positives) up front — int() would happily
+        # parse "+ 5\n" or "-100" otherwise. Length must be a bare
+        # non-negative integer per RFC 9110.
+        if not raw_len.lstrip("0").isdigit() and raw_len.strip() != "0":
+            self._json(411, {"error": "missing or invalid Content-Length"})
+            return None
         try:
-            length = int(self.headers.get("Content-Length") or "0")
+            length = int(raw_len)
         except (TypeError, ValueError):
             self._json(411, {"error": "missing or invalid Content-Length"})
             return None
-        if length <= 0:
+        if length < 0:
+            self._json(411, {"error": "missing or invalid Content-Length"})
+            return None
+        if length == 0:
             return {}
         if length > MAX_JSON_BODY:
             self._json(413, {"detail": "request body too large", "error": "payload too large"})
@@ -4006,13 +4121,52 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         _write_text_lf(path, existing + entry)
         self._json(200, {"ok": True, "entry": entry})
 
+    def _handle_events_list(self, qs: dict[str, list[str]]) -> None:
+        """GET /api/events?tail=N — parsed events.jsonl with optional tail.
+
+        Replaces the previous client-side approach of fetching the raw
+        .ai/events.jsonl static file and re-parsing every line each poll.
+        With ``tail=N`` (default 2000, max 5000) only the most recent N
+        rows are returned, so a 100k-event ledger no longer triggers a
+        multi-second freeze on every 5s refresh.
+        """
+        try:
+            tail = int((qs.get("tail") or ["2000"])[0])
+        except (TypeError, ValueError):
+            tail = 2000
+        tail = max(1, min(5000, tail))
+        rows = _load_jsonl_cached(EVENTS_FILE)
+        total = len(rows)
+        truncated = total > tail
+        if truncated:
+            rows = rows[-tail:]
+        self._json(200, {
+            "events": rows,
+            "total": total,
+            "returned": len(rows),
+            "truncated": truncated,
+        })
+
     def _handle_events_clear(self) -> None:
         path = ROOT / ".ai" / "events.jsonl"
+        # Audit-log the truncation BEFORE doing it. /api/events/clear is a
+        # CSRF-gated POST but it's still an audit-erasing primitive — record
+        # who/when so a future investigator can see when the ledger was wiped.
+        try:
+            size = path.stat().st_size if path.exists() else 0
+        except OSError:
+            size = -1
+        print(
+            f"[serve] AUDIT: events.jsonl cleared "
+            f"(prior_size={size} bytes, client={self.client_address[0]})",
+            flush=True,
+        )
         try:
             if path.exists():
                 path.unlink()
         except OSError as e:
-            self._json(500, {"error": "could not clear events", "detail": str(e)})
+            print(f"[serve] events.jsonl clear failed: {e}", flush=True)
+            self._json(500, {"error": "could not clear events"})
             return
         self._json(200, {"ok": True})
 
@@ -4114,7 +4268,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 tags.append(t)
         # The specific CLI we need depends on the kind.
         required_bin = "codex" if kind == "chat-codex" else "claude"
-        if not shutil.which(required_bin):
+        if not _safe_which(required_bin):
             self._json(503, {"error": f"`{required_bin}` CLI not found on PATH"})
             return
         job_id = str(uuid.uuid4())
@@ -4256,11 +4410,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ):
                 if os.path.isfile(guess):
                     return guess
-            candidate = shutil.which("bash")
+            candidate = _safe_which("bash")
             if candidate and "system32" not in candidate.lower():
                 return candidate
             return None
-        return shutil.which("bash")
+        return _safe_which("bash")
 
     def _is_template_repo(self) -> bool:
         # True when the dashboard is being served from a checkout of the
@@ -4661,7 +4815,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 creator_template="auto_select:\n  enabled: false\n  token_budget: medium\n  phases: [execute, review, rescue]\n",
             )
         except ValueError as e:
-            self._json(500, {"error": str(e)})
+            print(f"[serve] auto_select yaml update failed: {e}", flush=True)
+            self._json(500, {"error": "failed to update auto_select config"})
             return
         _write_text_lf(path, new_text)
         self._json(200, {"ok": True, "updated": updates})
@@ -4782,7 +4937,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             text = resolved.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
-            self._json(500, {"error": "read failed", "detail": str(e)})
+            print(f"[serve] agent read failed for {resolved}: {e}", flush=True)
+            self._json(500, {"error": "read failed"})
             return
         max_bytes = 256 * 1024
         truncated = False
@@ -4986,13 +5142,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 new_content = new_md.read_text(encoding="utf-8")
             except OSError as e:
-                self._json(500, {"error": "could not read draft body", "detail": str(e)})
+                print(f"[serve] could not read draft body {new_md}: {e}", flush=True)
+                self._json(500, {"error": "could not read draft body"})
                 return
             try:
                 target_dir.mkdir(parents=True, exist_ok=True)
                 target_md.write_text(new_content, encoding="utf-8")
             except OSError as e:
-                self._json(500, {"error": "write failed", "detail": str(e)})
+                print(f"[serve] draft install write failed for {target_md}: {e}", flush=True)
+                self._json(500, {"error": "write failed"})
                 return
             target_rel = f".claude/skills/{slug}/SKILL.md"
             obj["status"] = "installed"
@@ -5075,7 +5233,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json(404, {"error": "cluster not found", "id": cluster_id})
                 return
             cfg = _load_improver_config()
-            if not shutil.which(cfg["tool"]):
+            if not _safe_which(cfg["tool"]):
                 self._json(503, {"error": f"`{cfg['tool']}` CLI not on PATH"})
                 return
 
@@ -5100,7 +5258,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "~40 lines."
             )
             # Same stdin trick as the improver: long argv prompts fail silently on Windows.
-            tool_bin = shutil.which(cfg["tool"]) or cfg["tool"]
+            tool_bin = _safe_which(cfg["tool"]) or cfg["tool"]
             # Cap the request-thread wait at _SUGGESTION_HTTP_TIMEOUT_MAX
             # so a long ``cfg["timeout_seconds"]`` (up to 3600s) can't
             # park the dashboard via this interactive endpoint.
@@ -5117,11 +5275,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     encoding="utf-8", errors="replace",
                 )
             except (subprocess.TimeoutExpired, OSError) as e:
-                self._json(500, {"error": "subprocess error", "detail": str(e)})
+                print(f"[serve] improver subprocess error: {e}", flush=True)
+                self._json(500, {"error": "subprocess error"})
                 return
             if proc.returncode != 0:
-                self._json(500, {"error": f"exit {proc.returncode}",
-                                 "stderr": (proc.stderr or "")[:300]})
+                print(f"[serve] improver exit {proc.returncode}: {(proc.stderr or '')[:300]}", flush=True)
+                self._json(500, {"error": f"exit {proc.returncode}"})
                 return
             parsed = _parse_improver_output(proc.stdout or "")
             if not parsed or not isinstance(parsed.get("new_content"), str):
@@ -5210,7 +5369,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             cfg = _load_improver_config()
-            tool_bin = shutil.which(cfg["tool"])
+            tool_bin = _safe_which(cfg["tool"])
             if not tool_bin:
                 self._json(503, {"error": f"`{cfg['tool']}` CLI not on PATH"})
                 return
@@ -5401,7 +5560,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             target.parent.mkdir(parents=True, exist_ok=True)
             _write_text_lf(target, content)
         except OSError as e:
-            self._json(500, {"error": "write failed", "detail": str(e)})
+            print(f"[serve] agent install write failed for {target}: {e}", flush=True)
+            self._json(500, {"error": "write failed"})
             return
         obj["status"] = "installed"
         obj["applied_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
@@ -5451,7 +5611,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             content = skill_md.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
-            self._json(500, {"error": str(e)})
+            print(f"[serve] skill content read failed for {skill_md}: {e}", flush=True)
+            self._json(500, {"error": "read failed"})
             return
         # Cap at ~256KB so a huge file doesn't blow up the modal.
         cap = 256 * 1024
@@ -5514,7 +5675,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         prefix = (qs.get("prefix", [""])[0] or "").lower()
         limit = 30
         files: list[str] = []
-        git = shutil.which("git")
+        git = _safe_which("git")
         if git:
             try:
                 out = subprocess.run(
@@ -5524,6 +5685,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if out.returncode == 0:
                     for line in out.stdout.splitlines():
                         if not line:
+                            continue
+                        # Apply SKIP_DIRS to the git-fast path too — tracked
+                        # secrets under .venv/ / node_modules/ / vendor/ used
+                        # to be enumerable via ?prefix= because the filter
+                        # only protected the slow rglob fallback.
+                        if any(part in SKIP_DIRS for part in line.split("/")):
                             continue
                         if prefix and prefix not in line.lower():
                             continue
@@ -5753,9 +5920,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if cwd_raw is not None and not isinstance(cwd_raw, str):
             self._json(400, {"error": "cwd must be a string"})
             return
-        # Constrain ``cwd`` to inside the repo so the dashboard can't be
-        # used as a generic remote shell over the LAN. Empty/None falls
-        # back to the repo root.
+        # Constrain the INITIAL ``cwd`` to inside the repo. Note: this
+        # only pins where the shell *starts*; once running, the shell
+        # can `cd ..` freely — we don't chroot or pivot_root. Treat this
+        # as a UX guardrail against accidents (paste a wrong path),
+        # not as a sandbox boundary. Empty/None falls back to the repo
+        # root.
         cwd = None
         if cwd_raw:
             try:
@@ -5783,12 +5953,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(503, {"error": str(e)})
             return
         except FileNotFoundError as e:
-            self._json(503, {"error": f"shell not found: {e}"})
+            print(f"[serve] pty spawn missing binary: {e}", flush=True)
+            self._json(503, {"error": "shell not found"})
             return
         except Exception as e:
-            self._json(500, {"error": f"failed to spawn PTY: {e}"})
+            print(f"[serve] pty spawn failed: {e}", flush=True)
+            self._json(500, {"error": "failed to spawn PTY"})
             return
-        self._json(201, _pty_summary(entry))
+        self._json(201, _pty_summary(entry, include_token=True))
 
     def _handle_pty_kill(self, pty_id: str) -> None:
         if _pty_kill(pty_id):
@@ -5796,7 +5968,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         else:
             self._json(404, {"error": "pty not found"})
 
-    def _handle_pty_ws(self, pty_id: str) -> None:
+    def _handle_pty_ws(self, pty_id: str, qs: dict[str, list[str]] | None = None) -> None:
         """WebSocket endpoint: bidirectional byte stream + JSON control
         messages. Frames:
           * binary  -> bytes written to the PTY master (keystrokes)
@@ -5804,11 +5976,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         Server -> client:
           * binary  -> bytes read off the PTY master
           * text    -> JSON: {"type":"exit"} on EOF
+
+        Requires the per-PTY token issued by /api/ptys (POST). The token
+        is passed either via the ``token`` query string parameter or the
+        ``Sec-WebSocket-Protocol`` header value. Without a valid token
+        the upgrade is refused with 403 so a malicious script on the
+        dashboard origin can't enumerate PTYs and slurp their scrollback.
         """
         with PTYS_LOCK:
             entry = PTYS.get(pty_id)
         if not entry:
             self.send_error(404, "pty not found")
+            return
+        expected = entry.get("_token")
+        provided = ""
+        if qs:
+            provided = (qs.get("token") or [""])[0] or ""
+        if not provided:
+            # Allow token via subprotocol header too — useful when the
+            # JS client wants to keep the URL clean of secrets.
+            provided = (self.headers.get("Sec-WebSocket-Protocol") or "").strip()
+        if not expected or not provided or not secrets.compare_digest(str(expected), str(provided)):
+            self.send_error(403, "pty token required")
             return
         ws = WebSocket.accept(self)
         if ws is None:
@@ -5958,7 +6147,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not text:
                 self._json(400, {"error": "text is required for non-chat jobs"})
                 return
-            ok, err = _send_to_stdin(job_id, text)
+            # Strip ASCII control chars (except \n / \t) before piping into
+            # a non-chat subprocess's stdin. \r in particular can confuse a
+            # stream-json reader that line-frames on \n — the bare \r would
+            # be appended to the prior line as opaque data and the partial
+            # framing breaks for the rest of the session.
+            sanitized = "".join(
+                ch for ch in text
+                if ch in ("\n", "\t") or (32 <= ord(ch) < 127) or ord(ch) >= 128
+            )
+            ok, err = _send_to_stdin(job_id, sanitized)
         if not ok:
             code = 404 if err == "not found" else 409
             self._json(code, {"error": err})

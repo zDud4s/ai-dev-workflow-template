@@ -26,8 +26,8 @@ _PARENT_DIR_READY = False
 # Patterns matching the dispatcher commands documented in .ai/workflow/dispatch.md.
 # Claude:  cat /tmp/phase-<name>-prompt.md | claude -p "Execute the attached <name> phase ..." --model <model>
 # Codex:   cat /tmp/phase-<name>-prompt.md | codex exec --skip-git-repo-check -m <model> ...
-RE_CLAUDE = re.compile(r"\bclaude\s+-p\b[^\n]*?--model\s+(\S+)", re.S)
-RE_CODEX = re.compile(r"\bcodex\s+exec\b[^\n]*?\s-m\s+(\S+)", re.S)
+RE_CLAUDE = re.compile(r"\bclaude\s+-p\b[^\n]*?--model\s+([A-Za-z0-9._:\-]+)", re.S)
+RE_CODEX = re.compile(r"\bcodex\s+exec\b[^\n]*?\s-m\s+([A-Za-z0-9._:\-]+)", re.S)
 # Phase detection: prefer the tmp file path (works for both tools);
 # fall back to the inline "Execute the attached <phase> phase" string (claude only).
 RE_PHASE_PATH = re.compile(r"/tmp/phase-(\w+)-prompt\.md")
@@ -81,9 +81,43 @@ def main() -> None:
         if not _PARENT_DIR_READY:
             EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
             _PARENT_DIR_READY = True
+        # POSIX O_APPEND is atomic up to PIPE_BUF (4 KiB) so two hook
+        # processes writing simultaneously won't interleave bytes mid-line.
+        # Windows has no equivalent guarantee — use msvcrt.locking around
+        # the write so concurrent dispatches can't shred each other's JSON.
         with EVENTS_FILE.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            line = json.dumps(event, ensure_ascii=False) + "\n"
+            if sys.platform == "win32":
+                try:
+                    import msvcrt
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    try:
+                        f.write(line)
+                        f.flush()
+                    finally:
+                        try:
+                            f.seek(0)
+                            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                        except OSError:
+                            pass
+                except (ImportError, OSError):
+                    # Lock acquisition failed (rare) — fall back to a plain
+                    # write rather than dropping the event entirely.
+                    f.write(line)
+            else:
+                try:
+                    import fcntl
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    try:
+                        f.write(line)
+                    finally:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except (ImportError, OSError):
+                    f.write(line)
     except Exception:
+        # A.P3-6: reset _PARENT_DIR_READY so a deleted parent dir can be
+        # recreated on the next call instead of every write silently failing.
+        _PARENT_DIR_READY = False
         return
 
 

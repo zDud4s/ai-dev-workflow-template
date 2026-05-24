@@ -155,7 +155,11 @@ def main() -> None:
     last_err: OSError | None = None
     for candidate in [PORT + i for i in range(20)] + [0]:
         try:
-            httpd = socketserver.ThreadingTCPServer(("127.0.0.1", candidate), serve.Handler)
+            # Reuse serve._ThreadedServer (daemon_threads + Windows
+            # SO_EXCLUSIVEADDRUSE) so Ctrl+C in the demo isn't held up
+            # by in-flight requests and two demo instances can't silently
+            # share a port on Windows.
+            httpd = serve._ThreadedServer(("127.0.0.1", candidate), serve.Handler)
             bound = httpd.server_address[1]
             break
         except OSError as e:

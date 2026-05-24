@@ -74,7 +74,15 @@ _TRUSTED_SHELL_PATHS: dict[str, tuple[str, ...]] = {
     "zsh":        ("/bin/zsh", "/usr/bin/zsh", "/usr/local/bin/zsh"),
     "sh":         ("/bin/sh", "/usr/bin/sh"),
     "fish":       ("/usr/bin/fish", "/usr/local/bin/fish", "/opt/homebrew/bin/fish"),
-    "cmd":        (r"C:\Windows\System32\cmd.exe",),
+    "cmd":        (
+        r"C:\Windows\System32\cmd.exe",
+        # 32-bit Python on 64-bit Windows: WOW64 file-system redirector
+        # hides the real System32 view. Sysnative is the unredirected
+        # alias; SysWOW64 ships its own 32-bit cmd.exe. Both are first-
+        # party Windows binaries so it's safe to list them here.
+        r"C:\Windows\Sysnative\cmd.exe",
+        r"C:\Windows\SysWOW64\cmd.exe",
+    ),
     "powershell": (r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",),
     "pwsh":       (
         r"C:\Program Files\PowerShell\7\pwsh.exe",
@@ -454,8 +462,18 @@ class _PosixPty(Pty):
                 if cwd:
                     try:
                         os.chdir(cwd)
-                    except OSError:
-                        pass
+                    except OSError as cd_err:
+                        # TOCTOU defence: parent validated cwd before fork
+                        # but an attacker can rename/delete the dir between
+                        # the check and the exec. Refusing to spawn here
+                        # means the shell never starts at an unintended
+                        # cwd (would otherwise inherit the parent's cwd).
+                        try:
+                            os.write(2, f"pty: chdir({cwd!r}) failed: {cd_err}\n".encode(
+                                "utf-8", errors="replace"))
+                        except Exception:
+                            pass
+                        os._exit(126)
                 child_env = dict(env) if env else os.environ.copy()
                 # Reasonable defaults so ncurses apps render correctly.
                 child_env.setdefault("TERM", "xterm-256color")
@@ -465,7 +483,21 @@ class _PosixPty(Pty):
                 # spawned shell behaves normally.
                 for var in ("CLAUDE_CODE_ACTION", "CLAUDE_CODE_STREAM_JSON"):
                     child_env.pop(var, None)
-                os.execvpe(argv[0], argv, child_env)
+                # Belt-and-braces: argv[0] is already an absolute path
+                # resolved through _TRUSTED_SHELL_PATHS / _is_under_trusted_dir,
+                # but assert it before exec so a future regression that
+                # passes a bare name (which would trigger execvpe's own PATH
+                # walk in the stripped child env) fails loudly here instead
+                # of silently running an unintended binary.
+                if not os.path.isabs(argv[0]):
+                    try:
+                        os.write(2, f"pty: refusing non-absolute argv[0]: {argv[0]!r}\n".encode(
+                            "utf-8", errors="replace"))
+                    except Exception:
+                        pass
+                    os._exit(126)
+                # execve (not execvpe) avoids PATH lookup entirely.
+                os.execve(argv[0], argv, child_env)
             except Exception as exc:
                 # Surface the failure to the PTY master (fd 2 is the
                 # child's stderr, which the parent reads from the master
