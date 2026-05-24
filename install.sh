@@ -460,11 +460,10 @@ mirror_skill_to_home() {
   local name="$2"
   local dst_dir="$AGENTS_SKILLS_HOME/$name"
   mkdir -p "$dst_dir"
-  cp "$src" "$dst_dir/SKILL.md"
-  echo "Mirrored skill '$name' to $dst_dir/SKILL.md"
+  copy_if_different "$src" "$dst_dir/SKILL.md"
 }
 
-for skill in bootstrap planner reviewer maintenance rescue orchestrate claude codex; do
+for skill in bootstrap planner reviewer maintenance rescue orchestrate claude; do
   src="$TARGET_DIR/.agents/skills/$skill/SKILL.md"
   [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
   mirror_skill_to_home "$src" "$skill"
