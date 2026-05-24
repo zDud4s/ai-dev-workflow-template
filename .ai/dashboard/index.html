@@ -45,7 +45,6 @@
   <header>
     <h1>AI workflow</h1>
     <span class="project" id="project-name">…</span>
-    <span class="spacer"></span>
     <span class="meta" id="meta"><span class="spinner"></span> loading</span>
     <div class="header-actions">
       <button class="refresh" id="density-toggle" title="Toggle compact / comfortable density">Density</button>
@@ -245,7 +244,7 @@
       </section>
 
       <div class="proposal-modal" id="proposal-modal" role="dialog" aria-modal="true" aria-labelledby="proposal-modal-title" hidden>
-        <div class="proposal-modal-pane">
+        <div class="proposal-modal-pane" tabindex="-1">
           <header>
             <h3 id="proposal-modal-title">Proposal</h3>
             <button class="refresh" id="proposal-modal-close" aria-label="Close proposal modal">close</button>
@@ -261,7 +260,7 @@
       </div>
 
       <div class="proposal-modal" id="skill-detail-modal" role="dialog" aria-modal="true" aria-labelledby="skill-detail-title" hidden>
-        <div class="proposal-modal-pane">
+        <div class="proposal-modal-pane" tabindex="-1">
           <header>
             <h3 id="skill-detail-title">Skill</h3>
             <button class="refresh" id="skill-detail-close" aria-label="Close skill detail modal">close</button>
@@ -346,7 +345,7 @@
       </div>
 
       <div class="proposal-modal" id="agent-detail-modal" role="dialog" aria-modal="true" aria-labelledby="agent-detail-title" hidden>
-        <div class="proposal-modal-pane">
+        <div class="proposal-modal-pane" tabindex="-1">
           <header>
             <h3 id="agent-detail-title">Agent</h3>
             <button class="refresh" id="agent-detail-close" aria-label="Close agent detail modal">close</button>
@@ -362,7 +361,7 @@
       </div>
 
       <div class="proposal-modal" id="agent-proposal-modal" role="dialog" aria-modal="true" aria-labelledby="agent-proposal-title" hidden>
-        <div class="proposal-modal-pane">
+        <div class="proposal-modal-pane" tabindex="-1">
           <header>
             <h3 id="agent-proposal-title">Suggested agent</h3>
             <button class="refresh" id="agent-proposal-close" aria-label="Close suggested agent modal">close</button>
