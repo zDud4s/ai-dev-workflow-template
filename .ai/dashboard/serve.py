@@ -3662,8 +3662,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         for p in (
             ROOT / ".git",
             ROOT / ".claude" / "settings.json",
+            ROOT / ".aws",
+            ROOT / ".ssh",
+            ROOT / ".docker",
+            ROOT / "secrets",
         )
     )
+    # Basename patterns that must never be served regardless of location.
+    # Normcased (lowercase on Windows) so we compare consistently after
+    # os.path.normcase on the resolved path.
+    _BLOCKED_NAMES = frozenset({
+        ".env", ".env.local", ".env.production", ".env.development",
+        ".env.staging", ".env.test",
+        ".npmrc", ".netrc",
+        "credentials",
+    })
+    _BLOCKED_NAME_PREFIXES = ("id_",)
+    _BLOCKED_NAME_SUFFIXES = (".pem", ".key")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -3671,6 +3686,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def translate_path(self, path):
         real = super().translate_path(path)
         resolved = os.path.normcase(os.path.realpath(real))
+        base = os.path.basename(resolved)
+        if (base in self._BLOCKED_NAMES
+                or base.startswith(self._BLOCKED_NAME_PREFIXES)
+                or base.endswith(self._BLOCKED_NAME_SUFFIXES)):
+            return os.path.join(real, "__blocked_sensitive_path__")
         for blocked in self._BLOCKED_PATHS:
             if resolved == blocked or resolved.startswith(blocked + os.sep):
                 return os.path.join(real, "__blocked_sensitive_path__")
