@@ -1,0 +1,273 @@
+"""Static-lint regression tests for terminals.js batch-7 MEDIUM fixes.
+
+Scope: residual MEDIUM bugs flagged in ``docs/bug-hunt-status.md`` for
+``.ai/dashboard/app/terminals.js`` after batches 1–6. Targets two
+remaining items; the rest of the MEDIUM bullet list was verified as
+already-fixed in earlier batches.
+
+Targets:
+
+  1. Fire-and-forget ``loadJobs()`` calls inside event handlers and
+     close paths must catch async Promise rejections — otherwise the
+     browser logs an unhelpful "Uncaught (in promise)" stack the next
+     time the server hiccups during a close / SSE-end / codex rekey.
+     Sites in scope:
+       * ``termClose`` (fired on operator-initiated close)
+       * ``termSendCodexNextTurn`` (codex SSE end + rekey)
+       * the chat-pane SSE ``end`` listener inside ``termOpen``
+
+  2. ``termClosePty`` issues a fire-and-forget ``fetch(.../kill)`` to
+     evict the server-side shell. The pre-existing ``try/catch`` only
+     covered the synchronous arm — an async Promise rejection (network
+     drop, 4xx/5xx) silently dropped the kill on the floor with no
+     console diagnostic. The fetch result must now have ``.catch()``
+     chained to it so async failures are surfaced via ``console.warn``.
+
+Also includes regression guards confirming earlier-batch fixes survive:
+
+  3. ``termCloseAllFinished`` still snapshots ``TERMS.keys()`` before
+     iteration (batch 4 fix).
+  4. ``console.log`` self-test is still gone from the shipped bundle
+     (batch 4 fix; the explanatory comment must remain).
+  5. ``termSendResumeChat`` still propagates ``t.model`` in the resume
+     POST payload (batch 4 fix).
+  6. The three ad-hoc pill class mutations still route through
+     ``termSetPillState`` (batch 4 fix).
+
+Pattern mirrors ``tests/test_terminals_medium.py`` and
+``tests/test_terminals_batch6_refs_collisions_latches.py``.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+
+TERMINALS_JS = (
+    Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "app" / "terminals.js"
+)
+
+
+def _src() -> str:
+    return TERMINALS_JS.read_text(encoding="utf-8")
+
+
+def _slice_function(src: str, header: str) -> str:
+    """Return the body of the first function whose signature matches ``header``."""
+    idx = src.find(header)
+    assert idx != -1, f"could not locate {header!r} in terminals.js"
+    brace = src.find("{", idx)
+    assert brace != -1
+    depth = 0
+    for i in range(brace, len(src)):
+        ch = src[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return src[brace : i + 1]
+    raise AssertionError(f"unterminated function body for {header!r}")
+
+
+# ---------------------------------------------------------------------------
+# Target 1 — fire-and-forget loadJobs() must catch async rejections
+# ---------------------------------------------------------------------------
+
+
+def test_termClose_loadJobs_catches_rejection():
+    """The synchronous loadJobs() at the tail of termClose can reject
+    asynchronously (server transient 5xx, network blip) — without a
+    .catch() the browser surfaces an Uncaught (in promise) noise that
+    is unrelated to the close action the operator took.
+    """
+    body = _slice_function(_src(), "function termClose(")
+    # The call site is the tail — confirm a Promise-resolving wrapper
+    # with a .catch is present (we accept Promise.resolve(loadJobs()).catch
+    # or loadJobs()?.catch / .then().catch shapes).
+    has_catch = bool(
+        re.search(r"loadJobs\(\)\s*\)\.catch\(", body)
+        or re.search(r"loadJobs\(\)\?\.catch\(", body)
+        or re.search(r"loadJobs\(\)\.then\([^)]*\)\.catch\(", body)
+    )
+    assert has_catch, (
+        "termClose's fire-and-forget loadJobs() must chain .catch to "
+        "surface async rejection — otherwise the browser emits a noisy "
+        "Uncaught (in promise) the next time the server hiccups during close"
+    )
+    # And the rejection handler should write to console.warn with the
+    # "[terminals]" prefix so the failure is greppable.
+    assert "[terminals] loadJobs after termClose failed" in body, (
+        "termClose's loadJobs catch handler should call "
+        'console.warn("[terminals] loadJobs after termClose failed: ...")'
+    )
+
+
+def test_termSendCodexNextTurn_loadJobs_catches_rejection():
+    """Both loadJobs() calls inside termSendCodexNextTurn — the rekey
+    completion and the SSE 'end' listener — must catch rejection so a
+    server restart mid-codex-turn doesn't leak unhandled rejections.
+    """
+    body = _slice_function(_src(), "async function termSendCodexNextTurn(")
+    catches = re.findall(r"loadJobs\(\)\s*\)\.catch\(", body)
+    assert len(catches) >= 2, (
+        f"expected >=2 loadJobs().catch wrappers inside "
+        f"termSendCodexNextTurn (rekey + SSE end); found {len(catches)}"
+    )
+    # Diagnostic prefixes must be present.
+    assert "[terminals] loadJobs after codex" in body, (
+        "termSendCodexNextTurn's loadJobs catches must use the "
+        '"[terminals] loadJobs after codex ..."  prefix for greppability'
+    )
+
+
+def test_termOpen_chat_SSE_end_loadJobs_catches_rejection():
+    """The chat-pane SSE 'end' handler inside termOpen fires loadJobs()
+    so the run list reconciles when a job exits. Wrap it so a server
+    hiccup at exact-end doesn't leak an unhandled rejection.
+    """
+    src = _src()
+    # We can't easily isolate just the addEventListener("end") body, so
+    # look for the diagnostic phrase the fix introduces.
+    assert "[terminals] loadJobs after SSE end failed" in src, (
+        "termOpen's SSE 'end' handler must wrap loadJobs() in "
+        'Promise.resolve(loadJobs()).catch(...) with the '
+        '"[terminals] loadJobs after SSE end failed" warn prefix'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Target 2 — fetch kill silent failure in termClosePty
+# ---------------------------------------------------------------------------
+
+
+def test_termClosePty_kill_fetch_catches_async_rejection():
+    """The fire-and-forget /api/ptys/<id>/kill fetch must chain .catch
+    on its returned Promise — the prior try/catch only covered the
+    synchronous arm, so a mid-flight network drop OR a 4xx/5xx that
+    the browser fetch surfaces as a rejected Promise (rarely) used to
+    vanish with no console trace, leaving the operator unsure whether
+    the shell actually died on the server side.
+    """
+    body = _slice_function(_src(), "function termClosePty(")
+    # Capture the fetch construct and assert .catch attaches downstream
+    # (either directly or via an intermediate variable / Promise.resolve).
+    # Accept any of these shapes:
+    #   const _p = fetch(...); _p.catch(...)
+    #   fetch(...).catch(...)
+    #   Promise.resolve(fetch(...)).catch(...)
+    has_async_catch = bool(
+        re.search(
+            r"fetch\(`/api/ptys/\$\{ptyId\}/kill`[^)]*\)\s*\)?\s*\.catch\(",
+            body,
+        )
+        or re.search(
+            r"_killPromise\s*\.?catch\(",
+            body,
+        )
+        or re.search(
+            r"Promise\.resolve\(\s*fetch\(`/api/ptys",
+            body,
+        )
+    )
+    assert has_async_catch, (
+        "termClosePty must chain .catch on the fire-and-forget kill "
+        "fetch's returned Promise so async rejections surface in the "
+        "console; the existing try/catch only covers synchronous throws"
+    )
+    # Diagnostic phrase the fix introduces.
+    assert "[terminals] PTY kill fetch rejected" in body, (
+        "termClosePty's async kill catch handler must use the "
+        '"[terminals] PTY kill fetch rejected"  warn prefix so '
+        "leaked-shell incidents are greppable in the console"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regression guards (earlier-batch fixes must survive)
+# ---------------------------------------------------------------------------
+
+
+def test_termCloseAllFinished_still_snapshots_keys():
+    """REGRESSION (batch 4) — termCloseAllFinished must keep iterating
+    over a snapshot of TERMS.keys() so a cascading termClose doesn't
+    skip a sibling entry mid-iteration."""
+    body = _slice_function(_src(), "function termCloseAllFinished(")
+    assert "[...TERMS.keys()]" in body or "Array.from(TERMS.keys())" in body, (
+        "termCloseAllFinished regressed back to live iteration — must "
+        "snapshot TERMS.keys() before the for-of loop"
+    )
+
+
+def test_no_console_log_self_test_in_prod():
+    """REGRESSION (batch 4) — the simpleLineDiff DOMContentLoaded
+    self-test that ran on every page load must not have crept back.
+    console.warn / console.debug for runtime diagnostics is fine;
+    console.log is the forbidden smell.
+    """
+    src = _src()
+    hits = re.findall(r"\bconsole\.log\s*\(", src)
+    assert not hits, (
+        f"console.log calls re-appeared in terminals.js: {len(hits)} site(s). "
+        "Remove or gate behind `if (window._dev)` / window.DEBUG_DIFF_SELFTEST."
+    )
+
+
+def test_chat_resume_still_propagates_model():
+    """REGRESSION (batch 4) — termSendResumeChat must still include
+    t.model in the resume POST payload, otherwise a resumed dead chat
+    silently flips back to the server-default model."""
+    body = _slice_function(_src(), "async function termSendResumeChat(")
+    has_model = (
+        "payload.model = t.model" in body
+        or "model: t.model" in body
+    )
+    assert has_model, (
+        "termSendResumeChat regressed — must propagate t.model on the "
+        "resume /api/jobs POST so the operator's chosen model survives"
+    )
+
+
+def test_dispatch_result_pill_routes_through_helper():
+    """REGRESSION (batch 4) — the dispatch-tracker result block must
+    not use ``classList.toggle("done", ...)``; it must route through
+    ``termSetPillState`` to clear stale running/queued classes."""
+    src = _src()
+    assert 'classList.toggle("done"' not in src, (
+        "dispatch-tracker result regressed back to "
+        'classList.toggle("done", ...) — must use termSetPillState'
+    )
+
+
+def test_codex_pill_paths_route_through_helper():
+    """REGRESSION (batch 4) — termCodexAwaitNextTurn + the codex rekey
+    connecting branch must continue using termSetPillState rather than
+    ad-hoc classList.add."""
+    src = _src()
+    await_body = _slice_function(src, "async function termCodexAwaitNextTurn(")
+    send_body = _slice_function(src, "async function termSendCodexNextTurn(")
+    for label, body in (("termCodexAwaitNextTurn", await_body),
+                        ("termSendCodexNextTurn", send_body)):
+        assert "termSetPillState(" in body, (
+            f"{label} regressed — must keep routing pill transitions "
+            "through termSetPillState so stale state classes don't stack"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bundle sanity
+# ---------------------------------------------------------------------------
+
+
+def test_terminals_js_non_empty_and_capped():
+    """A truncating edit usually halves the file. Cheap belt-and-braces."""
+    src = _src()
+    assert len(src) > 100_000, (
+        f"terminals.js shrank to {len(src)} bytes — likely truncation"
+    )
+    assert src.lstrip().startswith("// .ai/dashboard/app/terminals.js"), (
+        "header comment lost — likely destructive top-of-file edit"
+    )
+    assert "restoreOpenPanes" in src[-2000:], (
+        "tail boot sequence lost — likely truncation"
+    )
