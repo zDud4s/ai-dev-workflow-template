@@ -14,6 +14,15 @@
     } else {
       console.warn("[dashboard] marked library not loaded; markdown rendering disabled");
     }
+    // Same defensive probe for DOMPurify — every sink that renders
+    // user/server markdown to innerHTML wraps the parsed output in
+    // DOMPurify before assignment. If DOMPurify failed to load (CDN
+    // issue, CSP block, offline), the try/catch around those sinks
+    // falls back to textContent (safe) but the user sees raw markdown
+    // source. Warn at boot so the regression is diagnosable.
+    if (typeof DOMPurify === "undefined") {
+      console.warn("[dashboard] DOMPurify not loaded; markdown sinks will fall back to plain text");
+    }
 
     // ----- nav switching -----
     $$("nav button").forEach((btn) => {

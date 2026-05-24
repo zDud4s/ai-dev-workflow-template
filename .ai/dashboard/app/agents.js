@@ -241,9 +241,15 @@
       }
     }
 
+    // Epoch counter so rapid clicks on agent cards don't let an earlier
+    // fetch overwrite the modal opened by a later click. Mirrors the
+    // `_skillDetailEpoch` pattern in skills.js.
+    var _agentDetailEpoch = 0;
+
     async function openAgentDetail(path, name, source) {
       const modal = $("#agent-detail-modal");
       if (!modal) return;  // partial-DOM bail
+      const myEpoch = ++_agentDetailEpoch;
       modal.hidden = false;
       const cached = _agentsState.all.find((x) => x.path === path);
       const titleEl = $("#agent-detail-title");
@@ -266,11 +272,13 @@
         meta.map((s) => `<span>${s}</span>`).join("") + rationaleHtml;
       try {
         const r = await fetch("/api/agents/content?path=" + encodeURIComponent(path), { cache: "no-store" });
+        if (myEpoch !== _agentDetailEpoch) return;  // a newer click won
         if (!r.ok) {
           const errJson = await r.json().catch(() => ({}));
           throw new Error(errJson.error || ("HTTP " + r.status));
         }
         const data = await r.json();
+        if (myEpoch !== _agentDetailEpoch) return;
         const text = data.content || "";
         const el = $("#agent-detail-content");
         if (!el) return;
@@ -281,6 +289,7 @@
             `<div style="margin-top:8px;color:var(--warn)">...content truncated at 256 KB</div>`);
         }
       } catch (e) {
+        if (myEpoch !== _agentDetailEpoch) return;
         const el = $("#agent-detail-content");
         if (el) el.innerHTML =
           `<div class="err">Failed to load agent file: ${escape(e.message)}</div>`;

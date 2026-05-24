@@ -565,6 +565,10 @@
       loadedOnce = true;
     } catch (e) {
       setMsg("settings-meta", "Failed to load: " + e.message, "bad");
+      // Reset version token so a retry-then-save can't ship a stale
+      // _if_match. Without this, a subsequent save would be rejected
+      // with "stale version" when the real cause is "never reloaded".
+      _settingsVersion = null;
       var wrap = $q("#phases-table");
       if (wrap) {
         delete wrap.dataset.skeletoned;
