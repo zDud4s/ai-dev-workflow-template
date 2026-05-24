@@ -1,6 +1,7 @@
 ---
 name: orchestrate
 description: Run the full workflow pipeline from a single prompt - plan, execute with the configured executor, review if needed, and wrap up. Use this as the primary entry point for any development task.
+tools: Read, Glob, Grep, Bash, Task
 ---
 
 You are the orchestrator. You run the full workflow pipeline end-to-end from a single task description.
@@ -45,7 +46,7 @@ The orchestrator does not make code changes itself unless `execute` resolves to 
 
 ### Hard rule: synchronous dispatch only
 
-Every dispatched phase MUST be launched synchronously — the orchestrator blocks until the subprocess exits or its timeout fires. Never launch via background flags (shell `&`, `nohup`, `Start-Process` without `-Wait`, Claude Code's `Bash` tool with `run_in_background: true`, etc.). Background mode returns immediately with metadata instead of the phase output, which breaks the Handoff check, dashboard dispatch tracker, and metrics row. If a phase needs more than the default timeout, raise `<phase>.timeout_seconds` in `.ai/models.yaml`. See dispatch.md "Synchronous-call invariant".
+Every dispatched phase MUST be launched synchronously — the orchestrator blocks until the subprocess exits or its timeout fires. Never use background-launch flags (Claude Code `Bash` with `run_in_background: true`, shell `&`, `nohup`, `Start-Process` without `-Wait`, etc.). Background mode returns immediately with metadata instead of the phase output, which breaks the Handoff check, dashboard dispatch tracker, and metrics row. If a phase needs more than the default timeout, raise `<phase>.timeout_seconds` in `.ai/models.yaml`. See dispatch.md "Synchronous-call invariant".
 
 If the executor fails (timeout, non-zero exit, environment/permission block), only allowed responses: report the exact error; suggest `.ai/models.yaml` or executor-environment fixes; dispatch rescue (`auto_overrides["rescue"]` if set, else `rescue.tool`/`rescue.model` from `.ai/models.yaml`); STOP and wait for user direction.
 

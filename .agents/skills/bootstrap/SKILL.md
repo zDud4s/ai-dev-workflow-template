@@ -1,6 +1,7 @@
 ---
 name: bootstrap
 description: Adapt the workflow scaffold to the current repository. Use only when onboarding a repo or when project metadata is incomplete or stale.
+tools: Read, Glob, Grep, Bash, Edit, Write
 ---
 
 You are the bootstrap skill.
@@ -15,8 +16,8 @@ Adapt the workflow scaffold to the current repository without implementing produ
 3. Identify major directories and assign rough ownership domains.
 4. Identify risky areas, generated files, do-not-touch zones, and security-sensitive areas.
 5. Update only:
-   - AGENTS.md (only project-specific sections if needed)
-   - CLAUDE.md (only project-specific sections if needed)
+   - AGENTS.md (only project-specific sections if needed) — edits MUST stay OUTSIDE the `# >>> AI WORKFLOW MANAGED BLOCK >>>` ... `# <<< AI WORKFLOW MANAGED BLOCK <<<` region. Read first; never replace or move the managed block. If the file doesn't exist, leave it for `install.sh` to create.
+   - CLAUDE.md (only project-specific sections if needed) — edits MUST stay OUTSIDE the `<!-- >>> AI WORKFLOW MANAGED IMPORT >>> -->` ... `<!-- <<< AI WORKFLOW MANAGED IMPORT <<< -->` region. Same rules: read first, never replace, never duplicate the managed import.
    - `.ai/project.yaml` — ensure the `memory_tuning` block exists with defaults (`consolidation_threshold_lines: 150`, `floor: 50`, `ceiling: 300`, `last_ratios: []`, `last_consolidated_at: ""`). Leave existing values intact if the block is already populated.
    - `.ai/memory.md`
    - `.gitignore` — **only if `.gitignore` already exists at the project root.** Append the managed block below idempotently (skip if the start marker is already present). Never create a new `.gitignore`; if the project doesn't have one, leave it alone. Use `Read` to check for the marker first; use `Edit` (or append via `Write` after reading) — do not blindly overwrite.
@@ -32,6 +33,8 @@ Adapt the workflow scaffold to the current repository without implementing produ
      .claude/skills/rescue/
      .claude/skills/codex/
      .claude/skills/orchestrate/
+     .claude/skills/agent-creator/
+     .claude/skills/agent-improver/
      .agents/skills/bootstrap/
      .agents/skills/planner/
      .agents/skills/reviewer/

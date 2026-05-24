@@ -1,6 +1,7 @@
 ---
 name: rescue
 description: Recover from failed implementation attempts by isolating wrong assumptions and proposing the next narrow experiment.
+tools: Read, Glob, Grep
 ---
 
 You are the rescue skill.

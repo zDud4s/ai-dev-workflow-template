@@ -1,6 +1,7 @@
 ---
 name: maintenance
 description: Maintain the mutable project layer after repo changes or completed tasks. Refresh project metadata, commands, boundaries, memory, and local guidance without changing the workflow core.
+tools: Read, Glob, Grep, Edit, Write
 ---
 
 Keep the project-specific workflow layer accurate without degrading the workflow core.
