@@ -977,6 +977,31 @@
       // If the subprocess died mid-turn, the placeholder has no streaming
       // event coming to replace it — clear it explicitly.
       termClearThinkingPlaceholder(t);
+      // Cancel pending autocomplete debounce so it doesn't fire against a
+      // pane the operator has visually moved on from (would spam /api/skills
+      // and /api/files/list with stale prefix lookups for a dead session).
+      if (t._composerTimer) {
+        clearTimeout(t._composerTimer);
+        t._composerTimer = null;
+      }
+      // Close any open autocomplete popup defensively — a click on a stale
+      // entry would otherwise splice into a composer about to be repurposed
+      // as the resume-input.
+      if (t._popOpen) {
+        termCloseAutocomplete(t);
+      }
+      // Drop tool-use DOM ref Map so late tool_result frames (e.g. from a
+      // slow PostToolUse hook posting after the parent claude exited) can't
+      // mutate cached nodes on a pane the operator now treats as history.
+      // `.clear()` instead of reassign — other code may hold the same Map ref.
+      if (t.toolUseEls && typeof t.toolUseEls.clear === "function") {
+        t.toolUseEls.clear();
+      }
+      // Dispatch-tracker placeholder ref → null so the strong ref releases
+      // and the placeholder node can be collected once the pane is closed.
+      if (t._waitingMsg) {
+        t._waitingMsg = null;
+      }
       t.pane.classList.add("dead");
       const status = t.pane.querySelector(".status-pill");
       if (status && label) {
@@ -1188,6 +1213,13 @@
     // id) — keeps the existing composer event listeners intact instead of
     // cloning the textarea (which would drop autosize / paste / @file).
     async function termSendResumeChat(t, text) {
+      // In-flight latch: termSend is also reachable via the Enter keydown
+      // handler, which does NOT consult sendBtn.disabled — so the button-
+      // disable guard alone cannot stop an overlapping resume from racing.
+      // Drop overlapping calls; first one wins. Mirrors t._codexAwaitInFlight
+      // in termCodexAwaitNextTurn.
+      if (t._resumeInFlight) return;
+      t._resumeInFlight = true;
       // Disable the button BEFORE the trimmed-empty guard so a synchronous
       // re-entry (rapid double-click on "resume →" while we yield to the
       // microtask boundary) sees a disabled button and bails out. The
@@ -1224,6 +1256,10 @@
         t.body.appendChild(err);
         setMsg("#term-msg", "err", "Resume failed: " + e.message, TERM_MSG_DURATION_MS);
       } finally {
+        // Release the latch BEFORE re-enabling the button so a click that
+        // lands the instant the button paints enabled isn't dropped by a
+        // stale _resumeInFlight=true.
+        t._resumeInFlight = false;
         t.sendBtn.disabled = false;
         try { t.input.focus(); } catch (_) {}
       }
@@ -2648,7 +2684,7 @@
       // Genuinely unknown — dump as a small dim line so we notice it but
       // it doesn't dominate the pane.
       const pre = document.createElement("pre");
-      pre.style.color = "var(--text-faint)";
+      pre.style.color = "var(--text-dim)";
       pre.style.fontSize = "11px";
       pre.style.margin = "4px 0";
       pre.textContent = "[unhandled " + (type || "?") + "]";
@@ -3264,35 +3300,15 @@
       // Expose a restarter the visibilitychange handler in jobs.js can
       // call after a pause-on-hidden. Closes over `t`, `es`, `statusPill`
       // so the resumed timer reuses the same SSE + DOM refs.
-      t._restartSseHeartbeat = () => {
-        if (t._sseHeartbeat) return;
-        t._sseHeartbeat = setInterval(heartbeatTick, 15_000);
-      };
+      // Don't kill the pane while the tab is in the background — the
+      // browser throttles SSE in hidden tabs (Chrome especially) which
+      // makes `_lastSSEEvent` look stale even when the server is fine.
+      // Resume the staleness check on visibility restore. Without this,
+      // returning to the dashboard after >60s showed every pane as
+      // "ended/disconnected" until manually reopened.
       const heartbeatTick = () => {
         if (!t.pane || !t.pane.isConnected) return;
         if (t.pane.classList.contains("dead")) return;
-        if (typeof document !== "undefined" && document.hidden) return;
-        if (Date.now() - (t._lastSSEEvent || 0) < SSE_STALE_MS) return;
-        try { es.close(); } catch (_) {}
-        termSetPillState(statusPill, "warn", "disconnected");
-        termSetActivity(t, "disconnected", "ended");
-        if (t.kind === "chat-codex") {
-          termCodexAwaitNextTurn(t);
-        } else {
-          termSetDead(t, "ended");
-        }
-        clearInterval(t._sseHeartbeat);
-        t._sseHeartbeat = null;
-      };
-      t._sseHeartbeat = setInterval(() => {
-        if (!t.pane || !t.pane.isConnected) return;
-        if (t.pane.classList.contains("dead")) return;
-        // Don't kill the pane while the tab is in the background — the
-        // browser throttles SSE in hidden tabs (Chrome especially) which
-        // makes `_lastSSEEvent` look stale even when the server is fine.
-        // Resume the staleness check on visibility restore. Without this,
-        // returning to the dashboard after >60s showed every pane as
-        // "ended/disconnected" until manually reopened.
         if (typeof document !== "undefined" && document.hidden) return;
         if (Date.now() - (t._lastSSEEvent || 0) < SSE_STALE_MS) return;
         // Stale connection — surface the disconnect and walk the standard
@@ -3307,7 +3323,12 @@
         }
         clearInterval(t._sseHeartbeat);
         t._sseHeartbeat = null;
-      }, 15_000);
+      };
+      t._restartSseHeartbeat = () => {
+        if (t._sseHeartbeat) return;
+        t._sseHeartbeat = setInterval(heartbeatTick, 15_000);
+      };
+      t._restartSseHeartbeat();
       es.onopen = () => {
         t._lastSSEEvent = Date.now();
         termSetPillState(statusPill, "running", "live");

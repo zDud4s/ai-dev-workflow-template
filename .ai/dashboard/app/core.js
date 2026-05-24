@@ -915,19 +915,25 @@ function renderMarkdown(el, text) {
     async function submitMemory() {
       if (!$("#mem-submit")) return;
       const btn = $("#mem-submit");
-      const topic = $("#mem-topic").value.trim();
-      const fact = $("#mem-fact").value.trim();
+      // Resolve input refs up-front + null-guard together — guards against
+      // a partial-DOM variant where the submit button exists but the inputs
+      // were stripped (would otherwise crash with TypeError on .value).
+      const topicEl = $("#mem-topic"); const factEl = $("#mem-fact");
+      if (!topicEl || !factEl) return;
+      const topic = topicEl.value.trim();
+      const fact = factEl.value.trim();
       if (!topic || !fact) { setMsg("#mem-msg", "err", "topic and fact required"); return; }
       btn.disabled = true;
       setMsg("#mem-msg", "", "saving…");
       try {
         const res = await postJson("/api/memory", { topic, fact });
-        $("#mem-topic").value = "";
-        $("#mem-fact").value = "";
+        topicEl.value = "";
+        factEl.value = "";
         setMsg("#mem-msg", "ok", "added: " + res.line, 4000);
         const memText = await getText(".ai/memory.md").catch(() => "");
         renderMarkdown($("#memory-doc"), memText);
-        $("#count-memory").textContent = countMemoryEntries(memText);
+        const countMemoryEl = $("#count-memory");
+        if (countMemoryEl) countMemoryEl.textContent = countMemoryEntries(memText);
       } catch (e) {
         setMsg("#mem-msg", "err", e.message);
       } finally {
@@ -939,12 +945,17 @@ function renderMarkdown(el, text) {
     async function submitDecision() {
       if (!$("#dec-submit")) return;
       const btn = $("#dec-submit");
+      // Required fields resolved + null-guarded together; optional fields
+      // use optional chaining so a partial form (e.g. minimal-DOM variant)
+      // degrades gracefully instead of TypeError'ing on `.value`.
+      const decisionEl = $("#dec-decision"); const whyEl = $("#dec-why");
+      if (!decisionEl || !whyEl) return;
       const payload = {
-        date: $("#dec-date").value || undefined,
-        decision: $("#dec-decision").value.trim(),
-        why: $("#dec-why").value.trim(),
-        consequence: $("#dec-consequence").value.trim(),
-        revisit: $("#dec-revisit").value.trim(),
+        date: $("#dec-date")?.value || undefined,
+        decision: decisionEl.value.trim(),
+        why: whyEl.value.trim(),
+        consequence: $("#dec-consequence")?.value.trim() || "",
+        revisit: $("#dec-revisit")?.value.trim() || "",
       };
       if (!payload.decision || !payload.why) {
         setMsg("#dec-msg", "err", "decision and why required");
@@ -954,7 +965,9 @@ function renderMarkdown(el, text) {
       setMsg("#dec-msg", "", "saving…");
       try {
         await postJson("/api/decisions", payload);
-        ["#dec-decision", "#dec-why", "#dec-consequence", "#dec-revisit"].forEach((s) => { $(s).value = ""; });
+        ["#dec-decision", "#dec-why", "#dec-consequence", "#dec-revisit"].forEach((s) => {
+          const el = $(s); if (el) el.value = "";
+        });
         setMsg("#dec-msg", "ok", "decision added", 4000);
         const txt = await getText(".ai/decisions.md").catch(() => "");
         renderMarkdown($("#decisions-doc"), txt);

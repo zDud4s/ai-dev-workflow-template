@@ -320,7 +320,7 @@
             <span class="metric-pill">${escape(r.kind || "?")}</span>
             <span class="metric-pill">${escape(cost)}</span>
             <span class="metric-pill">${escape(dur)}</span>
-            <span style="color:var(--text-faint);font-size:10px;margin-left:auto">${escape((r.job_id || "").slice(0, 8))}</span>
+            <span style="color:var(--text-dim);font-size:10px;margin-left:auto">${escape((r.job_id || "").slice(0, 8))}</span>
           </div>`;
         }).join("");
       }
@@ -339,7 +339,7 @@
             : (h.status === "pending" ? "warn" : "");
           const propBtn = h.proposal_id
             ? `<button class="refresh" data-prop-id="${escape(h.proposal_id)}" style="margin-left:auto">Open proposal</button>`
-            : `<span style="margin-left:auto;color:var(--text-faint);font-size:10px">${escape((h.source || ""))}</span>`;
+            : `<span style="margin-left:auto;color:var(--text-dim);font-size:10px">${escape((h.source || ""))}</span>`;
           return `<div class="skill-detail-history-row">
             <span class="ts">${escape(when)}</span>
             <span class="metric-pill ${statusCls}">${escape(h.status || "?")}</span>
@@ -635,89 +635,86 @@
       while (j > 0) { seq.push({ t: "add", s: b[j - 1] }); j--; }
       seq.reverse();
 
-      // Compact ctx regions using standard `diff -u` hunk semantics:
-      //   - first ctx region (no prior change):  keep only LAST 3 lines
-      //     (leading context for the upcoming change).
-      //   - trailing ctx region (no next change): keep only FIRST 3 lines
-      //     (trailing context for the previous change).
-      //   - interior ctx region: if length <= 6, keep all; else keep first 3
-      //     (trailing context for previous change), emit a hunk separator
-      //     describing the omitted span, then keep last 3 (leading context
-      //     for the next change).
-      // This guarantees every change has up to 3 lines of context on each
-      // side and never silently telescopes distant edits together.
-      const CONTEXT = 3;
-      const CTX_THRESHOLD = CONTEXT * 2;  // ctxRun > 6 triggers the split
-
-      // Group the seq into runs so we can reason about ctx regions as
-      // a whole instead of per-line. Each group is { t, lines: [] }.
-      const groups = [];
+      // Annotate each entry with 1-based old/new line numbers so the hunk
+      // header can declare the correct `@@ -oldStart,oldLen +newStart,newLen @@`.
+      // del/ctx consume from the old side; add/ctx consume from the new side.
+      let oldLine = 1, newLine = 1;
       for (const ent of seq) {
-        const last = groups[groups.length - 1];
-        if (last && last.t === ent.t) {
-          last.lines.push(ent.s);
-        } else {
-          groups.push({ t: ent.t, lines: [ent.s] });
-        }
+        if (ent.t === "ctx") { ent.oldNo = oldLine++; ent.newNo = newLine++; }
+        else if (ent.t === "del") { ent.oldNo = oldLine++; ent.newNo = newLine; }
+        else { ent.oldNo = oldLine; ent.newNo = newLine++; }
       }
 
-      const out = [];
-      const emit = (t, s) => {
-        const cls = t === "add" ? "diff-add" : t === "del" ? "diff-del" : "diff-ctx";
-        const prefix = t === "add" ? "+ " : t === "del" ? "- " : "  ";
-        out.push(`<span class="diff-line ${cls}">${escape(prefix + s)}</span>`);
-      };
-      const emitSep = (n) => {
-        out.push(`<span class="diff-hunk-sep">… ${n} unchanged lines …</span>`);
-      };
+      // Identify hunks. Each hunk groups one or more changes with up to
+      // CONTEXT lines of leading/trailing context. Two changes whose gap
+      // is <= 2*CONTEXT ctx lines merge into a single hunk (their context
+      // windows overlap). >2*CONTEXT triggers a split into two hunks.
+      const CONTEXT = 3;
+      const changeIdx = [];
+      for (let k = 0; k < seq.length; k++) {
+        if (seq[k].t !== "ctx") changeIdx.push(k);
+      }
 
-      groups.forEach((g, idx) => {
-        if (g.t !== "ctx") {
-          g.lines.forEach((s) => emit(g.t, s));
-          return;
-        }
-        const isFirst = (idx === 0);
-        const isLast = (idx === groups.length - 1);
-        const len = g.lines.length;
+      // Identical files (no changes) → friendly empty-state marker. No
+      // hunk header, no full-file dump — that would mislead reviewers.
+      if (!changeIdx.length) {
+        return `<span class="diff-empty">files are identical — no changes</span>`;
+      }
 
-        if (isFirst && isLast) {
-          // Diff is entirely identical — show nothing? Better: show all,
-          // it's likely empty anyway. Cap at CTX_THRESHOLD for sanity.
-          if (len <= CTX_THRESHOLD) {
-            g.lines.forEach((s) => emit("ctx", s));
-          } else {
-            // No changes anywhere — collapse the middle with a separator.
-            g.lines.slice(0, CONTEXT).forEach((s) => emit("ctx", s));
-            emitSep(len - CTX_THRESHOLD);
-            g.lines.slice(-CONTEXT).forEach((s) => emit("ctx", s));
-          }
-        } else if (isFirst) {
-          // Leading region for the very first change: keep last CONTEXT lines.
-          if (len <= CONTEXT) {
-            g.lines.forEach((s) => emit("ctx", s));
-          } else {
-            emitSep(len - CONTEXT);
-            g.lines.slice(-CONTEXT).forEach((s) => emit("ctx", s));
-          }
-        } else if (isLast) {
-          // Trailing region after the last change: keep first CONTEXT lines.
-          if (len <= CONTEXT) {
-            g.lines.forEach((s) => emit("ctx", s));
-          } else {
-            g.lines.slice(0, CONTEXT).forEach((s) => emit("ctx", s));
-            emitSep(len - CONTEXT);
-          }
+      // Build hunk ranges: each entry is [startIdx, endIdx] inclusive.
+      const hunks = [];
+      let curStart = Math.max(0, changeIdx[0] - CONTEXT);
+      let curEnd = Math.min(seq.length - 1, changeIdx[0] + CONTEXT);
+      for (let h = 1; h < changeIdx.length; h++) {
+        const desiredStart = Math.max(0, changeIdx[h] - CONTEXT);
+        const desiredEnd = Math.min(seq.length - 1, changeIdx[h] + CONTEXT);
+        if (desiredStart <= curEnd + 1) {
+          // Overlap (or touch) — extend the current hunk's tail.
+          curEnd = Math.max(curEnd, desiredEnd);
         } else {
-          // Interior region: trailing ctx for previous change + leading
-          // ctx for next change. If the region is short, render it all.
-          if (len <= CTX_THRESHOLD) {
-            g.lines.forEach((s) => emit("ctx", s));
-          } else {
-            g.lines.slice(0, CONTEXT).forEach((s) => emit("ctx", s));
-            emitSep(len - CTX_THRESHOLD);
-            g.lines.slice(-CONTEXT).forEach((s) => emit("ctx", s));
+          hunks.push([curStart, curEnd]);
+          curStart = desiredStart;
+          curEnd = desiredEnd;
+        }
+      }
+      hunks.push([curStart, curEnd]);
+
+      const out = [];
+      const emit = (ent) => {
+        const cls = ent.t === "add" ? "diff-add" : ent.t === "del" ? "diff-del" : "diff-ctx";
+        const prefix = ent.t === "add" ? "+ " : ent.t === "del" ? "- " : "  ";
+        out.push(`<span class="diff-line ${cls}">${escape(prefix + ent.s)}</span>`);
+      };
+
+      hunks.forEach(([start, end], hi) => {
+        // Compute the declared old/new ranges for the header.
+        const slice = seq.slice(start, end + 1);
+        const oldEntries = slice.filter((e) => e.t === "ctx" || e.t === "del");
+        const newEntries = slice.filter((e) => e.t === "ctx" || e.t === "add");
+        // Edge case: a hunk made entirely of adds would have no oldEntries.
+        // Standard diff convention is to declare oldStart as the old-line
+        // number of the insertion point with oldLen=0. Same in reverse for pure-del.
+        const oldStart = oldEntries.length ? oldEntries[0].oldNo : slice[0].oldNo;
+        const oldLen = oldEntries.length;
+        const newStart = newEntries.length ? newEntries[0].newNo : slice[0].newNo;
+        const newLen = newEntries.length;
+
+        // Hunk separator span between hunks so reviewers see the omitted gap.
+        if (hi > 0) {
+          const prevEnd = hunks[hi - 1][1];
+          const gap = start - prevEnd - 1;
+          if (gap > 0) {
+            out.push(`<span class="diff-hunk-sep">… ${gap} unchanged lines …</span>`);
           }
         }
+
+        // Emit the git-style hunk header. `diff-hunk-sep` wrapper keeps
+        // the visual treatment consistent with the inter-hunk separator.
+        out.push(
+          `<span class="diff-hunk-sep">@@ -${oldStart},${oldLen} +${newStart},${newLen} @@</span>`
+        );
+
+        for (const ent of slice) emit(ent);
       });
 
       return out.join("");
