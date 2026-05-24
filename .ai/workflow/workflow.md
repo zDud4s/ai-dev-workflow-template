@@ -5,7 +5,7 @@
 1. **Triage**: planner classifies task size (trivial / small / medium / large)
 2. **Plan**: planner produces execution packet(s) using `.ai/packets/` schemas
 3. **Execute**: executor follows packet steps literally, fills Handoff section when done
-4. **Review**: reviewer checks Handoff output (skip for trivial; optional for small unless risky)
+4. **Review**: reviewer checks Handoff output (runs when Risk is `elevated` or Size is `medium`/`large` — see Rule 6)
 5. **Maintain**: update `.ai/memory.md` and `.ai/decisions.md` with discoveries
 
 ## Roles
@@ -20,7 +20,7 @@ The shared dispatch mechanism (routing modes, prompt-passing, resume rule, confi
 
 | Layer | Files | Mutability |
 |---|---|---|
-| **Workflow core** | `.ai/workflow/*.md`, `.claude/skills/*/SKILL.md`, install scripts | Read-only — changes only when evolving the workflow. |
+| **Workflow core** | `.ai/workflow/*.md`, `.claude/skills/*/SKILL.md`, `.agents/skills/*/SKILL.md` (mirror, regenerated from `.claude/skills/`), install scripts | Read-only — changes only when evolving the workflow. |
 | **Packet schemas** | `.ai/packets/*.md` | **Read-only templates.** Phases READ + EMIT filled copies; never edit. |
 | **Project state** | `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md` (+ `.ai/memory-archive.md`, append-only by consolidation, never read by phases) | Mutable per task by `maintenance` + human edits. |
 | **Task instances** | `.ai/plans/<date>-<slug>.md`, `.ai/specs/<date>-<slug>.md` | New-file persistent copies for medium/large tasks; never overwrite. |
