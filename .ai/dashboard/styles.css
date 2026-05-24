@@ -76,7 +76,7 @@
       /* Magenta — secondary tool identity (codex) */
       --accent-2:    oklch(64% 0.180 340);
       --magenta:     var(--accent-2);
-      --magenta-bg:  oklch(24% 0.060 340);
+      --magenta-bg:  oklch(18% 0.060 340);
 
       /* Violet — third accent: bridges cyan→magenta and adds depth in gradients */
       --violet:      oklch(62% 0.180 295);
@@ -371,7 +371,7 @@
       display: flex;
       align-items: center;
       padding: 0 var(--s-5);
-      color: var(--text-dim);
+      color: var(--text-2);
       font-family: var(--ff-mono);
       font-size: 10px;
       letter-spacing: 0.18em;
@@ -446,7 +446,7 @@
       font-family: var(--ff-body);
       font-size: var(--fs-3);
       font-weight: 500;
-      color: var(--text-dim);
+      color: var(--text-2);
       display: flex;
       align-items: center;
       position: relative;
@@ -467,7 +467,7 @@
       font-size: 10px;
       font-weight: 500;
       letter-spacing: 0.06em;
-      color: var(--text-faint);
+      color: var(--text-dim);
       padding: 0;
       font-variant-numeric: tabular-nums;
       order: 2;          /* always last — separated from the label by the dotted leader */
@@ -1182,7 +1182,7 @@
       padding: 2px 7px;
       border-radius: 999px;
       background: var(--bg-inset);
-      color: var(--text-dim);
+      color: var(--text-2);
       font-family: var(--ff-mono);
       font-size: var(--fs-0);
       letter-spacing: 0.04em;
@@ -1272,7 +1272,7 @@
       padding: 2px 7px;
       border-radius: 999px;
       background: var(--bg-inset);
-      color: var(--text-dim);
+      color: var(--text-2);
       font-family: var(--ff-mono);
       font-size: var(--fs-0);
       letter-spacing: 0.04em;
@@ -2541,7 +2541,7 @@
     }
     .diff-add  { background: oklch(24% 0.060 148 / 0.55); color: var(--good); }
     .diff-del  { background: oklch(24% 0.080 25 / 0.55);  color: var(--bad);  }
-    .diff-ctx  { color: var(--text-faint); }
+    .diff-ctx  { color: var(--text-dim); }
     .diff-hunk { color: var(--accent); margin-top: 4px; }
     .proposal-modal-actions {
       display: flex; gap: 12px; align-items: center;
