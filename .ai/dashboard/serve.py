@@ -1513,10 +1513,18 @@ def _write_proposal(skill_id: str, skill_path: Path, old: str, new: str,
         "backup_path": None,
         "kind": "improve",
     }
-    (SKILL_PROPOSALS_DIR / f"{pid}.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8")
-    (SKILL_PROPOSALS_DIR / f"{pid}.old.md").write_text(old, encoding="utf-8")
-    (SKILL_PROPOSALS_DIR / f"{pid}.new.md").write_text(new, encoding="utf-8")
+    try:
+        (SKILL_PROPOSALS_DIR / f"{pid}.json").write_text(
+            json.dumps(payload, indent=2), encoding="utf-8")
+        (SKILL_PROPOSALS_DIR / f"{pid}.old.md").write_text(old, encoding="utf-8")
+        (SKILL_PROPOSALS_DIR / f"{pid}.new.md").write_text(new, encoding="utf-8")
+    except OSError as e:
+        # Background improver thread: a raised OSError would kill it
+        # silently with no operator-facing trace. Log + re-raise so the
+        # caller's outer try/except (around the whole improver run) can
+        # record the failure in the audit ledger.
+        print(f"[serve] _write_proposal {pid} failed: {e}", flush=True)
+        raise
     return payload
 
 
@@ -1844,8 +1852,16 @@ def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
             _audit_improvement(skill_id, "no_change", "no effective change", None, None, 0)
             return
 
-        proposal = _write_proposal(skill_id, skill_md_path, skill_content,
-                                   new_content, parsed, diff_lines, job_id)
+        try:
+            proposal = _write_proposal(skill_id, skill_md_path, skill_content,
+                                       new_content, parsed, diff_lines, job_id)
+        except OSError as e:
+            # _write_proposal already logged the underlying cause; record
+            # a "failed" audit row so the operator-facing ledger reflects
+            # the dropped improver run rather than appearing to succeed.
+            _audit_improvement(skill_id, "failed", f"proposal write error: {e}",
+                               None, None, diff_lines)
+            return
         if diff_lines <= int(cfg.get("small_change_max_lines", 6)):
             _apply_improvement(skill_md_path, new_content, source="auto",
                                reason=parsed.get("change_summary", "") or "",
@@ -3610,7 +3626,12 @@ def _persist_agent_proposal(suggestion: dict, *, source_signal: dict) -> str | N
             json.dumps(payload, indent=2), encoding="utf-8")
         (AGENT_PROPOSALS_DIR / f"{pid}.body.md").write_text(
             suggestion["body"], encoding="utf-8")
-    except OSError:
+    except OSError as e:
+        # Best-effort persistence; the caller silently skips this proposal
+        # when we return None. Log so operators see the underlying cause
+        # (disk full, permissions, file locked on Windows) rather than
+        # just observing "fewer agent suggestions than expected".
+        print(f"[serve] persist_agent_proposal {pid} failed: {e}", flush=True)
         return None
     return pid
 
@@ -5092,10 +5113,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "applied_at": None,
                 "applied_via": None,
             }
-            (SKILL_PROPOSALS_DIR / f"{pid}.json").write_text(
-                json.dumps(payload, indent=2), encoding="utf-8")
-            (SKILL_PROPOSALS_DIR / f"{pid}.old.md").write_text("", encoding="utf-8")
-            (SKILL_PROPOSALS_DIR / f"{pid}.new.md").write_text(new_content, encoding="utf-8")
+            try:
+                (SKILL_PROPOSALS_DIR / f"{pid}.json").write_text(
+                    json.dumps(payload, indent=2), encoding="utf-8")
+                (SKILL_PROPOSALS_DIR / f"{pid}.old.md").write_text("", encoding="utf-8")
+                (SKILL_PROPOSALS_DIR / f"{pid}.new.md").write_text(new_content, encoding="utf-8")
+            except OSError as e:
+                # Partial write: at least one of the three files may have
+                # landed but the proposal is incomplete and the modal will
+                # 500 trying to open it. Log + 500 so the operator sees the
+                # cause rather than getting an opaque "unparseable" later.
+                print(f"[serve] persist draft proposal {pid} failed: {e}", flush=True)
+                self._json(500, {"error": "could not persist draft proposal", "detail": str(e)})
+                return
             _audit_improvement(slug, "pending",
                                f"draft from cluster {cluster_id}",
                                pid, None, payload["diff_lines"], source="manual")
@@ -5336,8 +5366,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         obj["installed_path"] = target_rel
         try:
             pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-        except OSError:
-            pass  # file already on disk; non-fatal
+        except OSError as e:
+            # Agent .md is already on disk so the install is effectively done;
+            # the proposal JSON just won't reflect "installed" until next
+            # decision. Log so a chronic write failure (Windows file-lock,
+            # permissions drift) is discoverable rather than silent.
+            print(f"[serve] failed to write proposal {pj} (agent installed): {e}", flush=True)
         self._json(200, {
             "ok": True, "id": proposal_id, "status": "installed",
             "installed_path": target_rel,
