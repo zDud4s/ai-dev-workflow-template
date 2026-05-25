@@ -41,24 +41,11 @@ This template enforces a contract: **every phase runs in the model you configure
 
 ## How it works
 
-```mermaid
-flowchart LR
-    U([User]) -->|"task"| O[orchestrate<br/>controller]
-    O -->|triage + plan| P[planner<br/>Claude Opus]
-    P -->|execution packet| X[executor<br/>Codex GPT-5.5]
-    X -->|Handoff + evidence| R[reviewer<br/>Claude Opus]
-    R -->|verdict| M[maintenance<br/>Claude Sonnet]
-    R -.->|rejected| F[rescue<br/>Claude Opus]
-    F -.->|retry packet| X
-    M -->|memory.md<br/>decisions.md| U
-
-    classDef claude fill:#da7756,stroke:#7a3818,color:#fff
-    classDef codex fill:#000,stroke:#444,color:#fff
-    classDef ctrl fill:#1f6feb,stroke:#0a3475,color:#fff
-    class P,R,F,M claude
-    class X codex
-    class O ctrl
-```
+<p align="center">
+  <a href=".github/assets/diagrams/pipeline.png">
+    <img src=".github/assets/diagrams/pipeline.png" alt="Pipeline: User → orchestrate controller → planner (Claude Opus) → executor (Codex GPT-5.5) → reviewer (Claude Opus) → maintenance (Claude Sonnet). Reviewer falls back to rescue (Claude Opus) on rejection." width="900" />
+  </a>
+</p>
 
 Each arrow is a dispatched call — a fresh subprocess (or in-process subagent) with the configured model, the relevant skill body, the packet schema, and the task context piped in via stdin. The controller blocks on each one, captures exit status, then routes the next phase.
 
