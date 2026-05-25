@@ -3836,6 +3836,42 @@
       background: var(--border-strong);
       color: var(--text-dim);
     }
+    /* ---------------- Timeline polish refinements ---------------- */
+    /* Border-radii match existing `.tl-track` (4px) / `.tl-bar` (3px) so
+       redesigned panels visually belong to the same surface family. */
+    #view-timeline .tl-caveat,
+    #view-timeline .tl-toolbar,
+    #view-timeline .tl-kpi > div,
+    #view-timeline .tl-sparkline,
+    #view-timeline .tl-axis { border-radius: 4px; }
+    #view-timeline .tl-toolbar select,
+    #view-timeline .tl-toolbar input[type="search"],
+    #view-timeline .tl-chip,
+    #view-timeline .tl-chip-empty,
+    #view-timeline .tl-row-copy,
+    #view-timeline .tl-phase-strip span { border-radius: 3px; }
+    /* Subtle hover affordance for interactive controls. */
+    #view-timeline .tl-chip {
+      transition: color var(--dur-fast) var(--ease-out-quart),
+                  border-color var(--dur-fast) var(--ease-out-quart);
+    }
+    #view-timeline .tl-chip:hover { border-color: var(--accent-soft); color: var(--text); }
+    #view-timeline .tl-row { transition: background var(--dur-fast) var(--ease-out-quart); }
+    #view-timeline .tl-row:hover { background: var(--bg-tinted); }
+    #view-timeline .tl-row-copy {
+      transition: opacity var(--dur-fast) var(--ease-out-quart),
+                  border-color var(--dur-fast) var(--ease-out-quart),
+                  color var(--dur-fast) var(--ease-out-quart);
+    }
+    #view-timeline .tl-row-copy:hover { border-color: var(--accent-soft); color: var(--text); }
+    /* WCAG 2.3.3 — suppress all timeline motion when the user opts out. */
+    @media (prefers-reduced-motion: reduce) {
+      #view-timeline .tl-bar { animation: none !important; }
+      #view-timeline .tl-row.live { animation: none; }
+      #view-timeline .tl-chip,
+      #view-timeline .tl-row,
+      #view-timeline .tl-row-copy { transition: none; }
+    }
     /* Token-driven swatch + button color modifiers (replaces inline style="…var(--…)…" attrs). */
     .tl-swatch-good { background: var(--good); }
     .tl-swatch-bad  { background: var(--bad); }

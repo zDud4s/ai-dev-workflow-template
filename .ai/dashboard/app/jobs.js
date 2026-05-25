@@ -711,12 +711,13 @@
       const max = Math.max(1, ...buckets.map((b) => b.total));
       const w = 240 / bucketCount;
       svg.innerHTML = buckets.map((b, i) => {
+        if (b.total === 0) return "";
         const h = Math.max(2, (b.total / max) * 34);
         const failH = b.failed ? Math.max(2, (b.failed / max) * 34) : 0;
         const x = i * w;
         return `<rect class="tl-spark-total" x="${x.toFixed(2)}" y="${(38 - h).toFixed(2)}" width="${Math.max(1, w - 2).toFixed(2)}" height="${h.toFixed(2)}"></rect>`
           + (failH ? `<rect class="tl-spark-fail" x="${x.toFixed(2)}" y="${(38 - failH).toFixed(2)}" width="${Math.max(1, w - 2).toFixed(2)}" height="${failH.toFixed(2)}"></rect>` : "");
-      }).join("");
+      }).filter(Boolean).join("");
     }
 
     function _tlRenderPhaseStrip(phases) {
@@ -730,7 +731,8 @@
       });
       if (tagged.length > 4) visible.push(`<span title="${escape(tagged.slice(4).join(", "))}">+${tagged.length - 4}</span>`);
       if (untagged) visible.push(`<span title="phase not detected">+${untagged} untagged</span>`);
-      return `<div class="tl-phase-strip">${visible.join("") || `<span>untagged</span>`}</div>`;
+      if (!visible.length) return "";
+      return `<div class="tl-phase-strip">${visible.join("")}</div>`;
     }
 
     function _tlRenderRows(runs, globalStart, globalSpan, bannerHtml) {
@@ -774,7 +776,7 @@
           : `<div class="tl-task dim">(no transcript - session file unavailable)</div>`;
         return `<div class="${rowClasses.join(" ")}">`
           + `<div class="tl-label">`
-          +   `<button class="tl-row-copy" type="button" data-tl-copy-sid="${escape(sid)}" title="copy session id">copy</button>`
+          +   `<button class="tl-row-copy" type="button" data-tl-copy-sid="${escape(sid)}" aria-label="Copy session id ${escape(sidShort)}" title="copy session id">copy</button>`
           +   taskHtml
           +   _tlRenderPhaseStrip(phases.map((ph) => ph.phase))
           +   `<div class="tl-meta">`
@@ -794,8 +796,8 @@
       const el = $("#tl-phase-chips");
       if (!el) return;
       el.innerHTML = phases.map((phase) => {
-        const active = _tlState.phases.has(phase) ? " active" : "";
-        return `<button type="button" class="tl-chip${active}" data-tl-phase="${escape(phase)}">${escape(phase)}</button>`;
+        const on = _tlState.phases.has(phase);
+        return `<button type="button" class="tl-chip${on ? " active" : ""}" aria-pressed="${on ? "true" : "false"}" data-tl-phase="${escape(phase)}">${escape(phase)}</button>`;
       }).join("") || `<span class="tl-chip-empty">no phases</span>`;
     }
 
@@ -809,7 +811,11 @@
       if (tool) tool.value = _tlState.tool;
       if (status) status.value = _tlState.status;
       if (sort) sort.value = _tlState.sort;
-      if (search) search.value = _tlState.search;
+      // Skip overwriting the search input while the user is typing in it —
+      // otherwise a background poll mid-keystroke moves the cursor to the end.
+      if (search && search !== document.activeElement && search.value !== _tlState.search) {
+        search.value = _tlState.search;
+      }
       _tlRefreshPhaseChips(phases);
     }
 
