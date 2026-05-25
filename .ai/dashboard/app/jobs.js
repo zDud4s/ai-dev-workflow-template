@@ -545,6 +545,348 @@
       chart.dataset.skeletoned = "1";
     }
 
+    var TL_STATE_KEY = "dashboard.timeline.state.v1";
+    var _tlCache = [];
+    var _tlState = _tlDefaultState();
+
+    function _tlDefaultState() {
+      return { range: "24h", phases: new Set(), tool: "", status: "", sort: "newest", search: "" };
+    }
+
+    function _tlReadState() {
+      const state = _tlDefaultState();
+      try {
+        const raw = localStorage.getItem(TL_STATE_KEY);
+        if (!raw) return state;
+        const saved = JSON.parse(raw);
+        if (["24h", "7d", "all"].includes(saved.range)) state.range = saved.range;
+        if (Array.isArray(saved.phases)) state.phases = new Set(saved.phases.filter(Boolean));
+        if (typeof saved.tool === "string") state.tool = saved.tool;
+        if (typeof saved.status === "string") state.status = saved.status;
+        if (["newest", "oldest", "duration", "failures"].includes(saved.sort)) state.sort = saved.sort;
+        if (typeof saved.search === "string") state.search = saved.search;
+      } catch (_) {}
+      return state;
+    }
+
+    function _tlPersistState() {
+      try {
+        localStorage.setItem(TL_STATE_KEY, JSON.stringify({
+          range: _tlState.range,
+          phases: Array.from(_tlState.phases),
+          tool: _tlState.tool,
+          status: _tlState.status,
+          sort: _tlState.sort,
+          search: _tlState.search,
+        }));
+      } catch (_) {}
+    }
+
+    function _tlRangeMs(range) {
+      if (range === "24h") return 24 * 3600 * 1000;
+      if (range === "7d") return 7 * 24 * 3600 * 1000;
+      return Infinity;
+    }
+
+    function _tlPhaseName(phase) {
+      return (!phase || phase === "unknown") ? "untagged" : phase;
+    }
+
+    function _tlPhaseStatus(ph) {
+      if (["success", "failure", "pending"].includes(ph.status)) return ph.status;
+      if (ph.exit_code === 0) return "success";
+      if (ph.exit_code == null) return "pending";
+      return "failure";
+    }
+
+    function _tlRunBounds(run) {
+      let start = _safeParseDate(run.started_at);
+      let end = _safeParseDate(run.ended_at);
+      const phases = Array.isArray(run.phases) ? run.phases : [];
+      for (const ph of phases) {
+        const phEnd = _safeParseDate(ph.end_ts);
+        const dur = (typeof ph.duration_ms === "number" && ph.duration_ms >= 0) ? ph.duration_ms : 0;
+        if (Number.isFinite(phEnd)) {
+          const phStart = phEnd - dur;
+          start = Number.isFinite(start) ? Math.min(start, phStart) : phStart;
+          end = Number.isFinite(end) ? Math.max(end, phEnd) : phEnd;
+        }
+      }
+      if (!Number.isFinite(start)) start = Date.now();
+      if (!Number.isFinite(end) || end < start) {
+        const fallback = (typeof run.total_duration_ms === "number" && run.total_duration_ms >= 0) ? run.total_duration_ms : 1000;
+        end = start + Math.max(1000, fallback);
+      }
+      return { start, end, span: Math.max(1000, end - start) };
+    }
+
+    function _tlAllPhases(runs) {
+      const names = new Set();
+      for (const run of runs) {
+        for (const ph of (run.phases || [])) names.add(_tlPhaseName(ph.phase));
+      }
+      return Array.from(names).sort();
+    }
+
+    function _tlRunMatchesFilters(run) {
+      const phases = run.phases || [];
+      const bounds = _tlRunBounds(run);
+      const rangeMs = _tlRangeMs(_tlState.range);
+      if (rangeMs !== Infinity && (Date.now() - bounds.end) > rangeMs) return false;
+      if (_tlState.phases.size && !phases.some((ph) => _tlState.phases.has(_tlPhaseName(ph.phase)))) return false;
+      if (_tlState.tool && !phases.some((ph) => ph.tool === _tlState.tool)) return false;
+      if (_tlState.status && !phases.some((ph) => _tlPhaseStatus(ph) === _tlState.status)) return false;
+      if (_tlState.search) {
+        const needle = _tlState.search.toLowerCase();
+        const hay = [
+          run.session_id || "",
+          run.task || "",
+          run.tag || "",
+          phases.map((ph) => `${_tlPhaseName(ph.phase)} ${ph.tool || ""} ${ph.model || ""}`).join(" "),
+        ].join(" ").toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    }
+
+    function _tlSortRuns(runs) {
+      const sorted = runs.slice();
+      sorted.sort((a, b) => {
+        if (_tlState.sort === "oldest") return _tlRunBounds(a).start - _tlRunBounds(b).start;
+        if (_tlState.sort === "duration") return _tlRunBounds(b).span - _tlRunBounds(a).span;
+        if (_tlState.sort === "failures") {
+          const af = (a.phases || []).filter((ph) => _tlPhaseStatus(ph) === "failure").length;
+          const bf = (b.phases || []).filter((ph) => _tlPhaseStatus(ph) === "failure").length;
+          return bf - af || (_tlRunBounds(b).start - _tlRunBounds(a).start);
+        }
+        return _tlRunBounds(b).start - _tlRunBounds(a).start;
+      });
+      return sorted;
+    }
+
+    function _tlSetText(id, value) {
+      const el = $(id);
+      if (el) el.textContent = value;
+    }
+
+    function _tlRenderAxis(start, span) {
+      const axis = $("#tl-axis");
+      if (!axis) return;
+      axis.innerHTML = [0, 0.25, 0.5, 0.75, 1].map((pct) => {
+        const d = new Date(start + span * pct);
+        const label = span > 24 * 3600 * 1000
+          ? d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+          : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+        return `<span style="left:${(pct * 100).toFixed(2)}%">${escape(label)}</span>`;
+      }).join("");
+    }
+
+    function _tlRenderKpi(runs, start, span) {
+      const phases = runs.flatMap((run) => run.phases || []);
+      const failed = phases.filter((ph) => _tlPhaseStatus(ph) === "failure").length;
+      const pending = phases.filter((ph) => _tlPhaseStatus(ph) === "pending").length;
+      const totalMs = runs.reduce((sum, run) => sum + Math.max(0, _tlRunBounds(run).span), 0);
+      _tlSetText("#tl-kpi-sessions", String(runs.length));
+      _tlSetText("#tl-kpi-phases", String(phases.length));
+      _tlSetText("#tl-kpi-failed", String(failed));
+      _tlSetText("#tl-kpi-pending", String(pending));
+      _tlSetText("#tl-kpi-duration", tlFormatDuration(totalMs));
+      _tlSetText("#tl-kpi-window", runs.length ? tlFormatDuration(span) : "0s");
+    }
+
+    function _tlRenderSparkline(runs, start, span) {
+      const svg = $("#tl-sparkline");
+      if (!svg) return;
+      const bucketCount = 24;
+      const buckets = Array.from({ length: bucketCount }, () => ({ total: 0, failed: 0 }));
+      for (const run of runs) {
+        for (const ph of (run.phases || [])) {
+          const end = _safeParseDate(ph.end_ts);
+          if (!Number.isFinite(end)) continue;
+          const idx = Math.max(0, Math.min(bucketCount - 1, Math.floor(((end - start) / Math.max(1, span)) * bucketCount)));
+          buckets[idx].total += 1;
+          if (_tlPhaseStatus(ph) === "failure") buckets[idx].failed += 1;
+        }
+      }
+      const max = Math.max(1, ...buckets.map((b) => b.total));
+      const w = 240 / bucketCount;
+      svg.innerHTML = buckets.map((b, i) => {
+        const h = Math.max(2, (b.total / max) * 34);
+        const failH = b.failed ? Math.max(2, (b.failed / max) * 34) : 0;
+        const x = i * w;
+        return `<rect class="tl-spark-total" x="${x.toFixed(2)}" y="${(38 - h).toFixed(2)}" width="${Math.max(1, w - 2).toFixed(2)}" height="${h.toFixed(2)}"></rect>`
+          + (failH ? `<rect class="tl-spark-fail" x="${x.toFixed(2)}" y="${(38 - failH).toFixed(2)}" width="${Math.max(1, w - 2).toFixed(2)}" height="${failH.toFixed(2)}"></rect>` : "");
+      }).join("");
+    }
+
+    function _tlRenderPhaseStrip(phases) {
+      const icons = { plan: "P", execute: "E", review: "R", rescue: "!", maintenance: "M", unknown: "?", untagged: "?" };
+      const names = phases.map(_tlPhaseName);
+      const tagged = names.filter((p) => p !== "untagged");
+      const untagged = names.length - tagged.length;
+      const visible = tagged.slice(0, 4).map((p) => {
+        const icon = icons[p] || p.slice(0, 1).toUpperCase();
+        return `<span title="${escape(p)}"><b>${escape(icon)}</b>${escape(p)}</span>`;
+      });
+      if (tagged.length > 4) visible.push(`<span title="${escape(tagged.slice(4).join(", "))}">+${tagged.length - 4}</span>`);
+      if (untagged) visible.push(`<span title="phase not detected">+${untagged} untagged</span>`);
+      return `<div class="tl-phase-strip">${visible.join("") || `<span>untagged</span>`}</div>`;
+    }
+
+    function _tlRenderRows(runs, globalStart, globalSpan, bannerHtml) {
+      const chart = $("#timeline-chart");
+      if (!chart) return;
+      const filterSid = window._timelineSessionFilter || null;
+      chart.classList.toggle("tl-many", runs.length > 8);
+      if (!runs.length) {
+        chart.innerHTML = bannerHtml + (filterSid
+          ? `<div class="tl-empty">No runs match session <code>${escape(filterSid.slice(0, 8))}</code>. Clear the filter to see all runs.</div>`
+          : `<div class="tl-empty">No pipeline runs match the current filters.</div>`);
+        return;
+      }
+      chart.innerHTML = bannerHtml + runs.map((run) => {
+        const phases = run.phases || [];
+        const bars = phases.map((ph) => {
+          const status = _tlPhaseStatus(ph);
+          const phEnd = _safeParseDate(ph.end_ts);
+          const phDur = (typeof ph.duration_ms === "number" && ph.duration_ms >= 0) ? ph.duration_ms : 0;
+          const phStart = Number.isFinite(phEnd) ? phEnd - phDur : _tlRunBounds(run).start;
+          const leftPct = Math.max(0, Math.min(100, ((phStart - globalStart) / globalSpan) * 100));
+          const widthPct = Math.max(0.8, Math.min(100 - leftPct, (Math.max(1, phDur) / globalSpan) * 100));
+          const displayLabel = _tlPhaseName(ph.phase);
+          const cls = displayLabel === "untagged" ? `${status} unknown-phase` : status;
+          const exitText = ph.exit_code == null ? "?" : String(ph.exit_code);
+          const tip = `${displayLabel} - ${ph.tool || "unknown"}/${ph.model || "unknown"} - exit ${exitText} - ${tlFormatDuration(ph.duration_ms)}`;
+          const narrow = widthPct < 6 ? ` data-narrow="1"` : "";
+          return `<div class="tl-bar ${cls}" title="${escape(tip)}"${narrow} `
+            + `style="left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%">`
+            + `${escape(displayLabel)}</div>`;
+        }).join("");
+        const sid = run.session_id || "unknown";
+        const sidShort = sid.slice(0, 8);
+        const when = run.started_at ? new Date(run.started_at).toLocaleString() : "";
+        const totalDur = tlFormatDuration(run.total_duration_ms);
+        const rowClasses = ["tl-row"];
+        if (filterSid && run.session_id === filterSid) rowClasses.push("tl-row-highlight");
+        if (phases.some((ph) => _tlPhaseStatus(ph) === "pending") || !run.ended_at) rowClasses.push("live");
+        const taskHtml = run.task
+          ? `<div class="tl-task" title="${escape(run.task)}">${escape(run.task)}</div>`
+          : `<div class="tl-task dim">(no transcript - session file unavailable)</div>`;
+        return `<div class="${rowClasses.join(" ")}">`
+          + `<div class="tl-label">`
+          +   `<button class="tl-row-copy" type="button" data-tl-copy-sid="${escape(sid)}" title="copy session id">copy</button>`
+          +   taskHtml
+          +   _tlRenderPhaseStrip(phases.map((ph) => ph.phase))
+          +   `<div class="tl-meta">`
+          +     `<span class="tl-tag" title="primary tool/model for this session">${escape(run.tag || "-")}</span>`
+          +     `<span class="tl-dur" title="total wall-clock duration">${escape(totalDur)}</span>`
+          +     `<span>${phases.length} bar${phases.length === 1 ? "" : "s"}</span>`
+          +     `<span>${escape(when)}</span>`
+          +     `<span class="tl-sid" title="${escape(sid)}">${escape(sidShort)}</span>`
+          +   `</div>`
+          + `</div>`
+          + `<div class="tl-track">${bars}</div>`
+          + `</div>`;
+      }).join("");
+    }
+
+    function _tlRefreshPhaseChips(phases) {
+      const el = $("#tl-phase-chips");
+      if (!el) return;
+      el.innerHTML = phases.map((phase) => {
+        const active = _tlState.phases.has(phase) ? " active" : "";
+        return `<button type="button" class="tl-chip${active}" data-tl-phase="${escape(phase)}">${escape(phase)}</button>`;
+      }).join("") || `<span class="tl-chip-empty">no phases</span>`;
+    }
+
+    function _tlSyncToolbar(phases) {
+      const range = $("#tl-range");
+      const tool = $("#tl-tool");
+      const status = $("#tl-status");
+      const sort = $("#tl-sort");
+      const search = $("#tl-search");
+      if (range) range.value = _tlState.range;
+      if (tool) tool.value = _tlState.tool;
+      if (status) status.value = _tlState.status;
+      if (sort) sort.value = _tlState.sort;
+      if (search) search.value = _tlState.search;
+      _tlRefreshPhaseChips(phases);
+    }
+
+    function _tlCopySid(sid) {
+      if (!sid || !navigator.clipboard) return;
+      navigator.clipboard.writeText(sid).catch(() => {});
+    }
+
+    function _tlWireToolbar() {
+      const toolbar = $("#tl-toolbar");
+      if (!toolbar || toolbar.dataset.wired === "1") return;
+      toolbar.addEventListener("change", (e) => {
+        const id = e.target && e.target.id;
+        if (id === "tl-range") _tlState.range = e.target.value;
+        else if (id === "tl-tool") _tlState.tool = e.target.value;
+        else if (id === "tl-status") _tlState.status = e.target.value;
+        else if (id === "tl-sort") _tlState.sort = e.target.value;
+        else return;
+        _tlPersistState();
+        _tlApplyTimeline();
+      });
+      toolbar.addEventListener("input", (e) => {
+        if (!e.target || e.target.id !== "tl-search") return;
+        _tlState.search = e.target.value || "";
+        _tlPersistState();
+        _tlApplyTimeline();
+      });
+      toolbar.addEventListener("click", (e) => {
+        const btn = e.target && e.target.closest ? e.target.closest("[data-tl-phase]") : null;
+        if (!btn) return;
+        const phase = btn.dataset.tlPhase;
+        if (_tlState.phases.has(phase)) _tlState.phases.delete(phase);
+        else _tlState.phases.add(phase);
+        _tlPersistState();
+        _tlApplyTimeline();
+      });
+      toolbar.dataset.wired = "1";
+    }
+
+    function _tlApplyTimeline() {
+      const meta = $("#timeline-meta");
+      const chart = $("#timeline-chart");
+      const view = $("#view-timeline");
+      if (!chart) return;
+      const filterSid = window._timelineSessionFilter || null;
+      let scoped = _tlCache.slice();
+      if (filterSid) scoped = scoped.filter((run) => run.session_id === filterSid);
+      const phaseOptions = _tlAllPhases(scoped);
+      _tlSyncToolbar(phaseOptions);
+      const visible = _tlSortRuns(scoped.filter(_tlRunMatchesFilters));
+      if (meta) meta.textContent = `${visible.length} / ${_tlCache.length} session${visible.length === 1 ? "" : "s"}${filterSid ? " (filtered)" : ""}`;
+      const bannerHtml = _tlBannerHtml(filterSid);
+      let globalStart = Date.now();
+      let globalEnd = globalStart + 1000;
+      if (visible.length) {
+        const bounds = visible.map(_tlRunBounds);
+        globalStart = Math.min(...bounds.map((b) => b.start));
+        globalEnd = Math.max(...bounds.map((b) => b.end));
+        if (visible.length === 1) {
+          globalStart = bounds[0].start;
+          globalEnd = bounds[0].end;
+        }
+      }
+      const globalSpan = Math.max(1000, globalEnd - globalStart);
+      _tlRenderAxis(globalStart, globalSpan);
+      _tlRenderKpi(visible, globalStart, globalSpan);
+      _tlRenderSparkline(visible, globalStart, globalSpan);
+      _tlRenderRows(visible, globalStart, globalSpan, bannerHtml);
+      const markMounted = () => {
+        chart.dataset.tlMounted = "1";
+        if (view) view.dataset.tlMounted = "1";
+      };
+      if (chart.dataset.tlMounted === "1") markMounted();
+      else if (typeof requestAnimationFrame === "function") requestAnimationFrame(markMounted);
+      else setTimeout(markMounted, 0);
+    }
+
     async function loadTimeline() {
       const meta = $("#timeline-meta");
       const chart = $("#timeline-chart");
@@ -553,68 +895,28 @@
       // element doesn't mask the underlying load failure with a TypeError.
       if (!chart) return;
       renderTimelineSkeletons();
+      _tlWireToolbar();
       try {
         const r = await fetch("/api/timeline", { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();
-        let runs = data.runs || [];
+        _tlCache = data.runs || [];
+        _tlState = _tlReadState();
         const countEl = $("#count-timeline");
-        if (countEl) countEl.textContent = runs.length;
+        if (countEl) countEl.textContent = _tlCache.length;
         delete chart.dataset.skeletoned;
-        const filterSid = window._timelineSessionFilter || null;
-        const bannerHtml = _tlBannerHtml(filterSid);
-        if (filterSid) runs = runs.filter((r) => r.session_id === filterSid);
-        if (!runs.length) {
-          chart.innerHTML = bannerHtml + (filterSid
-            ? `<div class="tl-empty">No runs match session <code>${escape(filterSid.slice(0, 8))}</code>. Clear the filter to see all runs.</div>`
-            : `<div class="tl-empty">No pipeline runs yet. Dispatch a phase via <em>Run</em> or invoke the orchestrate skill — the <code>PostToolUse</code> hook logs subprocess dispatches to <code>.ai/events.jsonl</code> automatically. Inline phases (orchestrator running a phase in its own session) are not captured.</div>`);
+        if (!_tlCache.length) {
+          const now = Date.now();
+          const filterSid = window._timelineSessionFilter || null;
+          _tlSyncToolbar([]);
+          _tlRenderAxis(now, 1000);
+          _tlRenderKpi([], now, 1000);
+          _tlRenderSparkline([], now, 1000);
+          chart.innerHTML = _tlBannerHtml(filterSid) + `<div class="tl-empty">No pipeline runs yet. Dispatch a phase via <em>Run</em> or invoke the orchestrate skill; the dashboard hook logs subprocess dispatches automatically. Inline phases are not captured.</div>`;
           if (meta) meta.textContent = filterSid ? "0 runs (filtered)" : "0 runs";
           return;
         }
-        if (meta) meta.textContent = `${runs.length} session${runs.length === 1 ? "" : "s"}${filterSid ? " (filtered)" : ""}`;
-        chart.innerHTML = bannerHtml + runs.map((run) => {
-          const start = Date.parse(run.started_at) || 0;
-          const end = Date.parse(run.ended_at) || start;
-          // Pad span so the last phase has a visible bar even when its duration is 0.
-          const minSpanMs = 1000;
-          const span = Math.max(minSpanMs, end - start);
-          const bars = run.phases.map((ph) => {
-            const phEnd = Date.parse(ph.end_ts) || start;
-            const phStart = phEnd - (ph.duration_ms || 0);
-            const leftPct = span > 0 ? Math.max(0, Math.min(100, ((phStart - start) / span) * 100)) : 0;
-            const widthPct = span > 0
-              ? Math.max(0.8, Math.min(100 - leftPct, ((ph.duration_ms || 0) / span) * 100))
-              : 100 / run.phases.length;
-            const exitText = ph.exit_code == null ? "?" : String(ph.exit_code);
-            const isUnknownPhase = ph.phase === "unknown";
-            const displayLabel = isUnknownPhase ? "ad-hoc" : ph.phase;
-            const cls = isUnknownPhase ? `${ph.status} unknown-phase` : ph.status;
-            const tip = `${displayLabel} · ${ph.tool}/${ph.model} · exit ${exitText} · ${tlFormatDuration(ph.duration_ms)}`;
-            return `<div class="tl-bar ${cls}" title="${escape(tip)}" `
-              + `style="left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%">`
-              + `${escape(displayLabel)}</div>`;
-          }).join("");
-          const sidShort = (run.session_id || "unknown").slice(0, 8);
-          const when = run.started_at ? new Date(run.started_at).toLocaleString() : "";
-          const totalDur = tlFormatDuration(run.total_duration_ms);
-          const phaseCount = run.phases.length;
-          const taskHtml = run.task
-            ? `<div class="tl-task" title="${escape(run.task)}">${escape(run.task)}</div>`
-            : `<div class="tl-task dim">(no transcript — session file unavailable)</div>`;
-          return `<div class="tl-row">`
-            + `<div class="tl-label">`
-            +   taskHtml
-            +   `<div class="tl-meta">`
-            +     `<span class="tl-tag" title="primary tool/model for this session">${escape(run.tag || "—")}</span>`
-            +     `<span class="tl-dur" title="total wall-clock duration">${escape(totalDur)}</span>`
-            +     `<span>· ${phaseCount} bar${phaseCount === 1 ? "" : "s"}</span>`
-            +     `<span>· ${escape(when)}</span>`
-            +     `<span class="tl-sid" title="${escape(run.session_id)}">· ${escape(sidShort)}</span>`
-            +   `</div>`
-            + `</div>`
-            + `<div class="tl-track">${bars}</div>`
-            + `</div>`;
-        }).join("");
+        _tlApplyTimeline();
       } catch (err) {
         if (meta) meta.textContent = "error";
         delete chart.dataset.skeletoned;
@@ -911,6 +1213,11 @@
       if (t.id === "tl-clear-filter") {
         window._timelineSessionFilter = null;
         loadTimeline();
+        return;
+      }
+      const tlCopy = t.closest && t.closest("[data-tl-copy-sid]");
+      if (tlCopy) {
+        _tlCopySid(tlCopy.dataset.tlCopySid || "");
         return;
       }
       if (t.classList && t.classList.contains("link-mini") && t.dataset.action === "view-timeline") {

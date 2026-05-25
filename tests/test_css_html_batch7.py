@@ -127,18 +127,21 @@ def test_meta_dim_classes_wired_on_proposal_meta_spans() -> None:
 
 def test_tl_swatch_pending_and_adhoc_classes_declared() -> None:
     """The two extra `.tl-swatch-*` modifiers replace the inline
-    `style="background:var(--warn)"` / `…var(--border-strong);opacity:0.55`
-    on the timeline legend swatches.
+    `style="background:…"` fallbacks on the timeline legend swatches.
+    `tl-swatch-adhoc` was renamed to `tl-swatch-untagged` during the
+    Timeline redesign (jargon → user-facing label).
     """
     css = _css()
     pending = re.search(r"\.tl-swatch-pending\s*\{([^}]*)\}", css)
-    adhoc = re.search(r"\.tl-swatch-adhoc\s*\{([^}]*)\}", css)
+    untagged = re.search(r"\.tl-swatch-untagged\s*\{([^}]*)\}", css)
     assert pending, "missing `.tl-swatch-pending` rule"
-    assert adhoc, "missing `.tl-swatch-adhoc` rule"
+    assert untagged, "missing `.tl-swatch-untagged` rule"
     assert "var(--warn)" in pending.group(1)
-    assert "var(--border-strong)" in adhoc.group(1)
-    assert "opacity" in adhoc.group(1), (
-        ".tl-swatch-adhoc must set the dimming opacity"
+    assert re.search(r"var\(--border-(soft|strong)\)", untagged.group(1)), (
+        ".tl-swatch-untagged must reference a --border-* token"
+    )
+    assert "opacity" in untagged.group(1), (
+        ".tl-swatch-untagged must set the dimming opacity"
     )
 
 
@@ -148,7 +151,7 @@ def test_tl_swatch_modifiers_wired_in_legend() -> None:
     """
     html = _html()
     assert "tl-swatch-pending" in html
-    assert "tl-swatch-adhoc" in html
+    assert "tl-swatch-untagged" in html
     # And the inline-style fallbacks must be gone.
     assert 'style="background:var(--warn)"' not in html
     assert (

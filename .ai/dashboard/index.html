@@ -610,24 +610,61 @@
           <button class="refresh" data-action="loadTimeline">reload</button>
           <span class="meta toolbar-meta-end" id="timeline-meta"></span>
         </div>
-        <details class="tl-hint-details">
-          <summary>How to read this timeline</summary>
-          <div class="tl-hint">
-            Each row is one Claude Code <strong>session</strong> (a single chat window's worth of work).
-            Bars are subprocess dispatches captured by the <code>PostToolUse</code> hook in
-            <code>.ai/dashboard/log_event.py</code>: <code>claude -p ...</code> and <code>codex exec ...</code> calls.
-            The task line is the first user message of that session; <em>(no transcript)</em> means the session
-            file isn't on disk anymore. Bars labelled <em>(ad-hoc)</em> were model calls that didn't match a
-            formal pipeline phase pattern. Inline-mode phases (when the orchestrator runs a phase in its own
-            session without dispatching) are <strong>not</strong> captured — they leave no subprocess trace.
-          </div>
-        </details>
-        <div class="tl-legend">
-          <span><span class="tl-swatch tl-swatch-good"></span>success (exit 0)</span>
-          <span><span class="tl-swatch tl-swatch-bad"></span>failure (non-zero)</span>
-          <span><span class="tl-swatch tl-swatch-pending"></span>pending / unknown exit</span>
-          <span><span class="tl-swatch tl-swatch-adhoc"></span>ad-hoc (phase not detected)</span>
+        <div class="tl-caveat">
+          Bars show subprocess dispatches captured by the dashboard hook. Inline phases are not captured, and untagged bars did not match a formal workflow phase.
         </div>
+        <div class="tl-toolbar" id="tl-toolbar">
+          <label for="tl-range">range
+            <select id="tl-range">
+              <option value="24h">24h</option>
+              <option value="7d">7d</option>
+              <option value="all">all time</option>
+            </select>
+          </label>
+          <div class="tl-phase-filter" id="tl-phase-chips" aria-label="Phase filters"></div>
+          <label for="tl-tool">tool
+            <select id="tl-tool">
+              <option value="">all</option>
+              <option value="claude">claude</option>
+              <option value="codex">codex</option>
+            </select>
+          </label>
+          <label for="tl-status">status
+            <select id="tl-status">
+              <option value="">all</option>
+              <option value="success">success</option>
+              <option value="failure">failure</option>
+              <option value="pending">pending</option>
+            </select>
+          </label>
+          <label for="tl-sort">sort
+            <select id="tl-sort">
+              <option value="newest">newest</option>
+              <option value="oldest">oldest</option>
+              <option value="duration">duration</option>
+              <option value="failures">failures</option>
+            </select>
+          </label>
+          <label for="tl-search">search
+            <input type="search" id="tl-search" placeholder="task, session, model" />
+          </label>
+          <div class="tl-inline-legend" aria-label="Status legend">
+            <span><span class="tl-swatch tl-swatch-good"></span>success</span>
+            <span><span class="tl-swatch tl-swatch-bad"></span>failure</span>
+            <span><span class="tl-swatch tl-swatch-pending"></span>pending</span>
+            <span><span class="tl-swatch tl-swatch-untagged"></span>untagged</span>
+          </div>
+        </div>
+        <div class="tl-kpi" id="tl-kpi" aria-live="polite">
+          <div><strong id="tl-kpi-sessions">0</strong><span>sessions</span></div>
+          <div><strong id="tl-kpi-phases">0</strong><span>phases</span></div>
+          <div><strong id="tl-kpi-failed">0</strong><span>failed</span></div>
+          <div><strong id="tl-kpi-pending">0</strong><span>pending</span></div>
+          <div><strong id="tl-kpi-duration">0s</strong><span>total</span></div>
+          <div><strong id="tl-kpi-window">0s</strong><span>window</span></div>
+        </div>
+        <svg class="tl-sparkline" id="tl-sparkline" viewBox="0 0 240 40" preserveAspectRatio="none" role="img" aria-label="Timeline activity sparkline"></svg>
+        <div class="tl-axis" id="tl-axis" aria-hidden="true"></div>
         <div id="timeline-chart" data-skeletoned="1">
           <div class="skeleton-timeline-row"><div><span class="skeleton skeleton-tl-label"></span><span class="skeleton skeleton-tl-meta"></span></div><span class="skeleton skeleton-tl-track"></span></div>
           <div class="skeleton-timeline-row"><div><span class="skeleton skeleton-tl-label"></span><span class="skeleton skeleton-tl-meta"></span></div><span class="skeleton skeleton-tl-track"></span></div>
@@ -651,7 +688,7 @@
           </label>
           <span class="meta toolbar-meta-end" id="auto-select-meta" aria-live="polite"></span>
         </div>
-        <details class="tl-hint-details">
+        <details class="as-hint-details">
           <summary>How auto-select ranking works</summary>
           <div class="tl-hint">
             Ranking per <code>(phase, size, risk, budget)</code> tuple, computed from

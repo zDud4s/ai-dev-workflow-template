@@ -170,30 +170,30 @@ def test_removed_inline_styles_specifically_gone() -> None:
 # Fix 4 — Long .tl-hint blocks collapsed inside <details>
 # ---------------------------------------------------------------------------
 def test_tl_hint_wrapped_in_details() -> None:
-    """The two longest .tl-hint instructional blocks (timeline + auto-select)
-    are wrapped in <details><summary>…</summary>…</details> so users can
-    collapse them after first read."""
+    """Disclosure contract for instructional hints:
+      - Timeline: always-visible `.tl-caveat` banner (redesigned away from
+        the prior collapsed `<details class="tl-hint-details">` wrapper —
+        the caveat is critical context users must not miss).
+      - Auto-select: still collapsible inside `<details class="as-hint-details">`
+        with a `<summary>` for disclosure UX (long ranking explanation).
+    """
     html = _html()
-    # We look for the wrapper marker class we added so this stays a stable
-    # contract — tightly coupled to the markup we shipped.
-    matches = re.findall(
-        r"<details\b[^>]*class=\"tl-hint-details\"[^>]*>",
-        html,
+    assert re.search(r'<div\b[^>]*class="tl-caveat"[^>]*>', html), (
+        "missing always-visible <div class='tl-caveat'> for the timeline disclosure"
     )
-    assert len(matches) >= 2, (
-        f"expected >=2 <details class='tl-hint-details'> wrappers, got "
-        f"{len(matches)}"
-    )
-    # And each wrapper must contain a <summary> tag (a11y / disclosure UX).
-    detail_blocks = re.findall(
-        r"<details\b[^>]*class=\"tl-hint-details\"[^>]*>.*?</details>",
+    as_matches = re.findall(
+        r"<details\b[^>]*class=\"as-hint-details\"[^>]*>.*?</details>",
         html,
         flags=re.DOTALL,
     )
-    for block in detail_blocks:
+    assert len(as_matches) >= 1, (
+        f"expected >=1 <details class='as-hint-details'> wrapper for the "
+        f"auto-select hint, got {len(as_matches)}"
+    )
+    for block in as_matches:
         assert "<summary>" in block, (
-            "tl-hint-details wrapper missing <summary>: " + block[:80]
+            "as-hint-details wrapper missing <summary>: " + block[:80]
         )
         assert "tl-hint" in block, (
-            "tl-hint-details wrapper missing the inner .tl-hint div"
+            "as-hint-details wrapper missing the inner .tl-hint div"
         )
