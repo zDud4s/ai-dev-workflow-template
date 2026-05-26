@@ -422,10 +422,21 @@ def _write_text_lf(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+_DEFAULT_JOBS_PERSIST_FILE = JOBS_PERSIST_FILE
+
+
 def _persist_job(job_id: str) -> None:
     """Append the current snapshot of ``JOBS[job_id]`` to the persistence
     ledger. Idempotent across calls — restoring on boot just replays the
     last snapshot per id."""
+    # Defensive guard: under pytest, refuse to write the real ledger unless
+    # the test explicitly monkeypatched JOBS_PERSIST_FILE to a tmp path.
+    # Without this, tests that import serve and trigger _persist_job
+    # transitively (without per-test monkeypatch) silently pollute the
+    # developer's working .ai/dashboard/jobs.jsonl with hundreds of fake
+    # entries per pytest run.
+    if os.environ.get("PYTEST_CURRENT_TEST") and JOBS_PERSIST_FILE == _DEFAULT_JOBS_PERSIST_FILE:
+        return
     with JOBS_LOCK:
         j = JOBS.get(job_id)
         if not j:

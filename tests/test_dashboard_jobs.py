@@ -967,6 +967,63 @@ def test_load_persisted_jobs_is_idempotent_when_file_missing(tmp_path, serve_mod
         assert dict(serve_module.JOBS) == before
 
 
+def test_persist_job_refuses_default_path_under_pytest(serve_module):
+    """Defensive guard: under pytest, ``_persist_job`` must NOT write the
+    real repo ledger. Tests that forget to monkeypatch ``JOBS_PERSIST_FILE``
+    would otherwise pollute the developer's working ``.ai/dashboard/jobs.jsonl``
+    with fixture entries (1800+ such pollution entries observed in the wild
+    before this guard landed).
+
+    The guard short-circuits when both conditions hold:
+      - PYTEST_CURRENT_TEST env var set (pytest sets this per test)
+      - JOBS_PERSIST_FILE still equals the module-default path (i.e. NOT
+        monkeypatched to a tmp_path)
+    """
+    # No monkeypatch — JOBS_PERSIST_FILE points at the real repo path.
+    assert serve_module.JOBS_PERSIST_FILE == serve_module._DEFAULT_JOBS_PERSIST_FILE
+    job_id = str(uuid.uuid4())
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {
+            "id": job_id, "kind": "chat", "task": "should-not-land", "status": "queued",
+        }
+    size_before = (
+        serve_module.JOBS_PERSIST_FILE.stat().st_size
+        if serve_module.JOBS_PERSIST_FILE.exists() else 0
+    )
+    serve_module._persist_job(job_id)  # MUST be a no-op
+    size_after = (
+        serve_module.JOBS_PERSIST_FILE.stat().st_size
+        if serve_module.JOBS_PERSIST_FILE.exists() else 0
+    )
+    assert size_after == size_before, (
+        "_persist_job wrote to the real repo ledger from inside pytest — "
+        "the PYTEST_CURRENT_TEST guard is broken"
+    )
+    # Clean up the JOBS dict so other tests don't see this stub.
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS.pop(job_id, None)
+
+
+def test_persist_job_writes_when_monkeypatched_to_tmp(tmp_path, serve_module, monkeypatch):
+    """Counterpart to the guard test above: when JOBS_PERSIST_FILE IS
+    monkeypatched to a tmp path, ``_persist_job`` writes normally even
+    under pytest."""
+    p = tmp_path / "jobs.jsonl"
+    monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    job_id = str(uuid.uuid4())
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {
+            "id": job_id, "kind": "chat", "task": "tmp-ok", "status": "done",
+        }
+    serve_module._persist_job(job_id)
+    assert p.exists(), "monkeypatched path must be written"
+    lines = p.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["task"] == "tmp-ok"
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS.pop(job_id, None)
+
+
 # ----- cost aggregation per chat job ---------------------------------------
 
 
