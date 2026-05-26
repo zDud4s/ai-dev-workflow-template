@@ -21,6 +21,7 @@ Covers six fixes:
 """
 
 from pathlib import Path
+import re
 
 TERMINALS_JS = (
     Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "app" / "terminals.js"
@@ -203,4 +204,16 @@ def test_postjson_errors_show_msg():
     assert matches >= 2, (
         f"expected at least 2 catch blocks containing setMsg(...) for "
         f"operator-visible toasts on failed postJson clicks; found {matches}"
+    )
+
+
+def test_term_open_optional_chain():
+    """#term-open may be absent in stripped shells; disabled writes must be guarded."""
+    src = _src()
+    assert not re.search(r'\$\("#term-open"\)\.disabled\s*=', src), (
+        "terminals.js must not assign to $(\"#term-open\").disabled directly; "
+        "capture the lookup in a local and guard it before writing .disabled"
+    )
+    assert '$("#term-open")?.addEventListener' in src or 'const termOpenBtn = $("#term-open")' in src, (
+        "terminals.js should use optional chaining or a guarded local for #term-open"
     )

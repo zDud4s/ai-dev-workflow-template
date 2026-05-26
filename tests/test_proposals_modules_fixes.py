@@ -115,3 +115,22 @@ def test_auto_select_uses_err_message():
             "if String(err) remains as a fallback, err.message must come first "
             "in the same expression; got line:\n" + line
         )
+
+
+def test_agent_modal_dismiss_handlers():
+    """Agent proposal modal should dismiss via close button, backdrop, and Escape."""
+    src = _src("core.js")
+    assert "#agent-proposal-modal" in src, (
+        "core.js should wire #agent-proposal-modal dismiss handling"
+    )
+    assert "closeAgentProposalModal" in src, (
+        "core.js should call closeAgentProposalModal from agent proposal modal handlers"
+    )
+
+    idx = src.find('$("#agent-proposal-modal")')
+    assert idx != -1, "expected #agent-proposal-modal lookup in core.js"
+    window = src[max(0, idx - 600) : idx + 1200]
+    assert "keydown" in window and "Escape" in window and "closeAgentProposalModal" in window, (
+        "Escape modal handler should branch on #agent-proposal-modal and call "
+        "closeAgentProposalModal"
+    )

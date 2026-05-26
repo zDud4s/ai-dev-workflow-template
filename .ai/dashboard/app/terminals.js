@@ -36,6 +36,102 @@
       setTimeout(() => { _transcriptsListPromise = null; }, 2000);
       return _transcriptsListPromise;
     }
+
+    // Apply a /api/transcripts entry to a transcript pane's header. Used
+    // by the initial hydrate AND the periodic poller — keeps both paths
+    // in sync. ``entry`` is one item from /api/transcripts; ``sessionId``
+    // is the stripped (no "ide:" prefix) UUID.
+    function applyTranscriptStatus(t, entry, sessionId) {
+      if (!t || !t.pane || !entry) return;
+      const titleRaw = (entry.title || entry.task || "").replace(/\s+/g, " ").trim();
+      const taskRaw = (entry.task || "").replace(/\s+/g, " ").trim();
+      const label = titleRaw.slice(0, 80);
+      const taskEl = t.pane.querySelector(".task");
+      if (taskEl && label && taskEl.textContent !== label) {
+        taskEl.textContent = label;
+        const tipParts = [];
+        if (entry.title && taskRaw) tipParts.push("first prompt: " + taskRaw);
+        tipParts.push("session " + sessionId);
+        taskEl.title = tipParts.join("  ·  ");
+      }
+      if (label) t.task = label;
+
+      // Pulse has-update when the transcript grew since we last polled —
+      // restores the "this collapsed pane has new IDE activity" signal
+      // that the per-pane SSE used to surface. Skip the initial pulse
+      // (lastSize === 0) so freshly-opened panes don't immediately glow.
+      if (Number.isFinite(entry.size_bytes)) {
+        const lastSize = t._lastSizeBytes || 0;
+        if (lastSize > 0 && entry.size_bytes > lastSize
+            && t.pane.classList.contains("collapsed")) {
+          t.pane.classList.add("has-update");
+        }
+        t._lastSizeBytes = entry.size_bytes;
+      }
+
+      // Refresh the paused-state activity row (relative mtime + size).
+      // We only touch it while the live stream is NOT attached — once
+      // expanded, ``mirroring…`` / ``ended`` / ``waiting`` from the
+      // stream handler win. Same gate the initial hydrate uses.
+      if (!t.source) {
+        const bits = [];
+        if (entry.modified && typeof relativeTime === "function") {
+          try { bits.push(relativeTime(entry.modified)); } catch (_) { /* ignore */ }
+        }
+        if (Number.isFinite(entry.size_bytes)) {
+          const kb = Math.max(1, Math.round(entry.size_bytes / 1024));
+          bits.push(kb + " KB");
+        }
+        const suffix = bits.length ? "  ·  " + bits.join("  ·  ") : "";
+        const paused = "paused" + suffix;
+        t._pausedActivity = paused;
+        termSetActivity(t, paused, "ready");
+      }
+    }
+
+    // Periodic poll: refresh every collapsed transcript pane's status
+    // bar from /api/transcripts. Restores the live-feeling collapsed
+    // pane (size grew → has-update pulse, mtime → relative time ticks)
+    // without keeping a per-pane EventSource open — one HTTP request
+    // every ``TRANSCRIPT_STATUS_POLL_MS`` regardless of pane count, so
+    // 6 stacked panes don't starve the browser's HTTP/1.1 connection
+    // budget the way 6 concurrent SSE streams did.
+    var TRANSCRIPT_STATUS_POLL_MS = 5000;
+    var _transcriptStatusPollTimer = null;
+    async function refreshTranscriptStatuses() {
+      // Bail early if there are no transcript panes — avoids burning a
+      // request on a dashboard whose only open panes are chat/PTY.
+      let hasAny = false;
+      for (const t of TERMS.values()) {
+        if (t && t.kind === "transcript") { hasAny = true; break; }
+      }
+      if (!hasAny) return;
+      try {
+        const data = await fetchTranscriptsListCached();
+        const byId = new Map((data.transcripts || []).map((e) => [e.session_id, e]));
+        for (const [paneKey, t] of TERMS.entries()) {
+          if (!t || t.kind !== "transcript") continue;
+          const sid = String(paneKey).replace(/^ide:/, "");
+          const entry = byId.get(sid);
+          if (entry) applyTranscriptStatus(t, entry, sid);
+        }
+      } catch (_) { /* try again next tick */ }
+    }
+    function ensureTranscriptStatusPoll() {
+      if (_transcriptStatusPollTimer) return;
+      _transcriptStatusPollTimer = setInterval(refreshTranscriptStatuses, TRANSCRIPT_STATUS_POLL_MS);
+    }
+    function maybeStopTranscriptStatusPoll() {
+      // Drop the timer once the last transcript pane closes — chat-only
+      // dashboards shouldn't pay for the poll forever.
+      for (const t of TERMS.values()) {
+        if (t && t.kind === "transcript") return;
+      }
+      if (_transcriptStatusPollTimer) {
+        clearInterval(_transcriptStatusPollTimer);
+        _transcriptStatusPollTimer = null;
+      }
+    }
     function persistOpenPanes() {
       // Debounce so a burst of mutations (open + collapse + scroll) only
       // serialises once.
@@ -390,7 +486,8 @@
       if (!jobChoices.length && !transcripts.length) {
         sel.innerHTML = `<option value="">— nothing to open —</option>`;
         sel.disabled = true;
-        $("#term-open").disabled = true;
+        const termOpenBtn = $("#term-open");
+        if (termOpenBtn) termOpenBtn.disabled = true;
         return;
       }
       const parts = [];
@@ -416,7 +513,8 @@
       }
       sel.innerHTML = parts.join("");
       sel.disabled = false;
-      $("#term-open").disabled = false;
+      const termOpenBtn = $("#term-open");
+      if (termOpenBtn) termOpenBtn.disabled = false;
       if (sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
     }
 
@@ -1139,6 +1237,10 @@
       // this anymore" signal — suppress auto-open for this id so it
       // doesn't come back on the next poll or after F5.
       suppressAutoOpen(jobId);
+      // Release the shared /api/transcripts poller once the last
+      // transcript pane is gone — chat-only sessions shouldn't keep
+      // a 5s timer running for nothing.
+      if (t.kind === "transcript") maybeStopTranscriptStatusPoll();
       termRenderEmptyState();
       persistOpenPanes();
       // Fire-and-forget refresh — async loadJobs failures (network blip,
@@ -3631,7 +3733,11 @@
         try { t.source.close(); } catch (_) {}
         t.source = null;
         statusPill.textContent = "IDE paused";
-        termSetActivity(t, "paused (expand to resume)", "ready");
+        // Reuse the enriched paused-state text the hydrator built (size
+        // + relative mtime) so collapsing a pane lands back on the same
+        // informative row it had before expand, instead of regressing
+        // to the bare "expand to resume" hint.
+        termSetActivity(t, t._pausedActivity || "paused (expand to resume)", "ready");
       };
       // Transcript panes always start collapsed (see the classList.add
       // above), so we deliberately do NOT openStream here — the lazy
@@ -3643,25 +3749,20 @@
       statusPill.textContent = "IDE paused";
       termSetActivity(t, "paused (expand to resume)", "ready");
 
-      // Hydrate the pane's task label from /api/transcripts without
-      // opening the SSE stream. The list endpoint already returns the
-      // first-user-message preview the picker uses, so a collapsed pane
-      // can show "Maintenance tasks and updates" instead of the generic
-      // "IDE chat dd75841c…" template until the operator decides to
-      // expand. Fire-and-forget — the label updates a tick later but the
-      // pane is already on screen.
+      // Hydrate the pane header from /api/transcripts without opening
+      // the SSE stream. The shared helper applies title (ai-title
+      // preferred → first-user-message fallback), tooltip, last-
+      // modified time and size — same code path the 5s poller uses so
+      // initial render and subsequent refreshes stay consistent.
       fetchTranscriptsListCached().then((data) => {
         const entry = (data.transcripts || []).find((e) => e.session_id === sessionId);
-        if (!entry || !entry.task) return;
-        const preview = String(entry.task).replace(/\s+/g, " ").trim().slice(0, 80);
-        if (!preview) return;
-        const taskEl = pane.querySelector(".task");
-        if (taskEl) {
-          taskEl.textContent = preview;
-          taskEl.title = preview + "  ·  session " + sessionId;
-        }
-        t.task = preview;
+        if (entry) applyTranscriptStatus(t, entry, sessionId);
       }).catch(() => { /* label stays as the SID placeholder */ });
+
+      // Make sure the periodic status poll is running — restores the
+      // "live status bar while collapsed" feel without keeping a per-
+      // pane EventSource open. Idempotent; safe to call on every open.
+      ensureTranscriptStatusPoll();
 
       termRenderEmptyState();
       termRefreshTranscriptPicker();

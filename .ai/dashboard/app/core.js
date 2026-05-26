@@ -80,6 +80,7 @@
       ["#mem-topic", "#mem-fact"].forEach((s) => {
         $(s)?.addEventListener("keydown", (e) => { if (e.key === "Enter") submitMemory(); });
       });
+      $("#dec-decision")?.addEventListener("keydown", (e) => { if (e.key === "Enter") submitDecision(); });
       // Skills search input
       $("#skills-search")?.addEventListener("input", (e) => {
         _skillsState.query = e.target.value;
@@ -107,12 +108,18 @@
       $("#agent-detail-modal")?.addEventListener("click", (e) => {
         if (e.target.id === "agent-detail-modal") closeAgentDetail();
       });
+      $("#agent-proposal-close")?.addEventListener("click", closeAgentProposalModal);
+      $("#agent-proposal-modal")?.addEventListener("click", (e) => {
+        if (e.target.id === "agent-proposal-modal") closeAgentProposalModal();
+      });
       document.addEventListener("keydown", (e) => {
         if (e.key !== "Escape") return;
         const propModal = $("#proposal-modal");
         if (propModal && !propModal.hidden) { closeProposalModal(); return; }
         const skillModal = $("#skill-detail-modal");
         if (skillModal && !skillModal.hidden) { closeSkillDetail(); return; }
+        const agentPropModal = $("#agent-proposal-modal");
+        if (agentPropModal && !agentPropModal.hidden) { closeAgentProposalModal(); return; }
         const agentModal = $("#agent-detail-modal");
         if (agentModal && !agentModal.hidden) { closeAgentDetail(); return; }
       });
@@ -250,8 +257,8 @@
       if (v == null || isNaN(v)) return "—";
       const n = Number(v);
       if (n === 0) return "0%";
-      if (n < 1) return n.toFixed(2) + "%";
-      if (n < 10) return n.toFixed(1) + "%";
+      // Sub-1% rounds to "<1%" so we don't claim 0%, but no decimals shown.
+      if (n < 1) return "<1%";
       return Math.round(n) + "%";
     }
 

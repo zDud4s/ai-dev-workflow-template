@@ -243,3 +243,16 @@ def test_main_cards_null_guarded_in_catch():
     ), (
         "main.js catch block must null-guard `cards` before writing innerHTML"
     )
+
+
+def test_dec_decision_enter_submits():
+    """#dec-decision should submit the decision form when Enter is pressed."""
+    src = _src("core.js")
+    assert re.search(
+        r'\$\("#dec-decision"\)\?\.addEventListener\(\s*"keydown"\s*,\s*\([^)]*\)\s*=>\s*\{[^}]*e\.key\s*===\s*"Enter"[^}]*submitDecision\(',
+        src,
+        flags=re.DOTALL,
+    ), (
+        "#dec-decision needs a guarded keydown handler that calls submitDecision "
+        "when Enter is pressed"
+    )
