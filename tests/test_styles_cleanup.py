@@ -104,6 +104,42 @@ def test_card_animation_extended_beyond_n7() -> None:
     ), "expected a `:nth-child(n+12)` (or later) flatten rule"
 
 
+def test_card_after_integer_offsets() -> None:
+    """The card beacon offsets should avoid sub-pixel blur on 1x displays."""
+    css = _css()
+    block = _rule_block(".card::after", css)
+    assert re.search(r"bottom\s*:\s*0\s*;", block)
+    assert re.search(r"left\s*:\s*-2px\s*;", block)
+    assert not re.search(r"(?:bottom|left)\s*:\s*-?(?:\d*\.)\d+px\s*;", block)
+
+
+def test_run_form_options_align_start() -> None:
+    """Run-form options should align labels at the top of the row."""
+    css = _css()
+    block = _rule_block(".run-form .form-row.run-form-options", css)
+    assert "align-items: start" in block
+    assert "align-items: end" not in block
+
+
+def test_card_cascade_capped_or_extended() -> None:
+    """Cards 12+ must have an intentional animation-delay rule."""
+    css = _css()
+    capped = re.search(
+        r"\.cards \.card:nth-child\(n\+12\)\s*\{[^}]*"
+        r"animation-delay\s*:\s*0(?:ms)?\s*;",
+        css,
+    )
+    extended = re.search(
+        r"\.cards \.card:nth-child\((?:1[2-9]|20)\)\s*\{[^}]*"
+        r"animation-delay",
+        css,
+    )
+    assert capped or extended, (
+        "expected an intentional n+12 zero-delay cap or explicit nth-child "
+        "rules beyond 11"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fix 3: timeline uses canonical tokens
 # ---------------------------------------------------------------------------

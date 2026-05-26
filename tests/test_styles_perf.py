@@ -24,6 +24,12 @@ def _css() -> str:
     return STYLES_CSS.read_text(encoding="utf-8")
 
 
+def _rule_block(selector: str, css: str) -> str:
+    match = re.search(rf"(?m)^[ \t]*{re.escape(selector)}\s*\{{[^}}]*\}}", css)
+    assert match, f"{selector} rule not found in styles.css"
+    return match.group(0)
+
+
 def _keyframes_body(css: str, name: str) -> str:
     match = re.search(r"@keyframes\s+" + re.escape(name) + r"\s*\{", css)
     assert match, "Could not find @keyframes " + name
@@ -128,3 +134,17 @@ def test_no_transition_all_in_hot_selectors():
         f"Found {len(occurrences)} uses of `transition: all`; replace with explicit "
         "property lists to avoid animating every property change"
     )
+
+
+def test_list_item_hover_no_padding_transition():
+    """List-item hover should animate transform instead of reflowing padding."""
+    css = _css()
+    item = _rule_block(".list-item", css)
+    hover = _rule_block(".list-item:hover", css)
+    transition = re.search(r"transition\s*:\s*([^;]+);", item)
+    assert transition, "expected .list-item to declare an explicit transition"
+    assert "transform" in transition.group(1)
+    assert "padding-left" not in transition.group(1)
+    assert re.search(r"transform\s*:\s*(?:none|translateX\(0\))\s*;", item)
+    assert re.search(r"transform\s*:\s*translateX\(2px\)\s*;", hover)
+    assert "padding-left:" not in hover

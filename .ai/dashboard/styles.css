@@ -695,8 +695,8 @@
     .card::after {
       content: "";
       position: absolute;
-      bottom: .5px;
-      left: -1.7px;
+      bottom: 0;
+      left: -2px;
       width: 9.5px;
       height: 5px;
       background: var(--accent);
@@ -726,13 +726,12 @@
     .cards .card:nth-child(6) { animation-delay: 390ms; }
     .cards .card:nth-child(7) { animation-delay: 460ms; }
     /* Extend the staircase so the 7+ cliff doesn't flatten the streaming feel.
-       Smooth +60ms per step; cap at n+12 — beyond that, sharing the final
-       delay is acceptable (large grids should not stagger forever). */
+       Smooth +60ms per step; cap at n+12 so large grids do not stagger forever. */
     .cards .card:nth-child(8)  { animation-delay: 520ms; }
     .cards .card:nth-child(9)  { animation-delay: 580ms; }
     .cards .card:nth-child(10) { animation-delay: 640ms; }
     .cards .card:nth-child(11) { animation-delay: 700ms; }
-    .cards .card:nth-child(n+12) { animation-delay: 760ms; }
+    .cards .card:nth-child(n+12) { animation-delay: 0ms; }
     @keyframes card-in {
       from { opacity: 0; transform: translateY(8px); filter: blur(3px); }
       to   { opacity: 1; transform: none; filter: none; }
@@ -866,14 +865,15 @@
       cursor: pointer;
       font-size: var(--fs-3);
       color: var(--text-2);
-      transition: background 120ms var(--easing), color 120ms var(--easing), padding-left 200ms var(--easing);
+      transform: none;
+      transition: background 120ms var(--easing), color 120ms var(--easing), transform 200ms var(--easing);
       position: relative;
     }
     .list-item:last-child { border-bottom: 0; }
     .list-item:hover {
       background: var(--surf-2);
       color: var(--text);
-      padding-left: 22px;
+      transform: translateX(2px);
     }
     .list-item.active {
       background: var(--surf-3);
@@ -3341,7 +3341,7 @@
       display: grid;
       grid-template-columns: minmax(220px, 1.4fr) minmax(260px, 1fr);
       gap: var(--s-5);
-      align-items: end;
+      align-items: start;
     }
     @media (max-width: 760px) {
       .run-form .form-row.run-form-controls,
