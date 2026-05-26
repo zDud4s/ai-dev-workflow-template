@@ -117,7 +117,20 @@
           loadAgents(),
         ]);
 
-        if (metaEl) metaEl.textContent = `updated ${new Date().toLocaleTimeString()}`;
+        if (metaEl) {
+          const time = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+          metaEl.replaceChildren();
+          const stack = document.createElement("span");
+          stack.className = "meta-stack";
+          const label = document.createElement("span");
+          label.className = "meta-label";
+          label.textContent = "updated";
+          const value = document.createElement("span");
+          value.className = "meta-value";
+          value.textContent = time;
+          stack.append(label, value);
+          metaEl.appendChild(stack);
+        }
       } catch (err) {
         if (metaEl) metaEl.textContent = "error";
         const cards = $("#overview-cards");
