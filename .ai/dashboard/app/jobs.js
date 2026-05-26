@@ -158,9 +158,20 @@
             return { id: j.id, inner };
           });
           // Compare current child id sequence with new ids.
-          const existing = Array.from(el.children).filter((c) => c.classList.contains("list-item"));
-          const sameSet = existing.length === rows.length
-            && existing.every((node, i) => node.dataset.id === rows[i].id);
+          let existing = null;
+          let sameSet = false;
+          if (el.children.length === rows.length) {
+            sameSet = rows.every((row, i) => {
+              const node = el.children[i];
+              return node?.classList?.contains("list-item") && node.dataset.id === row.id;
+            });
+            if (sameSet) existing = el.children;
+          }
+          if (!sameSet) {
+            existing = Array.from(el.children).filter((c) => c.classList.contains("list-item"));
+            sameSet = existing.length === rows.length
+              && existing.every((node, i) => node.dataset.id === rows[i].id);
+          }
 
           if (sameSet) {
             // Update only inner content of each row - preserves the outer DIVs,
@@ -300,7 +311,7 @@
           docEl.addEventListener("click", (e) => {
             const btn = e.target.closest("[data-job-cancel]");
             if (!btn) return;
-            cancelJob(btn.dataset.jobCancel);
+            cancelJob(btn.dataset.jobCancel, e);
           });
           _jobsDocDelegationWired = true;
         }
@@ -491,14 +502,18 @@
       applyResumeState();
     });
 
-    async function cancelJob(jobId) {
-      if (!confirm("Cancel job " + jobId.slice(0, 8) + "? This sends SIGTERM to the subprocess.")) return;
+    async function cancelJob(jobId, event) {
+      if (!confirm("Cancel job " + String(jobId).slice(0, 8) + "? This sends SIGTERM to the subprocess.")) return;
+      const btn = (typeof event !== "undefined" && event?.target?.closest?.("button[data-job-cancel]")) || null;
+      if (btn) btn.disabled = true;
       try {
         await postJson("/api/jobs/" + jobId + "/cancel", {});
         setMsg("#job-action-msg", "ok", "cancellation requested", 4000);
         await loadJobs();
       } catch (e) {
         setMsg("#job-action-msg", "err", e.message);
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 

@@ -218,6 +218,8 @@ _GIT_LSFILES_LOCK = threading.Lock()
 _GIT_LSFILES_TTL_S = 10.0
 _CODEX_FILE_AGG_CACHE: dict[str, tuple[int, dict]] = {}
 _CODEX_FILE_AGG_LOCK = threading.Lock()
+_COST_EXTRACT_CACHE: dict[str, tuple[int, dict | None]] = {}
+_COST_EXTRACT_LOCK = threading.Lock()
 _TRANSCRIPT_PREVIEW_CACHE: dict[str, tuple[int, str | None, str | None]] = {}
 _TRANSCRIPT_PREVIEW_LOCK = threading.Lock()
 # Caps concurrent /api/suggestions/<id>/draft + /api/agents/suggest requests.
@@ -536,16 +538,25 @@ def _extract_cost_from_log(log_path: Path) -> dict | None:
     aggregate cost / duration / turn count. Returns None if the file does
     not exist; an empty summary (turns=0) for files with no result events.
     """
+    cache_key = str(log_path)
     try:
-        if not Path(log_path).is_file():
+        path = Path(log_path)
+        st = path.stat()
+        if not path.is_file():
             return None
     except OSError:
         return None
+    mtime_ns = st.st_mtime_ns
+    with _COST_EXTRACT_LOCK:
+        cached = _COST_EXTRACT_CACHE.get(cache_key)
+        if cached is not None and cached[0] == mtime_ns:
+            return cached[1]
+
     cost = 0.0
     duration = 0
     turns = 0
     try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line.startswith("{"):
@@ -574,8 +585,12 @@ def _extract_cost_from_log(log_path: Path) -> dict | None:
     except OSError:
         return None
     if turns == 0 and cost == 0.0 and duration == 0:
-        return {"turns": 0, "cost_usd": 0.0, "duration_ms": 0}
-    return {"turns": turns, "cost_usd": round(cost, 6), "duration_ms": duration}
+        result = {"turns": 0, "cost_usd": 0.0, "duration_ms": 0}
+    else:
+        result = {"turns": turns, "cost_usd": round(cost, 6), "duration_ms": duration}
+    with _COST_EXTRACT_LOCK:
+        _COST_EXTRACT_CACHE[cache_key] = (mtime_ns, result)
+    return result
 
 
 def _load_persisted_jobs() -> None:
@@ -7010,6 +7025,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _write_sse_frame(self, text: str) -> bool:
         """Encode ``text`` as one SSE ``data:`` frame; one logical line per
         SSE ``data:`` field. Returns False if the client disconnected."""
+        if "\n" not in text:
+            try:
+                self.wfile.write(b"data: " + text.encode("utf-8", errors="replace") + b"\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return False
+            return True
         out = []
         # Per SSE spec, each newline in the payload becomes a separate data: line.
         for line in text.split("\n"):

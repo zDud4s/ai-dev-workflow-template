@@ -139,6 +139,33 @@ def test_sse_handler_checks_session_cap():
         "_handle_job_stream must capture a session start time to compare against"
 
 
+def test_sse_frame_one_line_fast_path():
+    """One-line SSE payloads should avoid the split/list path used for
+    multi-line frames. The early return must appear before ``text.split``."""
+    src = inspect.getsource(serve.Handler._write_sse_frame)
+    fast_idx = src.find('if "\\n" not in text:')
+    split_idx = src.find('text.split("\\n")')
+    assert fast_idx != -1, "_write_sse_frame must fast-path one-line payloads"
+    assert split_idx != -1, "_write_sse_frame must keep the multi-line split path"
+    assert fast_idx < split_idx, "one-line fast path must run before text.split"
+    assert "return True" in src[fast_idx:split_idx], \
+        "one-line fast path must return before the split-based loop"
+
+
+def test_extract_cost_memoized():
+    """``_extract_cost_from_log`` should cache by path + mtime_ns so repeated
+    jobs-list refreshes do not rescan unchanged log files."""
+    src = inspect.getsource(serve._extract_cost_from_log)
+    assert hasattr(serve, "_COST_EXTRACT_CACHE"), \
+        "serve.py must define _COST_EXTRACT_CACHE"
+    assert "_COST_EXTRACT_CACHE.get(cache_key)" in src, \
+        "_extract_cost_from_log must look up the cost extraction cache"
+    assert "mtime_ns" in src and "st_mtime_ns" in src, \
+        "_extract_cost_from_log must key cache validity on stat().st_mtime_ns"
+    assert re.search(r"cached\[0\]\s*==\s*mtime_ns", src), \
+        "_extract_cost_from_log must compare cached mtime_ns before returning"
+
+
 # ---------------------------------------------------------------------------
 # AC5/AC6 - SSE terminal recheck and slow-subscriber resync
 # ---------------------------------------------------------------------------

@@ -99,3 +99,25 @@ def test_dispatch_toggle_disabled_until_loaded():
         r'<button\b(?=[^>]*\bid="dispatch-toggle")(?=[^>]*\bdisabled\b)[^>]*>',
         index,
     ), "initial #dispatch-toggle markup should include disabled"
+
+
+def test_jobs_list_early_exit_on_same_length():
+    src = _src()
+    len_idx = src.find("el.children.length === rows.length")
+    materialize_idx = src.find("Array.from(el.children)")
+    assert len_idx != -1, \
+        "jobs list reconciliation must check el.children.length before materializing children"
+    assert materialize_idx != -1, \
+        "jobs list reconciliation should keep a materialized fallback for non-list children"
+    assert len_idx < materialize_idx, \
+        "same-length fast path must run before Array.from(el.children)"
+
+
+def test_cancel_job_string_guard_and_button_disable():
+    body = _function_body(_src(), "cancelJob")
+    assert "String(jobId).slice(0, 8)" in body, \
+        "cancelJob confirm preview must guard non-string job ids with String(jobId)"
+    assert re.search(r"\bdisabled\s*=\s*true", body), \
+        "cancelJob must disable the triggering cancel button while the request is in flight"
+    assert re.search(r"\bdisabled\s*=\s*false", body) and "finally" in body, \
+        "cancelJob must re-enable the triggering cancel button in finally"
