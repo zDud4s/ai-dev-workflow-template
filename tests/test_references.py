@@ -122,11 +122,24 @@ _EXTERNAL_REF_PREFIXES = (
     "~/.codex/sessions",    # codex CLI rollout dir, populated at runtime
 )
 
+# Runtime-generated, gitignored paths that workflow docs reference as
+# "Allowed writes" (e.g. the maintenance TODO scan step). They live inside
+# the repo tree but are produced at runtime, never checked in. Skip
+# resolution rather than pretending the repo should ship them.
+_RUNTIME_GENERATED_REFS = frozenset({
+    ".ai/todos.jsonl",
+    ".ai/TODO.md",
+    ".ai/.todos.lock",
+    ".ai/dashboard/.todos-parser.log",
+})
+
 
 @pytest.mark.parametrize("md_file, ref, line", _ref_params())
 def test_reference_resolves(md_file: Path, ref: str, line: int):
     if any(ref.startswith(p) for p in _EXTERNAL_REF_PREFIXES):
         pytest.skip(f"external runtime path (not in-tree): {ref}")
+    if ref in _RUNTIME_GENERATED_REFS:
+        pytest.skip(f"runtime-generated path (gitignored): {ref}")
     target = resolve(ref)
     assert target.exists(), (
         f"{md_file.relative_to(REPO_ROOT).as_posix()}:{line} "

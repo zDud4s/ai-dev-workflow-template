@@ -38,6 +38,13 @@ def _run_install(target: Path, fake_home: Path) -> subprocess.CompletedProcess:
     )
 
 
+def _script_env(fake_home: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["USERPROFILE"] = str(fake_home)
+    return env
+
+
 @pytest.fixture
 def fake_install(tmp_path: Path):
     target = tmp_path / "target"
@@ -91,6 +98,54 @@ def test_install_creates_models_yaml(fake_install):
 def test_install_creates_project_yaml(fake_install):
     target, _, _ = fake_install
     assert (target / ".ai" / "project.yaml").is_file()
+
+
+def test_install_provisions_todos_module(tmp_path: Path):
+    home = tmp_path / "home"
+    home.mkdir()
+    subprocess.run(
+        [BASH, str(REPO_ROOT / "install.sh"), str(tmp_path)],
+        cwd=REPO_ROOT,
+        env=_script_env(home),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert (tmp_path / ".ai" / "dashboard" / "todos_parser.py").is_file()
+    assert (tmp_path / ".ai" / "dashboard" / "app" / "todos.js").is_file()
+
+
+def test_update_workflow_refreshes_maintenance_skill_with_scan_step(tmp_path: Path):
+    home = tmp_path / "home"
+    home.mkdir()
+    env = _script_env(home)
+    subprocess.run(
+        [BASH, str(REPO_ROOT / "install.sh"), str(tmp_path)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    target_skill = tmp_path / ".claude" / "skills" / "maintenance" / "SKILL.md"
+    target_skill.write_text("# stub\n", encoding="utf-8")
+
+    subprocess.run(
+        [BASH, str(REPO_ROOT / "update-workflow.sh"), str(tmp_path)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    source_skill = REPO_ROOT / ".claude" / "skills" / "maintenance" / "SKILL.md"
+    assert target_skill.read_bytes() == source_skill.read_bytes()
+    assert "Scan TODOs" in target_skill.read_text(encoding="utf-8")
 
 
 def test_install_skills_present(fake_install):
