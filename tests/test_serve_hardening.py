@@ -226,3 +226,31 @@ def test_validate_template_url_narrow_except():
     src = inspect.getsource(serve._validate_template_url)
     assert "except (ValueError, TypeError):" in src
     assert "except Exception:" not in src
+
+
+def test_security_headers_present():
+    src = inspect.getsource(serve.Handler.end_headers)
+    for expected in [
+        "X-Frame-Options",
+        "DENY",
+        "Referrer-Policy",
+        "no-referrer",
+        "Content-Security-Policy",
+        "frame-ancestors",
+    ]:
+        assert expected in src
+
+
+def test_blocked_names_expanded():
+    src = inspect.getsource(serve.Handler)
+    for expected in [
+        ".git-credentials",
+        ".pfx",
+        "id_rsa",
+        "auth.json",
+    ]:
+        assert expected in src
+
+
+def test_template_url_rejects_file_scheme():
+    assert serve._validate_template_url("file:///etc/passwd") == serve._DEFAULT_WORKFLOW_TEMPLATE_URL

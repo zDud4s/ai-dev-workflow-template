@@ -83,18 +83,21 @@ _SERVER_STARTED_AT = time.time()
 # Source of truth for the workflow template. /api/workflow/check and
 # /api/workflow/update clone this fresh on each call so a one-click update from
 # the dashboard always reflects the latest upstream version. Override via
-# AI_WORKFLOW_TEMPLATE_URL (useful for forks or for testing against a local
-# bare repo via file:// URL).
+# AI_WORKFLOW_TEMPLATE_URL (useful for forks or hosted test mirrors).
 _DEFAULT_WORKFLOW_TEMPLATE_URL = "https://github.com/zDud4s/ai-dev-workflow-template.git"
-# Allowlisted scheme + host pairs for AI_WORKFLOW_TEMPLATE_URL. file:// is kept
-# for local bare-repo testing; https://github.com / https://gitlab.com /
-# https://codeberg.org cover the common fork hosts. Anything else (http://,
-# git://, ssh://, http://attacker/) is rejected and the default is used so a
-# tampered env var can't redirect every dashboard click to a hostile clone.
+# Allowlisted scheme + host pairs for AI_WORKFLOW_TEMPLATE_URL.
+# https://github.com / https://gitlab.com / https://codeberg.org cover the
+# common fork hosts; git+https keeps explicit Git transport URLs available.
+# Anything else (file://, http://, git://, ssh://, http://attacker/) is rejected
+# and the default is used so a tampered env var can't redirect every dashboard
+# click to a hostile clone.
 _ALLOWED_TEMPLATE_HOSTS = {
     ("https", "github.com"),
     ("https", "gitlab.com"),
     ("https", "codeberg.org"),
+    ("git+https", "github.com"),
+    ("git+https", "gitlab.com"),
+    ("git+https", "codeberg.org"),
 }
 
 
@@ -104,8 +107,12 @@ def _validate_template_url(url: str) -> str:
         p = urlparse(url)
     except (ValueError, TypeError):
         return _DEFAULT_WORKFLOW_TEMPLATE_URL
-    if p.scheme == "file" and p.path:
-        return url
+    if p.scheme == "file":
+        print(
+            f"[serve] AI_WORKFLOW_TEMPLATE_URL rejected (file:// scheme not allowed): {url!r}",
+            flush=True,
+        )
+        return _DEFAULT_WORKFLOW_TEMPLATE_URL
     if (p.scheme, (p.hostname or "").lower()) in _ALLOWED_TEMPLATE_HOSTS:
         return url
     print(
@@ -209,6 +216,10 @@ _WORKFLOW_UPDATE_LOCK = threading.Lock()
 _GIT_LSFILES_CACHE: dict[str, tuple[float, int, list[str]]] = {}
 _GIT_LSFILES_LOCK = threading.Lock()
 _GIT_LSFILES_TTL_S = 10.0
+_CODEX_FILE_AGG_CACHE: dict[str, tuple[int, dict]] = {}
+_CODEX_FILE_AGG_LOCK = threading.Lock()
+_TRANSCRIPT_PREVIEW_CACHE: dict[str, tuple[int, str | None, str | None]] = {}
+_TRANSCRIPT_PREVIEW_LOCK = threading.Lock()
 # Caps concurrent /api/suggestions/<id>/draft + /api/agents/suggest requests.
 # Both endpoints spawn long-running `claude -p` / `codex` subprocesses
 # (timeout_seconds, default 120s) on the request thread; without a cap a
@@ -575,7 +586,25 @@ def _load_persisted_jobs() -> None:
     cannot honestly call them running after a restart.
     """
     seen: dict[str, dict] = {}
-    for obj in _load_jsonl_cached(JOBS_PERSIST_FILE):
+    rows: list[dict] = []
+    try:
+        with JOBS_PERSIST_FILE.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(obj, dict):
+                    rows.append(obj)
+    except FileNotFoundError:
+        rows = []
+    except OSError:
+        rows = []
+    row_count = len(rows)
+    for obj in rows:
         jid = obj.get("id")
         if jid:
             # Copy the cached row: we hand the object straight to ``JOBS`` and
@@ -583,6 +612,20 @@ def _load_persisted_jobs() -> None:
             # copy those mutations would leak back into the JSONL cache and
             # poison every subsequent reader.
             seen[jid] = dict(obj)  # last snapshot per id wins
+
+    if len(seen) < row_count:
+        try:
+            tmp = JOBS_PERSIST_FILE.with_suffix(".jsonl.tmp")
+            with _JOBS_PERSIST_LOCK:
+                with tmp.open("w", encoding="utf-8") as f:
+                    for snap in seen.values():
+                        f.write(json.dumps(snap, default=str) + "\n")
+                os.replace(tmp, JOBS_PERSIST_FILE)
+            with _JSONL_CACHE_LOCK:
+                _JSONL_CACHE.pop(str(JOBS_PERSIST_FILE), None)
+            print(f"[serve] compacted jobs.jsonl: {row_count} -> {len(seen)} rows", flush=True)
+        except Exception as e:
+            print(f"[serve] jobs.jsonl compaction failed: {e}", flush=True)
 
     with JOBS_LOCK:
         for obj in seen.values():
@@ -830,12 +873,18 @@ def _aggregate_codex_usage(repo_root: Path, now: _dt.datetime) -> dict:
         bm["total"] += tot
         bm["turns"] += 1
 
-    for p in files:
-        out["sessions"] += 1
+    def parse_rollout_file(path: Path) -> dict:
+        file_agg = {
+            "_target": target,
+            "cwd_matches": False,
+            "tokens": [],
+            "latest_rl": None,
+        }
         cwd_matches = False
         current_model = "unknown"
+        latest_file_rl: tuple[_dt.datetime, dict] | None = None
         try:
-            with p.open("r", encoding="utf-8", errors="replace") as fh:
+            with path.open("r", encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     line = line.strip()
                     if not line.startswith("{"):
@@ -861,32 +910,68 @@ def _aggregate_codex_usage(repo_root: Path, now: _dt.datetime) -> dict:
                         ts = _parse_iso_ts(obj.get("timestamp"))
                         rl = payload.get("rate_limits")
                         if isinstance(rl, dict) and ts is not None:
-                            # Once the 5h quota is exhausted Codex switches to an
-                            # empty rate_limits payload (limit_id="premium",
-                            # primary/secondary both null). Skip those so they
-                            # don't clobber the last healthy snapshot — otherwise
-                            # the UI sticks on "—" until the next real event.
+                            # Skip empty exhausted-quota snapshots so they do
+                            # not clobber the last usable rate-limit payload.
                             has_payload = isinstance(rl.get("primary"), dict) or isinstance(rl.get("secondary"), dict)
-                            if has_payload and (latest_rl is None or ts > latest_rl[0]):
-                                latest_rl = (ts, rl)
+                            if has_payload and (latest_file_rl is None or ts > latest_file_rl[0]):
+                                latest_file_rl = (ts, rl)
                         if not cwd_matches:
                             continue
                         info = payload.get("info") or {}
                         last = info.get("last_token_usage")
                         if not isinstance(last, dict):
                             continue
-                        try:
-                            add(out["all"], current_model, last)
-                            if ts is not None and ts >= cutoff_5h:
-                                add(out["5h"], current_model, last)
-                            if ts is not None and ts >= cutoff_7d:
-                                add(out["7d"], current_model, last)
-                        except (TypeError, ValueError):
-                            continue
+                        file_agg["tokens"].append({
+                            "ts": ts,
+                            "model": current_model,
+                            "last": dict(last),
+                        })
         except OSError:
+            return file_agg
+        file_agg["cwd_matches"] = cwd_matches
+        file_agg["latest_rl"] = latest_file_rl
+        return file_agg
+
+    def cached_rollout_file_agg(path: Path) -> dict | None:
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        with _CODEX_FILE_AGG_LOCK:
+            cached = _CODEX_FILE_AGG_CACHE.get(str(path))
+            if cached is not None and cached[0] == mtime_ns:
+                agg = cached[1]
+                if agg.get("_target") == target:
+                    return agg
+        agg = parse_rollout_file(path)
+        with _CODEX_FILE_AGG_LOCK:
+            _CODEX_FILE_AGG_CACHE[str(path)] = (mtime_ns, agg)
+        return agg
+
+    for p in files:
+        out["sessions"] += 1
+        file_agg = cached_rollout_file_agg(p)
+        if file_agg is None:
             continue
-        if cwd_matches:
+        file_rl = file_agg.get("latest_rl")
+        if file_rl is not None and (latest_rl is None or file_rl[0] > latest_rl[0]):
+            latest_rl = file_rl
+        if file_agg.get("cwd_matches"):
             out["matched_sessions"] += 1
+        for token in file_agg.get("tokens") or []:
+            ts = token.get("ts")
+            model = token.get("model") or "unknown"
+            last = token.get("last")
+            if not isinstance(last, dict):
+                continue
+            try:
+                add(out["all"], model, last)
+                if ts is not None and ts >= cutoff_5h:
+                    add(out["5h"], model, last)
+                if ts is not None and ts >= cutoff_7d:
+                    add(out["7d"], model, last)
+            except (TypeError, ValueError):
+                continue
 
     if latest_rl is not None:
         ts, rl = latest_rl
@@ -3754,17 +3839,19 @@ def _load_timeline_runs(max_events: int = 500) -> list[dict]:
         if ev.get("kind") != "phase_dispatch":
             continue
         sid = ev.get("session_id") or "unknown"
-        by_session.setdefault(sid, []).append(ev)
+        by_session.setdefault(sid, []).append(dict(ev))
 
     runs: list[dict] = []
     for sid, events in by_session.items():
-        events.sort(key=lambda e: _parse_iso_ts(e.get("ts")) or _dt.datetime.min.replace(tzinfo=_dt.timezone.utc))
+        for ev in events:
+            ev["_dt"] = _parse_iso_ts(ev.get("ts"))
+        events.sort(key=lambda e: e["_dt"] or _dt.datetime.min.replace(tzinfo=_dt.timezone.utc))
         phases: list[dict] = []
         prev_dt: _dt.datetime | None = None
         tag_counter: dict[str, int] = {}
         for ev in events:
             ts = ev.get("ts") or ""
-            cur_dt = _parse_iso_ts(ts)
+            cur_dt = ev["_dt"]
             if cur_dt is None or prev_dt is None:
                 duration_ms = 0
             else:
@@ -3793,8 +3880,8 @@ def _load_timeline_runs(max_events: int = 500) -> list[dict]:
         if not phases:
             continue
 
-        start_dt = _parse_iso_ts(phases[0]["end_ts"])
-        end_dt = _parse_iso_ts(phases[-1]["end_ts"])
+        start_dt = events[0]["_dt"]
+        end_dt = events[-1]["_dt"]
         if start_dt and end_dt:
             total_duration_ms = max(0, int((end_dt - start_dt).total_seconds() * 1000))
         else:
@@ -4059,11 +4146,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     _BLOCKED_NAMES = frozenset({
         ".env", ".env.local", ".env.production", ".env.development",
         ".env.staging", ".env.test",
-        ".npmrc", ".netrc",
-        "credentials",
+        ".git-credentials", ".npmrc", ".npmrc-backup", ".netrc",
+        "auth.json", "credentials", "id_ed25519", "id_rsa", "tokens.txt",
     })
     _BLOCKED_NAME_PREFIXES = ("id_",)
-    _BLOCKED_NAME_SUFFIXES = (".pem", ".key")
+    _BLOCKED_NAME_SUFFIXES = (".pem", ".key", ".pfx", ".p12", ".token", ".kdbx")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -4275,6 +4362,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # served on localhost so cache invalidation cost is negligible, and
         # otherwise a Ctrl+F5 is required after every change.
         self.send_header("Cache-Control", "no-store, must-revalidate")
+        try:
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            # CSP: 'unsafe-inline' kept for script/style-src because SPA uses
+            # inline event handlers; TODO: tighten by extracting inline JS/CSS
+            # or using hashes.
+            csp = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
+                "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; "
+                "img-src 'self' data:; "
+                "connect-src 'self'; "
+                "frame-ancestors 'none'"
+            )
+            self.send_header("Content-Security-Policy", csp)
+        except Exception:
+            pass  # never fail a response over headers
         super().end_headers()
 
     def _csrf_guard(self) -> bool:
@@ -4780,10 +4885,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 st = p.stat()
             except OSError:
                 continue
-            task = _lookup_session_task(p.stem) if idx < TASK_PREVIEW_LIMIT else None
-            title = _lookup_session_title(p.stem) if idx < TASK_PREVIEW_LIMIT else None
+            session_id = p.stem
+            task = None
+            title = None
+            if idx < TASK_PREVIEW_LIMIT:
+                mtime_ns = st.st_mtime_ns
+                with _TRANSCRIPT_PREVIEW_LOCK:
+                    cached = _TRANSCRIPT_PREVIEW_CACHE.get(session_id)
+                if cached is not None and cached[0] == mtime_ns:
+                    _, task, title = cached
+                else:
+                    task = _lookup_session_task(session_id)
+                    title = _lookup_session_title(session_id)
+                    with _TRANSCRIPT_PREVIEW_LOCK:
+                        _TRANSCRIPT_PREVIEW_CACHE[session_id] = (mtime_ns, task, title)
             items.append({
-                "session_id": p.stem,
+                "session_id": session_id,
                 "size_bytes": st.st_size,
                 "modified": _dt.datetime.fromtimestamp(st.st_mtime, _dt.timezone.utc).isoformat(timespec="seconds"),
                 "path": str(p.relative_to(tdir.parent)),
@@ -6274,6 +6391,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not path or not path.is_file():
             self._json(404, {"error": "transcript not found", "session_id": session_id})
             return
+        try:
+            fh = path.open("rb")
+        except OSError as e:
+            self._json(500, {"error": str(e)})
+            return
+
+        def _open_stream_file():
+            return path.open("rb")
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -6287,23 +6412,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # When the file is over cap, seek to ``size - cap`` and discard up to
         # the first newline so the catch-up never emits a partial JSONL line.
         try:
-            with path.open("rb") as fh:
-                fh.seek(0, 2)  # SEEK_END
-                size = fh.tell()
-                truncated = size > MAX_TRANSCRIPT_CATCHUP_BYTES
-                if truncated:
-                    fh.seek(size - MAX_TRANSCRIPT_CATCHUP_BYTES)
-                    # Drop the partial line at the head of the window.
-                    fh.readline()
-                else:
-                    fh.seek(0)
-                existing = fh.read()
-                pos = fh.tell()
+            fh.seek(0, 2)  # SEEK_END
+            size = fh.tell()
+            truncated = size > MAX_TRANSCRIPT_CATCHUP_BYTES
+            if truncated:
+                fh.seek(size - MAX_TRANSCRIPT_CATCHUP_BYTES)
+                # Drop the partial line at the head of the window.
+                fh.readline()
+            else:
+                fh.seek(0)
+            existing = fh.read()
+            pos = fh.tell()
         except OSError:
+            try:
+                fh.close()
+            except Exception as e:
+                print(f"[serve] transcript stream close failed: {e}", flush=True)
             return
         if existing:
             text = existing.decode("utf-8", "replace").replace("\r\n", "\n")
             if not self._write_sse_frame(text):
+                try:
+                    fh.close()
+                except Exception as e:
+                    print(f"[serve] transcript stream close failed: {e}", flush=True)
                 return
 
         # Live tail: poll for appended bytes. Exit when client disconnects,
@@ -6317,47 +6449,59 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         last_size = pos
         idle_ticks = 0
         max_idle_ticks = 240  # ~ 4 minutes at 1s; client will reconnect
-        while idle_ticks < max_idle_ticks:
-            if time.monotonic() - session_start > MAX_SSE_SESSION_S:
-                self._write_sse_event("end", '{"reason":"max_session"}')
-                return
-            # Wait up to 1s for either the file to grow OR the client to
-            # disconnect. Replaces the previous unconditional sleep(1.0):
-            # the cadence for file-stat polling is unchanged, but disconnect
-            # is now detected within milliseconds via FIN on the socket
-            # read-side instead of waiting for a future wfile.write to
-            # surface a broken pipe — which on Windows can be delayed
-            # for many minutes while small chunks still fit in the kernel
-            # send buffer, accumulating phantom request threads.
-            try:
-                readable, _, _ = select.select([self.connection], [], [], 1.0)
-            except (OSError, ValueError):
-                return
-            if readable and self._sse_client_gone():
-                return
-            try:
-                size = path.stat().st_size
-            except OSError:
-                break
-            if size > last_size:
-                idle_ticks = 0
+        try:
+            while idle_ticks < max_idle_ticks:
+                if time.monotonic() - session_start > MAX_SSE_SESSION_S:
+                    self._write_sse_event("end", '{"reason":"max_session"}')
+                    return
+                # Wait up to 1s for either the file to grow OR the client to
+                # disconnect. Replaces the previous unconditional sleep(1.0):
+                # the cadence for file-stat polling is unchanged, but disconnect
+                # is now detected within milliseconds via FIN on the socket
+                # read-side instead of waiting for a future wfile.write to
+                # surface a broken pipe — which on Windows can be delayed
+                # for many minutes while small chunks still fit in the kernel
+                # send buffer, accumulating phantom request threads.
                 try:
-                    with path.open("rb") as fh:
-                        fh.seek(last_size)
-                        chunk = fh.read(size - last_size)
+                    readable, _, _ = select.select([self.connection], [], [], 1.0)
+                except (OSError, ValueError):
+                    return
+                if readable and self._sse_client_gone():
+                    return
+                try:
+                    st = path.stat()
                 except OSError:
                     break
-                if not self._write_sse_frame(chunk.decode("utf-8", "replace").replace("\r\n", "\n")):
-                    return
-                last_size = size
-            else:
-                idle_ticks += 1
-                try:
-                    self.wfile.write(b": keepalive\n\n")
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    return
-        self._write_sse_event("end", "{}")
+                if st.st_size < last_size:
+                    try:
+                        fh.close()
+                        fh = _open_stream_file()
+                    except OSError:
+                        break
+                    last_size = 0
+                if st.st_size > last_size:
+                    idle_ticks = 0
+                    try:
+                        fh.seek(last_size)
+                        chunk = fh.read(st.st_size - last_size)
+                    except OSError:
+                        break
+                    if not self._write_sse_frame(chunk.decode("utf-8", "replace").replace("\r\n", "\n")):
+                        return
+                    last_size = st.st_size
+                else:
+                    idle_ticks += 1
+                    try:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        return
+            self._write_sse_event("end", "{}")
+        finally:
+            try:
+                fh.close()
+            except Exception as e:
+                print(f"[serve] transcript stream close failed: {e}", flush=True)
 
     def _handle_sessions_list(self) -> None:
         """List chat sessions (claude + codex) that have a session_id, so the

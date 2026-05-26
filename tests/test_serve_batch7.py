@@ -339,9 +339,12 @@ def test_agent_suggest_source_caps_subprocess_timeout():
 # ---------------------------------------------------------------------------
 
 
+# JOBS_PERSIST_FILE is exempt: `_load_persisted_jobs` does a one-time full-file
+# boot scan (last-wins dedup + on-shrink compaction) that the deque-bounded
+# cache helper cannot serve. All other ledgers go through `_load_jsonl_cached`.
 @pytest.mark.parametrize(
     "ledger_constant",
-    ["METRICS_FILE", "EVENTS_FILE", "JOBS_PERSIST_FILE",
+    ["METRICS_FILE", "EVENTS_FILE",
      "SKILL_METRICS_FILE", "IMPROVEMENTS_LEDGER"],
 )
 def test_no_ledger_is_read_outside_the_cache_helper(ledger_constant):

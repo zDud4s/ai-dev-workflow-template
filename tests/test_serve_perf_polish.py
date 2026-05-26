@@ -284,6 +284,50 @@ def test_aggregate_skill_metrics_uses_cache():
     assert "SKILL_METRICS_FILE.open" not in src
 
 
+def test_persist_jobs_compacts_on_boot():
+    src = inspect.getsource(serve._load_persisted_jobs)
+    assert "len(seen) < row_count" in src
+    assert "seen.values()" in src
+    assert "os.replace" in src
+    assert "compact" in src
+
+
+def test_timeline_parse_iso_memoized():
+    src = inspect.getsource(serve._load_timeline_runs)
+    assert '"_dt"' in src
+    assert '["_dt"] = _parse_iso_ts' in src
+    assert 'key=lambda e: e["_dt"]' in src
+
+
+def test_codex_usage_per_file_cache():
+    src = pathlib.Path(serve.__file__).read_text(encoding="utf-8")
+    fn_src = inspect.getsource(serve._aggregate_codex_usage)
+    assert "_CODEX_FILE_AGG_CACHE" in src
+    assert "_CODEX_FILE_AGG_LOCK" in src
+    assert "mtime_ns" in fn_src
+    assert "_CODEX_FILE_AGG_CACHE.get(str(path))" in fn_src
+    assert "_CODEX_FILE_AGG_CACHE[str(path)] = (mtime_ns, agg)" in fn_src
+
+
+def test_transcript_preview_cache():
+    src = pathlib.Path(serve.__file__).read_text(encoding="utf-8")
+    fn_src = inspect.getsource(serve.Handler._handle_transcripts_list)
+    assert "_TRANSCRIPT_PREVIEW_CACHE" in src
+    assert "_TRANSCRIPT_PREVIEW_LOCK" in src
+    assert "mtime_ns = st.st_mtime_ns" in fn_src
+    assert "_TRANSCRIPT_PREVIEW_CACHE.get(session_id)" in fn_src
+    assert "_TRANSCRIPT_PREVIEW_CACHE[session_id] = (mtime_ns, task, title)" in fn_src
+
+
+def test_transcript_stream_fh_persistent():
+    src = inspect.getsource(serve.Handler._handle_transcript_stream)
+    assert "fh.seek(last_size)" in src
+    assert "fh.read(st.st_size - last_size)" in src
+    assert "st.st_size < last_size" in src
+    loop_src = src[src.index("while idle_ticks < max_idle_ticks:"):]
+    assert "path.open(" not in loop_src
+
+
 # ---------------------------------------------------------------------------
 # Fix 4 — broad except logging count regression guard
 # ---------------------------------------------------------------------------
