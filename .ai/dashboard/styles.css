@@ -147,6 +147,7 @@
       --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
       --ease-out-expo:  cubic-bezier(0.16, 1, 0.3, 1);
       --dur-instant: 100ms;
+      --dur-fast:    140ms;
       --dur-quick:   160ms;
       --dur-base:    240ms;
       --dur-slow:    380ms;
@@ -235,12 +236,14 @@
       position: absolute;
       top: 0;
       right: 0;
-      width: 22px;
-      height: 22px;
+      width: 12px;
+      height: 12px;
       background: var(--void);
       clip-path: polygon(0 0, 100% 0, 100% 100%);
       border-left: 1px solid var(--accent);
       border-bottom: 1px solid var(--accent);
+      pointer-events: none;
+      z-index: 0;
     }
     header h1 {
       margin: 0;
@@ -269,8 +272,8 @@
       animation: pulse-dot 2.2s var(--easing) infinite;
     }
     @keyframes pulse-dot {
-      0%, 100% { box-shadow: var(--accent-glow); opacity: 1; }
-      50%      { box-shadow: 0 0 8px var(--accent); opacity: 0.55; }
+      0%, 100% { opacity: 1; transform: scale(1) rotate(45deg); }
+      50%      { opacity: 0.55; transform: scale(0.92) rotate(45deg); }
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner {
@@ -335,6 +338,8 @@
       align-items: center;
       gap: var(--s-2);
       padding-right: var(--s-3);
+      position: relative;
+      z-index: 1;
     }
     header .header-actions .refresh {
       margin: 0;
@@ -343,13 +348,35 @@
     header .meta {
       display: flex;
       align-items: center;
-      padding: 0 var(--s-5);
+      /* No border-left — meta + actions form a single right-edge cluster
+         (the timestamp pairs naturally with the Refresh button). The
+         left-side separator now belongs to .header-usage. */
+      padding: 0 var(--s-3) 0 var(--s-4);
       color: var(--text-2);
       font-family: var(--ff-mono);
       font-size: 10px;
       letter-spacing: 0.18em;
       text-transform: uppercase;
-      border-left: 1px solid var(--border-soft);
+    }
+    /* Loaded state: stack "updated" label above the time so the cluster
+       narrows horizontally and frees room for the topbar usage bars. */
+    .meta-stack {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 3px;
+      line-height: 1;
+    }
+    .meta-label {
+      font-size: 9px;
+      color: var(--text-dim);
+      letter-spacing: 0.22em;
+    }
+    .meta-value {
+      font-size: 12px;
+      color: var(--text);
+      letter-spacing: 0.08em;
+      font-feature-settings: "tnum" 1;
     }
     /* ---- Topbar usage bars (Claude / Codex 5h utilization) ----
        Icon-only labels per design: the SVG mark identifies the tool,
@@ -359,8 +386,11 @@
       flex-direction: column;
       justify-content: center;
       align-items: stretch;
-      gap: 4px;
-      padding: 6px var(--s-4);
+      gap: 5px;
+      padding: 8px var(--s-4);
+      /* Single soft separator splits project (1fr) from the right-edge
+         telemetry+actions cluster. meta and actions intentionally lack
+         their own border-left so they read as one group. */
       border-left: 1px solid var(--border-soft);
     }
     header .usage-item {
@@ -396,7 +426,7 @@
       box-shadow: 0 0 8px currentColor;
       transition: width 0.4s var(--easing);
     }
-    header .usage-item[data-state="warn"] .usage-bar-fill { background: var(--warning, #d8a02c); color: var(--warning, #d8a02c); }
+    header .usage-item[data-state="warn"] .usage-bar-fill { background: var(--warn); color: var(--warn); }
     header .usage-item[data-state="crit"] .usage-bar-fill { background: var(--magenta); color: var(--magenta); }
     header .usage-item[data-state="na"]   { opacity: 0.45; }
     header .usage-item[data-state="na"] .usage-bar-fill { display: none; }
@@ -539,10 +569,12 @@
       overflow-y: auto;
       max-width: 1480px;
       width: 100%;
-      counter-reset: section-counter;
       position: relative;
     }
-    .view { display: none; }
+    .view {
+      display: none;
+      counter-reset: section-counter;
+    }
     .view.active {
       display: block;
       animation: fadeIn 320ms var(--easing);
@@ -1195,7 +1227,9 @@
       border-color: var(--accent);
       box-shadow: var(--accent-glow-soft);
     }
-    .term-pane.dead  { border-color: var(--border-soft); opacity: 0.75; }
+    .term-pane.dead  { border-color: var(--border-soft); }
+    .term-pane.dead .term-head,
+    .term-pane.dead .term-foot { opacity: 0.75; }
     /* Pinned/maximised pane: tall viewport (no grid math needed in flex). */
     .term-pane.pinned:not(.collapsed) {
       max-height: 85vh;
@@ -1220,8 +1254,8 @@
       animation: term-needs-action 1800ms ease-in-out infinite;
     }
     @keyframes term-needs-action {
-      0%, 100% { box-shadow: inset 2px 0 0 0 var(--warn); }
-      50%      { box-shadow: inset 2px 0 0 0 transparent; }
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.55; }
     }
     /* Current-activity chip in the head row: "thinking…", "tool: Edit", etc. */
     .term-head .activity {
@@ -2907,6 +2941,9 @@
       max-width: min(560px, calc(100vw - 272px - 64px));
       width: max-content;
     }
+    body:has(.proposal-modal:not([hidden])) #toast-root {
+      z-index: 150;
+    }
     #toast-root:empty { display: none; }
     .toast {
       pointer-events: auto;
@@ -4445,4 +4482,200 @@
     textarea::placeholder {
       color: var(--text-dim);
       opacity: 1;
+    }
+
+    /* ---------------- Todos view ---------------- */
+    .todos-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--s-2);
+      margin-bottom: var(--s-3);
+    }
+    .todos-toolbar button,
+    .todos-toolbar a {
+      all: unset;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 5px 11px;
+      border: 1px solid var(--border);
+      background: var(--surf-2);
+      color: var(--text-2);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      clip-path: var(--clip-tag);
+    }
+    .todos-toolbar button:hover,
+    .todos-toolbar a:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--accent-bg);
+    }
+    .todos-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--s-2);
+      margin-bottom: var(--s-3);
+    }
+    .todos-filters select,
+    .todos-filters input {
+      min-height: 32px;
+      padding: 6px 9px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+    }
+    .todos-filters input { min-width: min(320px, 100%); }
+    #todos-list .todo-row {
+      display: block;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    #todos-list .todo-row:last-child { border-bottom: 0; }
+    .todo-row.suggested {
+      background: linear-gradient(90deg, var(--warn-bg), transparent 70%);
+      border-left: 2px solid var(--warn);
+      padding-left: var(--s-2);
+    }
+    .todo-row-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--s-3);
+    }
+    .todo-title {
+      min-width: 0;
+      color: var(--text);
+      font-weight: 600;
+    }
+    .todo-title p {
+      margin: 0;
+      line-height: 1.35;
+    }
+    .todo-row .sub {
+      margin-top: 4px;
+      color: var(--text-dim);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+    }
+    .todo-row-actions {
+      display: flex;
+      gap: var(--s-2);
+      margin-top: 8px;
+    }
+    .todo-row-actions .todo-action {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      background: var(--surf-2);
+      color: var(--text-2);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .todo-row-actions .todo-action:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--accent-bg);
+    }
+    .todos-banner {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 3px 8px;
+      border: 1px solid var(--warn);
+      background: var(--warn-bg);
+      color: var(--warn);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      letter-spacing: 0.04em;
+    }
+    .todos-banner[hidden] { display: none; }
+    .todo-auto-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--s-2);
+      margin-left: var(--s-3);
+      color: var(--text-dim);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      letter-spacing: 0.04em;
+      text-transform: lowercase;
+      cursor: pointer;
+    }
+    .todo-auto-toggle input[type="checkbox"] {
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    /* Add-TODO form lives inside a .proposal-modal-pane; mirror the
+       horizontal padding of .proposal-modal-meta / .proposal-modal-diff
+       so it lines up with the header. */
+    #todos-add-modal .todos-add-form {
+      display: flex;
+      flex-direction: column;
+      gap: var(--s-3);
+      padding: var(--s-3) var(--s-4) var(--s-4);
+    }
+    #todos-add-modal .todos-add-form .proposal-modal-actions {
+      margin-top: var(--s-2);
+      padding: 0;
+      border-top: 0;
+    }
+    #todos-add-modal .todos-add-form .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #todos-add-modal .todos-add-form .field label {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      color: var(--text-dim);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #todos-add-modal .todos-add-form .field .form-hint {
+      margin-left: var(--s-2);
+      color: var(--text-faint);
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    #todos-add-modal .todos-add-form input[type="text"] {
+      min-height: 34px;
+      padding: 8px 10px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+    }
+    #todos-add-modal .todos-add-form input[type="text"]:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    #todos-preview-modal #todos-preview-doc {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      max-height: calc(90vh - 80px);
+      padding: var(--s-3) var(--s-4) var(--s-5);
+      background: var(--bg-inset);
+    }
+    #todos-preview-modal #todos-preview-doc h1,
+    #todos-preview-modal #todos-preview-doc h2,
+    #todos-preview-modal #todos-preview-doc h3 {
+      margin: var(--s-3) 0 var(--s-2);
+    }
+    #todos-preview-modal #todos-preview-doc h1:first-child,
+    #todos-preview-modal #todos-preview-doc h2:first-child,
+    #todos-preview-modal #todos-preview-doc h3:first-child {
+      margin-top: 0;
     }

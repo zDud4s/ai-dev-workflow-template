@@ -29,15 +29,27 @@ Tests are static (regex / brace-walked function bodies). The dashboard
 has no jsdom harness here.
 """
 
+import re
 from pathlib import Path
 
 TERMINALS_JS = (
     Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "app" / "terminals.js"
 )
+STYLES_CSS = Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "styles.css"
 
 
 def _src() -> str:
     return TERMINALS_JS.read_text(encoding="utf-8")
+
+
+def _css() -> str:
+    return STYLES_CSS.read_text(encoding="utf-8")
+
+
+def _css_rule_block(selector: str, css: str) -> str:
+    match = re.search(rf"(?m)^[ \t]*{re.escape(selector)}\s*\{{[^}}]*\}}", css)
+    assert match, f"{selector} rule not found in styles.css"
+    return match.group(0)
 
 
 def _slice_function(src: str, header: str) -> str:
@@ -56,6 +68,19 @@ def _slice_function(src: str, header: str) -> str:
             if depth == 0:
                 return src[brace : i + 1]
     raise AssertionError(f"unterminated function body for {header!r}")
+
+
+def test_dead_pane_opacity_chrome_only():
+    """Dead panes should dim chrome while leaving terminal body text legible."""
+    css = _css()
+    dead = _css_rule_block(".term-pane.dead", css)
+    assert "opacity:" not in dead
+    assert re.search(
+        r"\.term-pane\.dead\s+\.term-head\s*,\s*"
+        r"\.term-pane\.dead\s+\.term-foot\s*\{[^}]*opacity:\s*0\.75\s*;",
+        css,
+        re.DOTALL,
+    ), "dead-pane opacity should be scoped to pane chrome"
 
 
 # ----- Item 4: textEl.isConnected guard in rAF callback -----

@@ -8,30 +8,17 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;600;700;800;900&family=Hanken+Grotesk:ital,wght@0,300..800;1,300..800&family=JetBrains+Mono:ital,wght@0,300..700;1,300..700&display=swap" rel="stylesheet" />
-  <!-- TODO SRI: add `integrity=` to every <script>/<link> below using the
-       jsdelivr-published SHA-384 hashes for the EXACT pinned version. The
-       packages + paths needing hashes are:
-         - js-yaml@4.1.0/dist/js-yaml.min.js
-         - marked@12.0.0/marked.min.js
-         - dompurify@3.1.6/dist/purify.min.js
-         - xterm@5.3.0/css/xterm.min.css
-         - xterm@5.3.0/lib/xterm.min.js
-         - xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js
-         - xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js
-       Why deferred: a stale hash silently breaks the dash (scripts fail
-       open), so SRI must be added/refreshed by hand from jsdelivr's
-       metadata. `crossorigin="anonymous"` is already in place so a future
-       integrity= can be enforced without further wiring. -->
-  <script defer src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js" crossorigin="anonymous"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" crossorigin="anonymous"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" crossorigin="anonymous"></script>
+  <!-- SRI hashes regenerated 2026-05-26 (pinned versions; re-pin on bump) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js" integrity="sha384-+pxiN6T7yvpryuJmE1gM9PX7yQit15auDb+ZwwvJOd/4be2Cie5/IuVXgQb/S9du" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" integrity="sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a" crossorigin="anonymous"></script>
   <!-- xterm.js powers the "Shell" terminal panes (kind=terminal). The
        core lib renders ANSI/VT100, the fit addon snaps cols/rows to the
        pane size, and the web-links addon makes URLs clickable. -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" crossorigin="anonymous" />
-  <script defer src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js" crossorigin="anonymous"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js" crossorigin="anonymous"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js" crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" integrity="sha384-9ftsg11+LSxVUaknegCfeKvlkO9EdIPI2op725RqY87IvhyGjElmpjZlP3LhTQjn" crossorigin="anonymous" />
+  <script defer src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js" integrity="sha384-xjfWUeCWdMtvpAb/SmM6lMzS6pQGcQa0loOl1d97j6Odw0vjK9nW3+dTb/bn/mwH" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js" integrity="sha384-dpjGwSSISUTz2taP54Bor7qkyMR20sSO9oe11UVYnGs2/YdUBf7HW30XKQx9PCzn" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js" integrity="sha384-iAAiqSZrWZz/YKZSTKOPNaRhVOg9JY14avg2EWEpYNnUsrnATA+Sg8pV7mak84/G" crossorigin="anonymous"></script>
   <link rel="stylesheet" href="styles.css" />
   <style>
     /* Visually-hidden label helper for inputs that use placeholder-as-label.
@@ -45,7 +32,6 @@
   <header>
     <h1>AI workflow</h1>
     <span class="project" id="project-name">…</span>
-    <span class="meta" id="meta"><span class="spinner"></span> loading</span>
     <div class="header-usage" id="header-usage" aria-label="Tool usage (5h window)">
       <div class="usage-item" data-tool="claude" title="Claude — 5h utilization">
         <svg class="usage-ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor">
@@ -66,6 +52,7 @@
         <span class="usage-pct" id="usage-pct-codex">—</span>
       </div>
     </div>
+    <span class="meta" id="meta"><span class="spinner"></span> loading</span>
     <div class="header-actions">
       <button class="refresh" id="density-toggle" title="Toggle compact / comfortable density">Density</button>
       <button class="refresh" data-action="loadAll">Refresh</button>
@@ -79,6 +66,7 @@
     <button id="tab-project" data-view="project" role="tab" aria-controls="view-project" aria-selected="false">Project state</button>
     <div class="section-label" role="presentation">knowledge</div>
     <button id="tab-memory" data-view="memory" role="tab" aria-controls="view-memory" aria-selected="false">Memory <span class="count" id="count-memory">·</span></button>
+    <button id="tab-todos" data-view="todos" role="tab" aria-controls="view-todos" aria-selected="false">Todos <span class="count" id="count-todos">·</span></button>
     <button id="tab-decisions" data-view="decisions" role="tab" aria-controls="view-decisions" aria-selected="false">Decisions</button>
     <button id="tab-skills" data-view="skills" role="tab" aria-controls="view-skills" aria-selected="false">Skills <span class="count" id="count-skills">·</span></button>
     <button id="tab-agents" data-view="agents" role="tab" aria-controls="view-agents" aria-selected="false">Agents <span class="count" id="count-agents">·</span></button>
@@ -196,6 +184,70 @@
           <span class="skeleton skeleton-doc-p2"></span>
           <span class="skeleton skeleton-doc-p4"></span>
         </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-todos" role="tabpanel" aria-labelledby="tab-todos" hidden>
+      <div class="block">
+        <div class="todos-toolbar">
+          <button data-action="todo-add">+ Add manual</button>
+          <button data-action="todo-scan">⟳ Scan now</button>
+          <button data-action="todo-preview">⛶ Open TODO.md</button>
+          <label class="todo-auto-toggle">
+            <input type="checkbox" id="todos-auto-toggle" />
+            <span>auto-scan on maintenance</span>
+          </label>
+          <span class="todos-banner" id="todos-banner" hidden></span>
+        </div>
+
+        <div class="proposal-modal" id="todos-add-modal" role="dialog" aria-modal="true" aria-labelledby="todos-add-title-label" hidden>
+          <div class="proposal-modal-pane" tabindex="-1">
+            <header>
+              <h3 id="todos-add-title-label">Add manual TODO</h3>
+              <button class="refresh" id="todos-add-close" aria-label="Close add TODO modal">close</button>
+            </header>
+            <form class="todos-add-form" id="todos-add-form">
+              <div class="field">
+                <label for="todos-add-title">Title <span class="form-hint">max 280 chars</span></label>
+                <input type="text" id="todos-add-title" maxlength="280" placeholder="What needs to be done?" />
+              </div>
+              <div class="field">
+                <label for="todos-add-tags">Tags <span class="form-hint">comma-separated, optional</span></label>
+                <input type="text" id="todos-add-tags" maxlength="100" placeholder="tests, dashboard, security" />
+              </div>
+              <footer class="proposal-modal-actions">
+                <button type="submit" class="btn" data-action="todo-add-submit">Add TODO</button>
+                <button type="button" class="btn secondary" data-action="todo-add-cancel">Cancel</button>
+                <span class="form-msg" id="todos-add-msg"></span>
+              </footer>
+            </form>
+          </div>
+        </div>
+
+        <div class="proposal-modal" id="todos-preview-modal" role="dialog" aria-modal="true" aria-labelledby="todos-preview-title" hidden>
+          <div class="proposal-modal-pane" tabindex="-1">
+            <header>
+              <h3 id="todos-preview-title">TODO.md</h3>
+              <button class="refresh" id="todos-preview-close" aria-label="Close TODO.md preview">close</button>
+            </header>
+            <div class="doc" id="todos-preview-doc">
+              <div class="empty">Loading…</div>
+            </div>
+          </div>
+        </div>
+        <div class="todos-filters">
+          <select id="todos-filter-tag"><option value="">all tags</option></select>
+          <select id="todos-filter-status">
+            <option value="active" selected>active (open + suggested)</option>
+            <option value="open">open only</option>
+            <option value="resolved-suggested">suggested only</option>
+            <option value="resolved">resolved</option>
+            <option value="archived">archived</option>
+            <option value="">all statuses</option>
+          </select>
+          <input type="search" id="todos-search" placeholder="search title/source" aria-label="Search todos by title or source" />
+        </div>
+        <div id="todos-list" data-skeletoned="0"></div>
       </div>
     </section>
 
@@ -839,6 +891,7 @@
        CDN-loaded global, and (b) app/*.js DOM queries (e.g. nav button
        wiring in core.js) always find their targets. -->
   <script defer src="app/core.js"></script>
+  <script defer src="app/todos.js"></script>
   <script defer src="app/skills.js"></script>
   <script defer src="app/agents.js"></script>
   <script defer src="app/jobs.js"></script>

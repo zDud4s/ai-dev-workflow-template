@@ -32,6 +32,36 @@ def _css() -> str:
     return CSS.read_text(encoding="utf-8")
 
 
+def _rule_block(selector: str, css: str) -> str:
+    match = re.search(rf"(?m)^[ \t]*{re.escape(selector)}\s*\{{[^}}]*\}}", css)
+    assert match, f"{selector} rule not found in styles.css"
+    return match.group(0)
+
+
+def test_dur_fast_declared() -> None:
+    css = _css()
+    root = _rule_block(":root", css)
+    assert re.search(r"--dur-fast\s*:", root), "--dur-fast must be declared in :root"
+
+
+def test_counter_reset_on_view() -> None:
+    css = _css()
+    main = _rule_block("main", css)
+    view = _rule_block(".view", css)
+    assert "counter-reset: section-counter" in view
+    assert "counter-reset: section-counter" not in main
+
+
+def test_toast_demoted_under_modal() -> None:
+    css = _css()
+    assert re.search(
+        r"body:has\(\.proposal-modal:not\(\[hidden\]\)\)\s+#toast-root\s*\{"
+        r"[^}]*z-index:\s*150\s*;",
+        css,
+        re.DOTALL,
+    ), "toast root must sit below the open proposal modal"
+
+
 # ---------------------------------------------------------------------------
 # Fix 1: dead `--mono` alias removed
 # ---------------------------------------------------------------------------

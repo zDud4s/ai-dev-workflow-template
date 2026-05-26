@@ -24,6 +24,31 @@ def _css() -> str:
     return STYLES_CSS.read_text(encoding="utf-8")
 
 
+def _keyframes_body(css: str, name: str) -> str:
+    match = re.search(r"@keyframes\s+" + re.escape(name) + r"\s*\{", css)
+    assert match, "Could not find @keyframes " + name
+    start = match.end() - 1
+    depth = 0
+    for i in range(start, len(css)):
+        if css[i] == "{":
+            depth += 1
+        elif css[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return css[start + 1 : i]
+    raise AssertionError("Unbalanced braces in @keyframes " + name)
+
+
+def test_keyframes_avoid_box_shadow():
+    """Pulse animations must avoid animating box-shadow, which is paint-heavy."""
+    css = _css()
+    for name in ("pulse-dot", "term-needs-action"):
+        body = _keyframes_body(css, name)
+        assert "box-shadow:" not in body, (
+            "@keyframes " + name + " must animate opacity/transform only"
+        )
+
+
 def test_body_after_gated_by_reduced_motion():
     """body::after must live inside a @media (prefers-reduced-motion: no-preference) block."""
     css = _css()

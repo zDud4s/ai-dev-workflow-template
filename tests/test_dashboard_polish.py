@@ -27,6 +27,22 @@ def _html() -> str:
     return INDEX_HTML.read_text(encoding="utf-8")
 
 
+def _rule_block(selector: str, css: str) -> str:
+    match = re.search(rf"(?m)^[ \t]*{re.escape(selector)}\s*\{{[^}}]*\}}", css)
+    assert match, f"{selector} rule not found in styles.css"
+    return match.group(0)
+
+
+def test_header_notch_not_clipping():
+    """The header corner notch is safe when it is reduced or explicitly
+    layered below the action buttons; this batch applies both safeguards.
+    """
+    block = _rule_block("header::after", _css())
+    assert ("width: 12px" in block) or ("z-index: 0" in block), (
+        "header::after should either use the reduced notch or explicit layer"
+    )
+
+
 def _diff_line_block(css: str) -> str:
     """Return the chunk of CSS around the `.diff-line.removed` /
     `.diff-line.added` rules so we can assert about them specifically.
