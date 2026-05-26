@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import pathlib
+import re
 import sys
 import threading
 
@@ -164,3 +165,40 @@ def test_suggestion_semaphore_returns_429_on_saturation() -> None:
         # left with a permanently saturated semaphore.
         for _ in range(drained):
             sem.release()
+
+
+_SERVE_SOURCE = pathlib.Path(__file__).resolve().parents[1] / ".ai" / "dashboard" / "serve.py"
+
+
+def _serve_function_source(name: str) -> str:
+    text = _SERVE_SOURCE.read_text(encoding="utf-8")
+    match = re.search(rf"^def {name}\b.*?(?=^def |\Z)", text, re.DOTALL | re.MULTILINE)
+    assert match, f"{name} not found in serve.py"
+    return match.group(0)
+
+
+def _assert_file_lock_block(function_name: str, lock_name: str, file_name: str) -> None:
+    src = _serve_function_source(function_name)
+    assert re.search(
+        rf"with {lock_name}:.*?with {file_name}\.open\(\"a\", encoding=\"utf-8\"\) as f:",
+        src,
+        re.DOTALL,
+    )
+    assert re.search(r"fcntl\.flock", src)
+    assert re.search(r"fcntl\.LOCK_EX", src)
+    assert re.search(r"fcntl\.LOCK_UN", src)
+    assert re.search(r"msvcrt\.locking", src)
+    assert re.search(r"msvcrt\.LK_LOCK", src)
+    assert re.search(r"msvcrt\.LK_UNLCK", src)
+
+
+def test_persist_job_uses_file_lock() -> None:
+    _assert_file_lock_block("_persist_job", "_JOBS_PERSIST_LOCK", "JOBS_PERSIST_FILE")
+
+
+def test_audit_improvement_uses_file_lock() -> None:
+    _assert_file_lock_block("_audit_improvement", "_IMPROVEMENTS_LEDGER_LOCK", "IMPROVEMENTS_LEDGER")
+
+
+def test_record_skill_metrics_uses_file_lock() -> None:
+    _assert_file_lock_block("_record_skill_metrics", "_SKILL_METRICS_LOCK", "SKILL_METRICS_FILE")

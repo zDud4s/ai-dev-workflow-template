@@ -36,10 +36,86 @@ sys.path.insert(
     str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"),
 )
 import pty_session as _pty_session  # noqa: E402
+import serve  # noqa: E402
 
 
 _PTY_SOURCE_PATH = pathlib.Path(_pty_session.__file__)
 _PTY_SOURCE = _PTY_SOURCE_PATH.read_text(encoding="utf-8")
+_SERVE_SOURCE_PATH = pathlib.Path(serve.__file__)
+_SERVE_SOURCE = _SERVE_SOURCE_PATH.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def clean_serve_ptys():
+    with serve.PTYS_LOCK:
+        saved_ptys = dict(serve.PTYS)
+        serve.PTYS.clear()
+    with _pty_session.Pty._registry_lock:
+        saved_registry = dict(_pty_session.Pty._registry)
+        _pty_session.Pty._registry.clear()
+    try:
+        yield
+    finally:
+        with serve.PTYS_LOCK:
+            serve.PTYS.clear()
+            serve.PTYS.update(saved_ptys)
+        with _pty_session.Pty._registry_lock:
+            _pty_session.Pty._registry.clear()
+            _pty_session.Pty._registry.update(saved_registry)
+
+
+@pytest.fixture
+def fake_posix_kill():
+    def fake_waitpid(pid, flags):  # noqa: ARG001
+        return (pid, 0)
+
+    with patch.object(os, "WNOHANG", 1, create=True), \
+         patch.object(os, "kill"), \
+         patch.object(os, "waitpid", side_effect=fake_waitpid, create=True), \
+         patch.object(os, "close"):
+        yield
+
+
+_NEXT_FAKE_PID = 1000
+
+
+def _fake_posix_pty() -> _pty_session._PosixPty:
+    global _NEXT_FAKE_PID
+    _NEXT_FAKE_PID += 1
+    p = _pty_session._PosixPty.__new__(_pty_session._PosixPty)
+    p._closed = False
+    p._pid = _NEXT_FAKE_PID
+    p._fd = -1
+    _pty_session.Pty._register(p)
+    return p
+
+
+def _add_lifecycle_entry(
+    pty_id: str,
+    status: str,
+    created_at: str,
+) -> _pty_session._PosixPty:
+    pty = _fake_posix_pty()
+    with serve.PTYS_LOCK:
+        serve.PTYS[pty_id] = {
+            "id": pty_id,
+            "kind": "terminal",
+            "shell": "test",
+            "argv": ["test"],
+            "cwd": str(serve.ROOT),
+            "cols": 80,
+            "rows": 24,
+            "pid": pty.pid,
+            "created_at": created_at,
+            "status": status,
+            "exit_code": None,
+            "_pty": pty,
+            "_ring": bytearray(),
+            "_subscribers": [],
+            "_lock": threading.Lock(),
+            "_token": "test-token",
+        }
+    return pty
 
 
 # ---------- Static (regex) assertions ----------
@@ -171,6 +247,70 @@ def _fake_winpty():
     p._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     p._proc = MagicMock()
     return p
+
+
+def test_pty_eviction_unregisters(monkeypatch, clean_serve_ptys, fake_posix_kill):
+    monkeypatch.setattr(serve, "PTYS_MAX", 2)
+    oldest = _add_lifecycle_entry("oldest", "ended", "2026-05-26T00:00:00+00:00")
+    _add_lifecycle_entry("newer", "ended", "2026-05-26T00:00:01+00:00")
+    _add_lifecycle_entry("newest", "ended", "2026-05-26T00:00:02+00:00")
+
+    serve._evict_old_ptys()
+
+    with serve.PTYS_LOCK:
+        pty_count = len(serve.PTYS)
+        remaining = set(serve.PTYS)
+    assert oldest._closed is True
+    assert remaining == {"newer", "newest"}
+    assert _pty_session.Pty.active_count() == pty_count
+
+
+def test_pty_kill_unregisters(clean_serve_ptys, fake_posix_kill):
+    pty = _add_lifecycle_entry("kill-me", "running", "2026-05-26T00:00:00+00:00")
+    before = _pty_session.Pty.active_count()
+
+    assert serve._pty_kill("kill-me") is True
+
+    with serve.PTYS_LOCK:
+        assert "kill-me" not in serve.PTYS
+        pty_count = len(serve.PTYS)
+    assert pty._closed is True
+    assert _pty_session.Pty.active_count() == before - 1
+    assert _pty_session.Pty.active_count() == pty_count == 0
+
+
+def test_pty_churn_30_does_not_exhaust(monkeypatch, clean_serve_ptys, fake_posix_kill):
+    monkeypatch.setattr(serve, "PTYS_MAX", 20)
+    for i in range(30):
+        pty_id = f"pty-{i}"
+        _add_lifecycle_entry(pty_id, "running", f"2026-05-26T00:00:{i:02d}+00:00")
+        assert serve._pty_kill(pty_id) is True
+
+    with serve.PTYS_LOCK:
+        assert len(serve.PTYS) == 0
+    assert _pty_session.Pty.active_count() == 0
+
+
+def test_cleanup_idle_timer_wired():
+    assert re.search(
+        r"threading\.Thread\([^)]*target=\s*_pty_idle_loop",
+        _SERVE_SOURCE,
+    )
+    assert re.search(
+        r"_pty_session\.Pty\.cleanup_idle\(\)",
+        _SERVE_SOURCE,
+    )
+
+
+def test_shutdown_handlers_registered():
+    assert re.search(
+        r"atexit\.register\(_shutdown_all_ptys\)",
+        _SERVE_SOURCE,
+    )
+    assert re.search(
+        r"signal\.signal\(signal\.SIGTERM",
+        _SERVE_SOURCE,
+    )
 
 
 def test_windows_init_lifecycle_propagates_exception(monkeypatch):

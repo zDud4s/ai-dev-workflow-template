@@ -69,6 +69,7 @@ from pathlib import Path
 # this module wraps POSIX `pty.fork` and Windows `pywinpty.PtyProcess`
 # behind one interface.
 import pty_session as _pty_session  # noqa: E402 — sibling module
+import todos_parser as _todos_parser  # noqa: E402 — sibling module
 
 PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
 # The actually-bound port. Diverges from PORT when main()'s dynamic-port
@@ -101,7 +102,7 @@ def _validate_template_url(url: str) -> str:
     try:
         from urllib.parse import urlparse
         p = urlparse(url)
-    except Exception:
+    except (ValueError, TypeError):
         return _DEFAULT_WORKFLOW_TEMPLATE_URL
     if p.scheme == "file" and p.path:
         return url
@@ -205,6 +206,9 @@ _SKILL_METRICS_LOCK = threading.Lock()
 # writes corrupt the workflow core). Non-blocking acquire — second caller gets
 # 409.
 _WORKFLOW_UPDATE_LOCK = threading.Lock()
+_GIT_LSFILES_CACHE: dict[str, tuple[float, int, list[str]]] = {}
+_GIT_LSFILES_LOCK = threading.Lock()
+_GIT_LSFILES_TTL_S = 10.0
 # Caps concurrent /api/suggestions/<id>/draft + /api/agents/suggest requests.
 # Both endpoints spawn long-running `claude -p` / `codex` subprocesses
 # (timeout_seconds, default 120s) on the request thread; without a cap a
@@ -339,7 +343,8 @@ def _load_jsonl_cached(path: Path) -> list[dict]:
     # Read outside the lock — slow I/O must not block other cache readers.
     # Two concurrent first-callers will parse twice; both writes produce the
     # same list so the race is benign.
-    rows: list[dict] = []
+    # Tail-bound at 10k rows — older entries dropped on parse.
+    rows_dq: deque[dict] = deque(maxlen=10000)
     # Per-line cap: a hostile or wedged producer that emits one giant line
     # would otherwise be ingested whole here and replicated across every
     # cached parse. 1 MiB per row is generous for legitimate JSONL events.
@@ -353,7 +358,7 @@ def _load_jsonl_cached(path: Path) -> list[dict]:
                 if not line:
                     continue
                 try:
-                    rows.append(json.loads(line))
+                    rows_dq.append(json.loads(line))
                 except (json.JSONDecodeError, ValueError):
                     # Mirror the prior hand-rolled behaviour: skip malformed
                     # rows silently rather than failing the whole endpoint.
@@ -363,9 +368,34 @@ def _load_jsonl_cached(path: Path) -> list[dict]:
         # ``open()`` (a rare race during rotation), treat as empty. Don't
         # cache the empty result — the next call will retry the stat.
         return []
+    rows = list(rows_dq)
     with _JSONL_CACHE_LOCK:
         _JSONL_CACHE[key] = (st.st_mtime_ns, rows)
     return rows
+
+
+def _git_lsfiles_cached(cwd: Path) -> list[str] | None:
+    try:
+        st = (cwd / ".git" / "index").stat()
+    except OSError:
+        return None
+    with _GIT_LSFILES_LOCK:
+        entry = _GIT_LSFILES_CACHE.get(str(cwd))
+        if entry is None:
+            return None
+        cached_at, index_mtime_ns, lines = entry
+        if (time.monotonic() - cached_at) < _GIT_LSFILES_TTL_S and index_mtime_ns == st.st_mtime_ns:
+            return lines
+    return None
+
+
+def _git_lsfiles_put(cwd: Path, lines: list[str]) -> None:
+    try:
+        st = (cwd / ".git" / "index").stat()
+    except OSError:
+        return
+    with _GIT_LSFILES_LOCK:
+        _GIT_LSFILES_CACHE[str(cwd)] = (time.monotonic(), st.st_mtime_ns, list(lines))
 
 
 def _write_text_lf(path: Path, text: str) -> None:
@@ -392,7 +422,34 @@ def _persist_job(job_id: str) -> None:
         JOBS_PERSIST_FILE.parent.mkdir(parents=True, exist_ok=True)
         with _JOBS_PERSIST_LOCK:
             with JOBS_PERSIST_FILE.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(snapshot, default=str) + "\n")
+                line = json.dumps(snapshot, default=str) + "\n"
+                if sys.platform == "win32":
+                    try:
+                        import msvcrt
+                        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                        try:
+                            f.write(line)
+                            f.flush()
+                        finally:
+                            try:
+                                f.seek(0)
+                                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                            except OSError:
+                                pass
+                    except (ImportError, OSError):
+                        # Lock acquisition failed (rare) - fall back to a plain
+                        # write rather than dropping the event entirely.
+                        f.write(line)
+                else:
+                    try:
+                        import fcntl
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                        try:
+                            f.write(line)
+                        finally:
+                            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    except (ImportError, OSError):
+                        f.write(line)
     except OSError as e:
         # Persistence is best-effort; never break the live pipeline. Log
         # so an operator who notices restarts losing job history has a
@@ -1029,6 +1086,10 @@ PTYS: dict[str, dict] = {}
 PTYS_LOCK = threading.Lock()
 PTYS_MAX = 20
 
+_DROP_THRESHOLD = 64
+_DROP_COUNTS: dict[str, dict[int, int]] = {}
+_DROP_COUNTS_LOCK = threading.Lock()
+
 # Cap on the per-session ring buffer used for catch-up when a client
 # (re)attaches to a long-running PTY. 256 KB keeps a full screen of
 # scrollback for any reasonable terminal size while bounding memory.
@@ -1349,6 +1410,8 @@ def _pty_kill(pty_id: str) -> bool:
         # Best-effort: the session is being torn down anyway, but log so an
         # operator can grep for stuck shells that wouldn't kill.
         print(f"[serve] pty kill({pty_id}) failed: {e}", flush=True)
+    with PTYS_LOCK:
+        PTYS.pop(pty_id, None)
     with entry["_lock"]:
         entry["status"] = "ended"
         for q in entry["_subscribers"]:
@@ -1394,8 +1457,43 @@ def _evict_old_ptys() -> None:
         ]
         ended.sort()
         to_drop = len(PTYS) - PTYS_MAX
-        for _, pid in ended[:to_drop]:
-            PTYS.pop(pid, None)
+        victims = ended[:to_drop]
+    for _, pid in victims:
+        with PTYS_LOCK:
+            entry = PTYS.pop(pid, None)
+        if entry:
+            try:
+                entry["_pty"].kill()
+            except Exception as e:  # noqa: BLE001 - PTY backend may raise anything
+                print(f"[serve] evict-kill error pid={pid}: {e}", flush=True)
+
+
+def _shutdown_all_ptys() -> None:
+    try:
+        reg = _pty_session.Pty._registry
+        lock = getattr(_pty_session.Pty, "_registry_lock", None)
+        if lock is not None:
+            with lock:
+                entries = list(reg.values())
+        else:
+            entries = list(reg.values())
+    except Exception as e:  # noqa: BLE001 - shutdown is best-effort
+        print(f"[serve] shutdown snapshot error: {e}")
+        return
+    for p in entries:
+        try:
+            p.kill()
+        except Exception as e:  # noqa: BLE001 - shutdown is best-effort
+            print(f"[serve] shutdown-kill error: {e}")
+
+
+def _pty_idle_loop() -> None:
+    while True:
+        try:
+            time.sleep(60)
+            _pty_session.Pty.cleanup_idle()
+        except Exception as e:  # noqa: BLE001 - timer must keep running
+            print(f"[serve] pty-idle-loop error: {e}")
 
 
 
@@ -1639,7 +1737,34 @@ def _audit_improvement(skill_id: str, status: str, reason: str,
         IMPROVEMENTS_LEDGER.parent.mkdir(parents=True, exist_ok=True)
         with _IMPROVEMENTS_LEDGER_LOCK:
             with IMPROVEMENTS_LEDGER.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(row, default=str) + "\n")
+                line = json.dumps(row, default=str) + "\n"
+                if sys.platform == "win32":
+                    try:
+                        import msvcrt
+                        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                        try:
+                            f.write(line)
+                            f.flush()
+                        finally:
+                            try:
+                                f.seek(0)
+                                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                            except OSError:
+                                pass
+                    except (ImportError, OSError):
+                        # Lock acquisition failed (rare) - fall back to a plain
+                        # write rather than dropping the event entirely.
+                        f.write(line)
+                else:
+                    try:
+                        import fcntl
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                        try:
+                            f.write(line)
+                        finally:
+                            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    except (ImportError, OSError):
+                        f.write(line)
     except OSError as e:
         # Audit ledger is best-effort; never break the improver pipeline.
         # Log so a silently-dropped audit row is traceable.
@@ -2372,8 +2497,34 @@ def _record_skill_metrics(job_id: str) -> int:
         SKILL_METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
         with _SKILL_METRICS_LOCK:
             with SKILL_METRICS_FILE.open("a", encoding="utf-8") as f:
-                for row in rows:
-                    f.write(json.dumps(row, default=str) + "\n")
+                line = "".join(json.dumps(row, default=str) + "\n" for row in rows)
+                if sys.platform == "win32":
+                    try:
+                        import msvcrt
+                        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                        try:
+                            f.write(line)
+                            f.flush()
+                        finally:
+                            try:
+                                f.seek(0)
+                                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                            except OSError:
+                                pass
+                    except (ImportError, OSError):
+                        # Lock acquisition failed (rare) - fall back to a plain
+                        # write rather than dropping the event entirely.
+                        f.write(line)
+                else:
+                    try:
+                        import fcntl
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                        try:
+                            f.write(line)
+                        finally:
+                            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    except (ImportError, OSError):
+                        f.write(line)
     except OSError:
         return 0
 
@@ -2971,6 +3122,8 @@ def _start_subprocess_job(
             except Exception as e:  # noqa: BLE001 - never break the runner
                 print(f"[serve] record_skill_metrics failed for {job_id}: {e}", flush=True)
             _publish_chunk(job_id, None)  # sentinel: stream end
+            with _DROP_COUNTS_LOCK:
+                _DROP_COUNTS.pop(job_id, None)
         except Exception as e:  # noqa: BLE001 (don't crash the server)
             print(f"[serve] job runner crashed for {job_id}: {e}", flush=True)
             with JOBS_LOCK:
@@ -2979,6 +3132,8 @@ def _start_subprocess_job(
                 JOBS[job_id]["ended_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
             _persist_job(job_id)
             _publish_chunk(job_id, None)
+            with _DROP_COUNTS_LOCK:
+                _DROP_COUNTS.pop(job_id, None)
 
     threading.Thread(target=runner, daemon=True, name=f"job-{job_id}").start()
 
@@ -2988,13 +3143,42 @@ def _publish_chunk(job_id: str, chunk: str | None) -> None:
     with JOBS_LOCK:
         subs = list(JOBS.get(job_id, {}).get("subscribers") or [])
     for q in subs:
+        qid = id(q)
         try:
             q.put_nowait(chunk)
+            if chunk is None:
+                with _DROP_COUNTS_LOCK:
+                    counts = _DROP_COUNTS.get(job_id)
+                    if counts:
+                        counts.pop(qid, None)
+                        if not counts:
+                            _DROP_COUNTS.pop(job_id, None)
         except _stdqueue.Full:
-            # Subscriber queue at maxsize=1024 — slow client. Drop this chunk
-            # for that subscriber rather than blocking the runner; the SSE
-            # heartbeat loop will reap them on the next disconnect.
-            pass
+            # Subscriber queue at maxsize=1024 - slow client. Drop this chunk
+            # for that subscriber rather than blocking the runner. After a
+            # sustained run of drops, ask the client to reconnect and catch up.
+            with _DROP_COUNTS_LOCK:
+                counts = _DROP_COUNTS.setdefault(job_id, {})
+                drops = counts.get(qid, 0) + 1
+                counts[qid] = drops
+            if drops >= _DROP_THRESHOLD:
+                resync_dropped = False
+                try:
+                    q.put_nowait({"type": "resync", "reason": "slow"})
+                except _stdqueue.Full:
+                    resync_dropped = True
+                eof_dropped = False
+                try:
+                    q.put_nowait(None)
+                except _stdqueue.Full:
+                    eof_dropped = True
+                if not (resync_dropped or eof_dropped):
+                    with _DROP_COUNTS_LOCK:
+                        counts = _DROP_COUNTS.get(job_id)
+                        if counts:
+                            counts.pop(qid, None)
+                            if not counts:
+                                _DROP_COUNTS.pop(job_id, None)
         except Exception as e:  # noqa: BLE001
             # Defensive: any other queue / GC race. Log so a runaway
             # subscriber pattern is visible in the server log.
@@ -3325,6 +3509,58 @@ def _lookup_session_task(session_id: str) -> str | None:
     except OSError:
         return None
     return None
+
+
+def _lookup_session_title(session_id: str) -> str | None:
+    """Best-effort: extract the Claude-Code-generated ``ai-title`` record
+    from a session transcript so the dashboard can label a collapsed
+    transcript pane with the IDE's own chat name instead of relying on
+    the first user message (or the bare UUID).
+
+    The ai-title is a meta record Claude writes a few lines into the
+    JSONL once it's picked a display title — same string the IDE shows
+    in its sessions sidebar. Latest one wins (Claude can rename mid-
+    session). Bounded scan keeps the picker snappy on multi-MB
+    transcripts; if the title hasn't been written yet, the caller falls
+    back to the first-user-message preview."""
+    if not session_id or session_id == "unknown":
+        return None
+    try:
+        tdir = _transcripts_dir_for_cwd(ROOT)
+    except OSError:
+        return None
+    if tdir is None or not tdir.is_dir():
+        return None
+    f = tdir / f"{session_id}.jsonl"
+    if not f.is_file():
+        return None
+    MAX_LINES = 200
+    MAX_BYTES = 64 * 1024
+    title: str | None = None
+    try:
+        with f.open("r", encoding="utf-8", errors="replace") as fh:
+            lines_seen = 0
+            bytes_seen = 0
+            for line in fh:
+                lines_seen += 1
+                bytes_seen += len(line)
+                if lines_seen > MAX_LINES or bytes_seen > MAX_BYTES:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "ai-title":
+                    continue
+                at = rec.get("aiTitle")
+                if isinstance(at, str) and at.strip():
+                    title = at.strip()[:120]
+    except OSError:
+        return None
+    return title
 
 
 def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 3) -> dict:
@@ -3793,6 +4029,13 @@ def _persist_agent_proposal(suggestion: dict, *, source_signal: dict) -> str | N
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    extensions_map = {
+        **http.server.SimpleHTTPRequestHandler.extensions_map,
+        ".md": "text/plain; charset=utf-8",
+        ".yaml": "text/plain; charset=utf-8",
+        ".yml": "text/plain; charset=utf-8",
+        ".jsonl": "text/plain; charset=utf-8",
+    }
     # Sensitive paths that MUST NOT be served by the static handler. Resolved
     # at class load so symlinks and Windows case differences cannot bypass.
     # The dashboard intentionally reads other project files (.ai/memory.md,
@@ -3866,6 +4109,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/events":
             self._handle_events_list(urllib.parse.parse_qs(parsed.query))
+            return
+        if parsed.path == "/api/todos":
+            self._handle_todos_list(urllib.parse.parse_qs(parsed.query))
+            return
+        if parsed.path == "/api/todos/config":
+            self._json(200, _todos_parser.load_config(ROOT))
             return
         if parsed.path == "/api/auto-select":
             self._handle_auto_select(parsed)
@@ -3955,6 +4204,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return  # already responded with 400
         if parsed.path == "/api/memory":
             self._handle_memory(body)
+        elif parsed.path == "/api/todos":
+            self._handle_todo_create(body)
+        elif parsed.path == "/api/todos/scan":
+            self._handle_todos_scan()
+        elif parsed.path == "/api/todos/config":
+            if not isinstance(body, dict):
+                self._json(400, {"error": "invalid request body"})
+            else:
+                self._json(200, _todos_parser.save_config(ROOT, body))
+        elif parsed.path.startswith("/api/todos/") and parsed.path.endswith("/status"):
+            self._handle_todo_status(parsed.path, body)
         elif parsed.path == "/api/decisions":
             self._handle_decisions(body)
         elif parsed.path == "/api/events/clear":
@@ -4078,6 +4338,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         sys.stderr.write(f"[dashboard] {fmt % args}\n")
 
     # ----- GET handlers -----
+    def _todos_latest(self) -> dict:
+        rows = _todos_parser._load_jsonl(_todos_parser._todos_path(ROOT))
+        return _todos_parser._fold_latest(rows)
+
+    def _todos_banner(self) -> str | None:
+        path = ROOT / ".ai" / "todos-banner.txt"
+        try:
+            if path.is_file():
+                return path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return "TODO banner unavailable"
+        return None
+
+    def _clean_todo_tags(self, raw) -> list[str]:
+        if not isinstance(raw, list):
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for value in raw:
+            tag = re.sub(r"[^a-z0-9_-]+", "", str(value).strip().lower())[:30]
+            if tag and tag not in seen:
+                seen.add(tag)
+                out.append(tag)
+        return out
+
+    def _handle_todos_list(self, qs: dict[str, list[str]]) -> None:
+        latest = list(self._todos_latest().values())
+        counts = {"open": 0, "resolved-suggested": 0, "resolved": 0, "archived": 0}
+        for todo in latest:
+            status = todo.get("status")
+            if status in counts:
+                counts[status] += 1
+
+        status_filter = (qs.get("status") or [""])[0]
+        tag_filter = (qs.get("tag") or [""])[0]
+
+        def matches(todo: dict) -> bool:
+            if status_filter and todo.get("status") != status_filter:
+                return False
+            if tag_filter:
+                tags = todo.get("tags") or []
+                if not isinstance(tags, list) or tag_filter not in {str(t) for t in tags}:
+                    return False
+            return True
+
+        todos = sorted((dict(todo) for todo in latest if matches(todo)), key=lambda row: row.get("id", ""))
+        self._json(200, {"todos": todos, "counts": counts, "banner": self._todos_banner()})
+
     def _handle_list(self, qs: dict[str, list[str]]) -> None:
         rel = (qs.get("path", [""])[0] or "").lstrip("/").replace("\\", "/")
         target = (ROOT / rel).resolve()
@@ -4098,6 +4406,98 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json(200, {"path": rel, "entries": entries})
 
     # ----- POST handlers -----
+    def _handle_todo_create(self, body: dict) -> None:
+        if not isinstance(body, dict):
+            self._json(400, {"error": "invalid request body"})
+            return
+        title = " ".join(str(body.get("title") or "").split())
+        if not title or len(title) > 280:
+            self._json(400, {"error": "title must be 1-280 characters"})
+            return
+
+        now = _todos_parser._utc_now()
+        latest = self._todos_latest()
+        source_ref = " ".join(str(body.get("source_ref") or "manual").split()) or "manual"
+        todo = {
+            "id": _todos_parser._allocate_id(latest, now),
+            "title": title,
+            "tags": self._clean_todo_tags(body.get("tags") or []),
+            "source": source_ref,
+            "source_ref": source_ref,
+            "status": "open",
+            "created_at": now,
+            "updated_at": now,
+            "captured_by": "manual",
+            "dedup_hash": _todos_parser._dedup_hash(source_ref, title),
+            "resolution": None,
+            "rejected_hashes": [],
+        }
+        _todos_parser._append_jsonl(_todos_parser._todos_path(ROOT), todo)
+        regen = _todos_parser.regen_markdown(ROOT)
+        payload = {"id": todo["id"], "todo": todo}
+        if not regen.get("ok", False):
+            payload["banner"] = regen.get("banner", "TODO.md export stale")
+        self._json(201, payload)
+
+    def _handle_todo_status(self, path: str, body: dict) -> None:
+        if not isinstance(body, dict):
+            self._json(400, {"error": "invalid request body"})
+            return
+        todo_id = path[len("/api/todos/"):-len("/status")].strip("/")
+        if not re.fullmatch(r"td_\d{4}-\d{2}-\d{2}_\d{3}", todo_id):
+            self._json(400, {"error": "invalid todo id"})
+            return
+        action = body.get("action")
+        if action not in {"done", "archive", "reopen", "accept-suggest", "reject-suggest"}:
+            self._json(400, {"error": "invalid action"})
+            return
+
+        current = self._todos_latest().get(todo_id)
+        if current is None:
+            self._json(404, {"error": "todo not found"})
+            return
+
+        now = _todos_parser._utc_now()
+        todo = dict(current)
+        todo["updated_at"] = now
+        if action == "done":
+            todo["status"] = "resolved"
+            todo["resolution"] = {"by": "manual", "at": now}
+        elif action == "archive":
+            todo["status"] = "archived"
+        elif action == "reopen":
+            todo["status"] = "open"
+            todo["resolution"] = None
+        elif action == "accept-suggest":
+            evidence = (current.get("resolution") or {}).get("evidence")
+            todo["status"] = "resolved"
+            todo["resolution"] = {"by": "manual-accept", "at": now}
+            if evidence:
+                todo["resolution"]["evidence"] = evidence
+        elif action == "reject-suggest":
+            evidence = (current.get("resolution") or {}).get("evidence")
+            rejected = list(current.get("rejected_hashes") or [])
+            if evidence and evidence not in rejected:
+                rejected.append(evidence)
+            todo["status"] = "open"
+            todo["resolution"] = None
+            todo["rejected_hashes"] = rejected
+
+        _todos_parser._append_jsonl(_todos_parser._todos_path(ROOT), todo)
+        regen = _todos_parser.regen_markdown(ROOT)
+        payload = {"todo": todo}
+        if not regen.get("ok", False):
+            payload["banner"] = regen.get("banner", "TODO.md export stale")
+        self._json(200, payload)
+
+    def _handle_todos_scan(self) -> None:
+        scan = _todos_parser.scan_and_append(ROOT, captured_by="scan-now")
+        resolved = _todos_parser.auto_resolve(ROOT)
+        self._json(200, {
+            "added": int(scan.get("added", 0)),
+            "suggested": int(resolved.get("suggested", 0)),
+        })
+
     def _handle_memory(self, body: dict) -> None:
         topic = (body.get("topic") or "").strip()
         fact = (body.get("fact") or "").strip()
@@ -4381,12 +4781,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except OSError:
                 continue
             task = _lookup_session_task(p.stem) if idx < TASK_PREVIEW_LIMIT else None
+            title = _lookup_session_title(p.stem) if idx < TASK_PREVIEW_LIMIT else None
             items.append({
                 "session_id": p.stem,
                 "size_bytes": st.st_size,
                 "modified": _dt.datetime.fromtimestamp(st.st_mtime, _dt.timezone.utc).isoformat(timespec="seconds"),
                 "path": str(p.relative_to(tdir.parent)),
                 "task": task,
+                "title": title,
             })
         self._json(200, {"transcripts": items, "dir": str(tdir)})
 
@@ -5738,36 +6140,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         files: list[str] = []
         git = _safe_which("git")
         if git:
-            try:
-                out = subprocess.run(
-                    [git, "ls-files"], cwd=str(ROOT), capture_output=True,
-                    text=True, timeout=5,
-                )
-                if out.returncode == 0:
-                    for line in out.stdout.splitlines():
-                        if not line:
-                            continue
-                        # Apply SKIP_DIRS to the git-fast path too — tracked
-                        # secrets under .venv/ / node_modules/ / vendor/ used
-                        # to be enumerable via ?prefix= because the filter
-                        # only protected the slow rglob fallback.
-                        if any(part in SKIP_DIRS for part in line.split("/")):
-                            continue
-                        # Don't reveal secret-named files in the autocomplete
-                        # suggestion list either — _handle_file_read blocks
-                        # reading them but mere discovery is also a leak.
-                        base = line.rsplit("/", 1)[-1].lower()
-                        if (base in self._BLOCKED_NAMES
-                                or base.startswith(self._BLOCKED_NAME_PREFIXES)
-                                or base.endswith(self._BLOCKED_NAME_SUFFIXES)):
-                            continue
-                        if prefix and prefix not in line.lower():
-                            continue
-                        files.append(line)
-                        if len(files) >= limit:
-                            break
-            except (subprocess.TimeoutExpired, OSError):
-                files = []
+            # Cache hits are invalidated by .git/index mtime so autocomplete
+            # doesn't spawn ``git ls-files`` on every keystroke.
+            lines = _git_lsfiles_cached(ROOT)
+            if lines is None:
+                try:
+                    out = subprocess.run(
+                        [git, "ls-files"], cwd=str(ROOT), capture_output=True,
+                        text=True, timeout=5,
+                    )
+                    if out.returncode == 0:
+                        lines = out.stdout.splitlines()
+                        _git_lsfiles_put(ROOT, lines)
+                except (subprocess.TimeoutExpired, OSError):
+                    lines = None
+            if lines is not None:
+                for line in lines:
+                    if not line:
+                        continue
+                    # Apply SKIP_DIRS to the git-fast path too — tracked
+                    # secrets under .venv/ / node_modules/ / vendor/ used
+                    # to be enumerable via ?prefix= because the filter
+                    # only protected the slow rglob fallback.
+                    if any(part in SKIP_DIRS for part in line.split("/")):
+                        continue
+                    # Don't reveal secret-named files in the autocomplete
+                    # suggestion list either — _handle_file_read blocks
+                    # reading them but mere discovery is also a leak.
+                    base = line.rsplit("/", 1)[-1].lower()
+                    if (base in self._BLOCKED_NAMES
+                            or base.startswith(self._BLOCKED_NAME_PREFIXES)
+                            or base.endswith(self._BLOCKED_NAME_SUFFIXES)):
+                        continue
+                    if prefix and prefix not in line.lower():
+                        continue
+                    files.append(line)
+                    if len(files) >= limit:
+                        break
         # Fallback: walk the repo when ``git ls-files`` isn't available
         # (no-git checkouts, broken HEAD, etc.). ``SKIP_DIRS`` keeps the
         # walk off the obvious hot paths (``.git/objects`` alone can be
@@ -6386,14 +6795,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # conversation records so the browser doesn't choke parsing the
             # entire backlog. For non-chat jobs (orchestrate/plan/codex) the
             # log file is dashboard-owned and small; full dump stays.
+            # Re-check status under lock after subscriber registration — closes the EOF-publish race that hangs terminal-status streams for MAX_SSE_SESSION_S.
             with JOBS_LOCK:
                 j_now = JOBS.get(job_id)
                 catchup_kind = (j_now or {}).get("kind")
-                # Re-read status fresh: between registration and now the
-                # runner may have published EOF (status -> done/failed) or
-                # _evict_old_jobs may have popped the entry entirely. In
-                # either case the runner won't deliver any more chunks, so
-                # blocking on q.get() below would hang until MAX_SSE_SESSION_S.
                 status = (j_now or {}).get("status")
             if log_path and Path(log_path).exists():
                 try:
@@ -6406,7 +6811,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if existing:
                     self._write_sse_frame(existing)
 
-            if status not in {"running", "queued"}:
+            if status in _TERMINAL_JOB_STATUSES or j_now is None:
                 # Job already finished (or entry evicted) — close immediately
                 # after catch-up rather than entering the live-tail loop.
                 self._write_sse_event("end", "{}")
@@ -6440,6 +6845,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if chunk is None:
                     self._write_sse_event("end", "{}")
                     return
+                if isinstance(chunk, dict) and chunk.get("type") == "resync":
+                    self._write_sse_event("resync", json.dumps(chunk))
+                    continue
                 if not self._write_sse_frame(chunk):
                     return
         finally:
@@ -6448,6 +6856,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     subs.remove(q)
                 except ValueError:
                     pass
+            with _DROP_COUNTS_LOCK:
+                counts = _DROP_COUNTS.get(job_id)
+                if counts:
+                    counts.pop(id(q), None)
+                    if not counts:
+                        _DROP_COUNTS.pop(job_id, None)
 
     def _write_sse_frame(self, text: str) -> bool:
         """Encode ``text`` as one SSE ``data:`` frame; one logical line per
@@ -6730,6 +7144,12 @@ def main() -> None:
     # Replay the on-disk job ledger so sessions, costs and history
     # survive `python serve.py` restarts.
     _load_persisted_jobs()
+    import atexit, signal
+    atexit.register(_shutdown_all_ptys)
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: (_shutdown_all_ptys(), sys.exit(0)))
+    except (ValueError, OSError):
+        pass
     # Prune stale per-job .log files. Chat jobs route to claude's
     # transcript now so the dir mostly holds demo/orchestrate/codex logs;
     # this keeps it bounded.
@@ -6765,6 +7185,12 @@ def main() -> None:
             print(f"[dashboard] configured port {PORT} unavailable; using {bound}")
         print(f"AI workflow dashboard: {url}")
         print("Press Ctrl+C to stop.")
+        # _pty_idle_loop calls Pty.cleanup_idle() periodically for stale PTYs.
+        threading.Thread(
+            target=_pty_idle_loop,
+            name="pty-idle-cleanup",
+            daemon=True,
+        ).start()
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

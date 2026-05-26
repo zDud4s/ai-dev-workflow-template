@@ -1,3 +1,4 @@
+import inspect
 import sys, pathlib, json, threading, os
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / ".ai" / "dashboard"))
@@ -219,3 +220,9 @@ def test_apply_improvement_atomic_replace_failure_preserves_original(tmp_path, m
 
     assert ok is False
     assert skill_path.read_text(encoding="utf-8") == "ORIGINAL"
+
+
+def test_validate_template_url_narrow_except():
+    src = inspect.getsource(serve._validate_template_url)
+    assert "except (ValueError, TypeError):" in src
+    assert "except Exception:" not in src

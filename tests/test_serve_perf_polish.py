@@ -140,6 +140,83 @@ def test_sse_handler_checks_session_cap():
 
 
 # ---------------------------------------------------------------------------
+# AC5/AC6 - SSE terminal recheck and slow-subscriber resync
+# ---------------------------------------------------------------------------
+
+
+def test_job_stream_terminal_status_recheck():
+    src = inspect.getsource(serve.Handler._handle_job_stream)
+    assert (
+        "# Re-check status under lock after subscriber registration — closes the EOF-publish race "
+        "that hangs terminal-status streams for MAX_SSE_SESSION_S."
+    ) in src
+    assert re.search(r"subs\.append\(q\).*?with JOBS_LOCK", src, flags=re.S)
+    assert "status in _TERMINAL_JOB_STATUSES" in src
+
+
+class _StreamHandler:
+    headers = {}
+    _write_sse_event = serve.Handler._write_sse_event
+    _write_sse_frame = serve.Handler._write_sse_frame
+
+    def __init__(self) -> None:
+        self.status_code: int | None = None
+        self.response_headers: list[tuple[str, str]] = []
+        self.wfile = io.BytesIO()
+
+    def send_response(self, code: int) -> None:
+        self.status_code = code
+
+    def send_header(self, key: str, value: str) -> None:
+        self.response_headers.append((key, value))
+
+    def end_headers(self) -> None:
+        return None
+
+    def _json(self, status: int, payload: dict) -> None:
+        self.status_code = status
+        self.wfile.write(str(payload).encode("utf-8"))
+
+
+def test_completed_job_stream_terminates_fast():
+    job_id = "done-job"
+    with serve.JOBS_LOCK:
+        saved_jobs = dict(serve.JOBS)
+        serve.JOBS.clear()
+        serve.JOBS[job_id] = {
+            "id": job_id,
+            "kind": "plan",
+            "status": "done",
+            "log_path": None,
+            "subscribers": [],
+        }
+    handler = _StreamHandler()
+
+    try:
+        started = time.monotonic()
+        serve.Handler._handle_job_stream(handler, job_id)
+        elapsed = time.monotonic() - started
+    finally:
+        with serve.JOBS_LOCK:
+            serve.JOBS.clear()
+            serve.JOBS.update(saved_jobs)
+
+    assert elapsed < 1.0
+    assert handler.status_code == 200
+    assert b"event: end" in handler.wfile.getvalue()
+
+
+def test_publish_chunk_resync_on_drop():
+    src = inspect.getsource(serve._publish_chunk)
+    assert hasattr(serve, "_DROP_COUNTS")
+    assert hasattr(serve, "_DROP_COUNTS_LOCK")
+    assert "_DROP_THRESHOLD" in src
+    assert '"resync"' in src
+    assert '"slow"' in src
+    assert "put_nowait(None)" in src
+
+
+# ---------------------------------------------------------------------------
 # Fix 3 — SKIP_DIRS exclude in the files-list fallback walk
 # ---------------------------------------------------------------------------
 
@@ -173,6 +250,17 @@ def test_files_list_fallback_uses_skip_dirs():
 # ---------------------------------------------------------------------------
 # Fix 5 — _aggregate_skill_metrics uses the JSONL cache
 # ---------------------------------------------------------------------------
+
+
+def test_load_jsonl_cached_uses_deque():
+    src = inspect.getsource(serve._load_jsonl_cached)
+    assert "deque(maxlen=" in src
+
+
+def test_files_list_caches_git_index():
+    src = inspect.getsource(serve.Handler._handle_files_list)
+    assert "_git_lsfiles_cached" in src
+    assert ".git/index" in src
 
 
 def test_aggregate_skill_metrics_uses_cache():
