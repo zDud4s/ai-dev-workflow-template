@@ -24,6 +24,10 @@ Commands: <!-- exact commands to run after implementation -->
 Expected result: <!-- what success looks like -->
 
 ## Handoff
+
+## Follow-ups
+<!-- optional bullets feeding the TODO scanner; one per line -->
+
 <!-- executor fills this section after completing the work -->
 Files changed:
 Tests added:

@@ -1,6 +1,6 @@
 ---
 name: maintenance
-description: Maintain the mutable project layer after repo changes or completed tasks. Refresh project metadata, commands, boundaries, memory, and local guidance without changing the workflow core.
+description: Maintain mutable workflow metadata after repo changes without changing the workflow core.
 tools: Read, Glob, Grep, Edit, Write
 ---
 
@@ -12,20 +12,20 @@ If `.ai/project.yaml` has `project_name: unknown` and `stack` empty, STOP: "Run 
 
 ## Core principle
 
-The workflow core is immutable by default. Only maintain the mutable project layer unless the user explicitly asks for a core change.
+Workflow core is immutable by default; maintain only mutable project layer unless explicitly asked for core change.
 
-Immutable core: root AGENTS.md, escalation policy, packet schemas (`.ai/packets/*.md`), all files under `.claude/skills/*/SKILL.md` and `.agents/skills/*/SKILL.md` (planner, reviewer, rescue, maintenance, bootstrap, orchestrate, codex, agent-creator, agent-improver, plus any future skill), safety boundaries.
+Immutable core: root AGENTS.md, escalation policy, `.ai/packets/*.md`, `.claude/skills/*/SKILL.md`, `.agents/skills/*/SKILL.md`, safety boundaries.
 
 Mutable layer: `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md`, local AGENTS.md inside subdirectories.
 
 ## When to use
 
-- After bootstrap, or a task that revealed new repo facts
-- After build/package/CI changes, or new fragile modules
-- After repeated failures from stale metadata, or a review listing memory updates
+- After bootstrap or new repo facts
+- After build/package/CI changes or fragile modules
+- After stale-metadata failures or review memory updates
 - On "refresh" / "maintain" / "update the workflow"
 - When `.ai/memory.md` > 150 lines or has contradictions → consolidation pass
-- When entries > 25 words, yaml leaves carry prose, or files exceed token budget → density pass
+- When entries >25 words, yaml leaves carry prose, or files exceed budget → density pass
 
 ## Responsibilities
 
@@ -34,10 +34,11 @@ Mutable layer: `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md`, local AG
 3. Update ownership, important dirs, risky areas, do-not-touch zones in `.ai/project.yaml`.
 4. Append operational discoveries to `.ai/memory.md`.
 5. Record stable architectural decisions in `.ai/decisions.md` only with strong evidence.
-6. Tighten local subdirectory AGENTS.md when structure clearly changed.
-7. Remove disproven assumptions.
-8. Keep the project layer concise, factual, operational — phases pay token cost per line.
-9. Run a density pass when phrasing is verbose or files exceed budget.
+6. Scan TODOs — call `todos_parser.scan_and_append(repo)` then `todos_parser.auto_resolve(repo)`. Capture from `[followup]` lines in memory, `## Follow-ups` blocks in latest plan Handoff, and `TODO|FIXME|XXX` in diffs since last maintenance commit. Auto-resolve only SUGGESTS (`status="resolved-suggested"`); never closes. Allowed writes: `.ai/todos.jsonl`, `.ai/TODO.md`, `.ai/.todos.lock`, `.ai/dashboard/.todos-parser.log`.
+7. Tighten local subdirectory AGENTS.md when structure clearly changed.
+8. Remove disproven assumptions.
+9. Keep the project layer concise, factual, operational — phases pay token cost per line.
+10. Run a density pass when phrasing is verbose or files exceed budget.
 
 ## Never do without explicit user approval
 
@@ -50,7 +51,7 @@ Mutable layer: `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md`, local AG
 
 ## File-specific rules
 
-`.ai/project.yaml`: structured + compact. Repo-evidence only; assumptions explicit. **Budget ~800 tokens (~3200 chars).** Leaves ≤30 chars; no prose, decorative descriptions, or empty/null placeholders.
+`.ai/project.yaml`: structured + compact; evidence-backed; assumptions explicit. **Budget ~800 tokens (~3200 chars).** Leaves ≤30 chars; no prose, decorative descriptions, or empty/null placeholders.
 
 `.ai/memory.md`: format `- YYYY-MM-DD [topic] fact`. Drop stale when disproven. Not a changelog. Consolidate on trigger. **Budget ~2000 tokens (~8000 chars, ~150 dense lines).** ≤15 words/entry; one fact/line; paths and commands in backticks.
 
@@ -83,7 +84,7 @@ Append-only memory accumulates duplicates, contradictions, stale facts. Trigger 
 
 Report: entries before/after, lines before/after, deduplicated (with examples), merged, dropped (line + reason), archived count, conflicts surfaced, final lines, compaction ratio (`before/after`, 2dp), threshold update.
 
-Archive is human-inspection-only; no phase loads it. Do NOT silently rewrite user facts — every removal/merge appears in the output.
+Archive is human-inspection-only; no phase loads it. Do NOT silently rewrite facts — report every removal/merge.
 
 ### Adaptive threshold
 
