@@ -7,10 +7,17 @@ INDEX_HTML = ROOT / ".ai" / "dashboard" / "index.html"
 TODOS_JS = ROOT / ".ai" / "dashboard" / "app" / "todos.js"
 
 
-def test_todos_view_registered_between_memory_and_decisions():
+def test_todos_view_registered_in_tasks_section_before_plans():
     src = INDEX_HTML.read_text(encoding="utf-8")
-    assert src.index('id="tab-memory"') < src.index('id="tab-todos"') < src.index('id="tab-decisions"')
-    assert src.index('id="view-memory"') < src.index('id="view-todos"') < src.index('id="view-decisions"')
+    # Tab lives in the "tasks" nav section, before Plans/Specs/Packets.
+    tasks_label = src.index('class="section-label" role="presentation">tasks<')
+    tab_todos = src.index('id="tab-todos"')
+    tab_plans = src.index('id="tab-plans"')
+    assert tasks_label < tab_todos < tab_plans
+    # The section element placement is independent of the tab order (tab
+    # activates via data-view, not DOM proximity), so we only assert it
+    # exists.
+    assert 'id="view-todos"' in src
 
 
 def test_todos_js_purifies_title():
