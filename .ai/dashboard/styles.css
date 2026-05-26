@@ -208,7 +208,7 @@
     header {
       grid-area: header;
       display: grid;
-      grid-template-columns: 272px 1fr auto auto;
+      grid-template-columns: 272px 1fr auto auto auto;
       align-items: stretch;
       background: linear-gradient(180deg, var(--panel) 0%, var(--void-2) 100%);
       border-bottom: 1px solid var(--border);
@@ -350,6 +350,64 @@
       letter-spacing: 0.18em;
       text-transform: uppercase;
       border-left: 1px solid var(--border-soft);
+    }
+    /* ---- Topbar usage bars (Claude / Codex 5h utilization) ----
+       Icon-only labels per design: the SVG mark identifies the tool,
+       no text name. Bars share the masthead's HUD aesthetic. */
+    header .header-usage {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: stretch;
+      gap: 4px;
+      padding: 6px var(--s-4);
+      border-left: 1px solid var(--border-soft);
+    }
+    header .usage-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      color: var(--text-2);
+    }
+    header .usage-item[data-tool="claude"] { color: var(--accent); }
+    header .usage-item[data-tool="codex"]  { color: var(--magenta); }
+    header .usage-ico {
+      display: block;
+      flex-shrink: 0;
+      filter: drop-shadow(0 0 4px currentColor);
+      opacity: 0.95;
+    }
+    header .usage-bar {
+      position: relative;
+      width: 96px;
+      height: 6px;
+      background: oklch(20% 0.02 240 / 0.55);
+      border: 1px solid var(--border-soft);
+      overflow: hidden;
+    }
+    header .usage-bar-fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 0%;
+      background: linear-gradient(90deg, currentColor, color-mix(in oklch, currentColor 60%, transparent));
+      box-shadow: 0 0 8px currentColor;
+      transition: width 0.4s var(--easing);
+    }
+    header .usage-item[data-state="warn"] .usage-bar-fill { background: var(--warning, #d8a02c); color: var(--warning, #d8a02c); }
+    header .usage-item[data-state="crit"] .usage-bar-fill { background: var(--magenta); color: var(--magenta); }
+    header .usage-item[data-state="na"]   { opacity: 0.45; }
+    header .usage-item[data-state="na"] .usage-bar-fill { display: none; }
+    header .usage-pct {
+      min-width: 34px;
+      text-align: right;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      header .usage-bar-fill { transition: none; }
     }
     .refresh {
       all: unset;
@@ -3432,6 +3490,7 @@
       header h1 { display: none; }
       header .project { font-size: 22px; padding: 14px var(--s-4); }
       header .project::before { display: none; }
+      header .header-usage { display: none; }
       nav {
         flex-direction: row;
         flex-wrap: wrap;

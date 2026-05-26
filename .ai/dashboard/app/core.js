@@ -354,6 +354,30 @@
         const metaEl = document.getElementById("ov-rl-meta");
         const metaBits = [];
 
+        // Topbar usage bars. The cards above show the full breakdown; the
+        // header shows just the 5h utilization per tool as an at-a-glance
+        // strip. Coerce nullish/NaN to "na" so the bar dims rather than
+        // pinning to 0% and looking like a healthy quota.
+        function setHeaderUsage(tool, pct) {
+          const item = document.querySelector(`.usage-item[data-tool="${tool}"]`);
+          const bar = document.getElementById(`usage-bar-${tool}`);
+          const fill = bar ? bar.querySelector(".usage-bar-fill") : null;
+          const pctEl = document.getElementById(`usage-pct-${tool}`);
+          if (!item || !bar || !fill || !pctEl) return;
+          const n = pct == null || isNaN(pct) ? null : Math.max(0, Math.min(100, Number(pct)));
+          if (n === null) {
+            item.dataset.state = "na";
+            fill.style.width = "0%";
+            pctEl.textContent = "—";
+            bar.setAttribute("aria-valuenow", "0");
+            return;
+          }
+          item.dataset.state = n >= 90 ? "crit" : n >= 70 ? "warn" : "ok";
+          fill.style.width = n + "%";
+          pctEl.textContent = formatPct(n);
+          bar.setAttribute("aria-valuenow", String(Math.round(n)));
+        }
+
         // ----- Claude (OAuth /api/oauth/usage) -----
         const claudeRL = (u.claude || {}).rate_limits || null;
         if (claudeRL && claudeRL.available && claudeRL.data) {
@@ -362,8 +386,10 @@
           const sd = d.seven_day;
           if (fh) {
             claude5hEl.innerHTML = `<strong>${formatPct(fh.utilization)}</strong> <span style="color:var(--fg-dim);font-size:11px">${formatResetIn(fh.resets_at)}</span>`;
+            setHeaderUsage("claude", fh.utilization);
           } else {
             claude5hEl.textContent = "—";
+            setHeaderUsage("claude", null);
           }
           if (sd) {
             claudeWeekEl.innerHTML = `<strong>${formatPct(sd.utilization)}</strong> <span style="color:var(--fg-dim);font-size:11px">${formatResetIn(sd.resets_at)}</span>`;
@@ -385,6 +411,7 @@
           claude5hEl.innerHTML = errMarkup;
           claudeWeekEl.innerHTML = errMarkup;
           claudeModelsEl.textContent = "";
+          setHeaderUsage("claude", null);
         }
 
         // ----- Codex (rate_limits from latest token_count event) -----
@@ -406,9 +433,15 @@
           codex5hEl.textContent = "no data";
           codexWeekEl.textContent = "no data";
           metaBits.push("run codex once to populate");
+          setHeaderUsage("codex", null);
         } else {
           codex5hEl.innerHTML   = renderCodexWindow(codexRL.primary);
           codexWeekEl.innerHTML = renderCodexWindow(codexRL.secondary);
+          const p = codexRL.primary;
+          // Stale snapshots (resets_at in the past) are dimmed in the card
+          // strip; mirror that here by treating them as no-data rather than
+          // pretending the old number reflects current quota.
+          setHeaderUsage("codex", (p && !p.stale) ? p.used_percent : null);
           if (codexRL.plan_type) metaBits.push(`Codex plan: ${codexRL.plan_type}`);
           if (codexRL.last_event_at) {
             try {
