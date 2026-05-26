@@ -380,26 +380,17 @@
 
     async function suggestAgents() {
       const btn = $("#btn-suggest-agents");
-      const msg = $("#agent-suggest-msg");
       if (!btn) return;
       btn.disabled = true;
       btn.textContent = "Thinking…";
-      // Guard msg too: the button can exist without the inline message slot
-      // (e.g. partial DOM), so unguarded msg.textContent writes would throw.
-      if (msg) msg.textContent = "";
       try {
         const r = await fetch("/api/agents/suggest", { method: "POST" });
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
         const n = data.count || 0;
-        if (msg) {
-          msg.textContent = n > 0
-            ? `${n} new suggestion${n === 1 ? "" : "s"}`
-            : (data.note || "no suggestions");
-        }
+        setMsg("#agent-suggest-msg", "ok", `${n} new suggestion${n === 1 ? "" : "s"}`, 3000);
         await loadAgentProposals();
       } catch (e) {
-        if (msg) msg.textContent = "failed: " + e.message;
         setMsg("#agent-suggest-msg", "err", "Suggest failed: " + e.message);
       } finally {
         btn.disabled = false;

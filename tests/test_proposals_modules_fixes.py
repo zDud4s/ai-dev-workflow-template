@@ -134,3 +134,30 @@ def test_agent_modal_dismiss_handlers():
         "Escape modal handler should branch on #agent-proposal-modal and call "
         "closeAgentProposalModal"
     )
+
+
+def test_suggest_agents_single_feedback():
+    """Suggest agents should use the toast channel instead of inline msg writes."""
+    src = _src("agents.js")
+    fn_start = src.find("async function suggestAgents")
+    assert fn_start != -1, "expected suggestAgents function in agents.js"
+    next_fn = src.find("\n    async function ", fn_start + 1)
+    if next_fn == -1:
+        next_fn = src.find("\n    function ", fn_start + 1)
+    if next_fn == -1:
+        next_fn = len(src)
+    body = src[fn_start:next_fn]
+
+    assert not re.search(
+        r'const\s+msg\s*=\s*\$\("#agent-suggest-msg"\)|msg\.textContent\s*=|\$\("#agent-suggest-msg"\)\.textContent\s*=',
+        body,
+    ), "suggestAgents should not write inline #agent-suggest-msg textContent"
+    assert re.search(
+        r'setMsg\(\s*"#agent-suggest-msg"\s*,\s*"ok"\s*,\s*`\$\{n\} new suggestion',
+        body,
+    ), "suggestAgents success branch should emit an ok toast"
+    assert re.search(
+        r'catch\s*\([^)]*\)\s*\{[^}]*setMsg\(\s*"#agent-suggest-msg"\s*,\s*"err"',
+        body,
+        flags=re.DOTALL,
+    ), "suggestAgents failure branch should emit an error toast"

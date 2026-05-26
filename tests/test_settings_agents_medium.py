@@ -83,7 +83,15 @@ def test_agents_countEl_null_guarded():
 
 
 def test_agents_msg_null_guarded():
-    """msg.textContent writes in suggestAgents must be null-guarded."""
+    """Feedback in suggestAgents routes through setMsg('#agent-suggest-msg', ...)
+    on both success and failure paths.
+
+    Previously this test asserted that inline `msg.textContent = ...` writes
+    existed and were null-guarded. The P2 UX consolidation removed those
+    inline writes in favor of the centralized toast helper (`setMsg`), which
+    already handles null-target gracefully. The new assertion verifies the
+    consolidated single-feedback-channel design.
+    """
     src = _src("agents.js")
     # Restrict to the suggestAgents function body.
     m = re.search(r"async function suggestAgents\([^)]*\)\s*\{", src)
@@ -99,13 +107,19 @@ def test_agents_msg_null_guarded():
             depth -= 1
         i += 1
     body = src[m.end(): i]
-    # Every `msg.textContent = ...` write must be guarded by `if (msg)`
-    # in a small preceding window.
-    writes = list(re.finditer(r"msg\.textContent\s*=", body))
-    assert writes, "expected msg.textContent writes inside suggestAgents"
-    for w in writes:
-        window = body[max(0, w.start() - 120): w.end()]
-        assert "if (msg)" in window or "if (!msg) return" in window, (
-            "msg.textContent assignment inside suggestAgents at offset "
-            f"{w.start()} is not preceded by a null guard"
-        )
+    # No raw `msg.textContent = ...` writes should remain — all feedback
+    # must go through the toast helper.
+    raw_writes = re.findall(r"msg\.textContent\s*=", body)
+    assert not raw_writes, (
+        "suggestAgents must not write directly to msg.textContent — "
+        "use setMsg('#agent-suggest-msg', ...) instead"
+    )
+    # At least one setMsg call to the suggest-msg target must exist
+    # (success or failure path uses the consolidated channel).
+    setmsg_calls = re.findall(
+        r'setMsg\(\s*[\'"]#agent-suggest-msg[\'"]', body
+    )
+    assert setmsg_calls, (
+        "suggestAgents must route feedback through "
+        "setMsg('#agent-suggest-msg', ...) — single feedback channel"
+    )

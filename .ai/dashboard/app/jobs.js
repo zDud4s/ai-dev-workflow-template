@@ -36,6 +36,10 @@
       // bare `toggleDispatchMode()` invocation against a stripped shell would
       // otherwise null-deref `.dataset` / `.disabled`.
       if (!btn) return;
+      if (!window._modelsCache) {
+        setMsg("#toast-root", "warn", "Models still loading...", 4000);
+        return;
+      }
       const current = btn.dataset.current || "auto";
       const next = current === "auto" ? "manual" : "auto";
       btn.disabled = true;
@@ -1205,10 +1209,14 @@
         _eventsState.group = !!e.target.checked; renderEvents();
       }
     });
+    var _evSearchTimer = null;
     document.addEventListener("input", (e) => {
       if (e.target && e.target.id === "ev-search") {
-        _eventsState.search = e.target.value || "";
-        renderEvents();
+        clearTimeout(_evSearchTimer);
+        _evSearchTimer = setTimeout(() => {
+          _eventsState.search = e.target.value || "";
+          renderEvents();
+        }, 150);
       }
     });
     document.addEventListener("click", (e) => {

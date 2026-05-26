@@ -552,6 +552,7 @@
         <tbody>${rows}</tbody>
       </table>`;
       _modelsCache = models;
+      $("#dispatch-toggle")?.removeAttribute("disabled");
       // Wire ONE delegated click listener on the models table for Edit/Save
       // buttons (idempotent via module flag — canonical pattern from jobs.js).
       // Avoids inline onclick="" handlers which are a latent XSS pattern.
@@ -1008,6 +1009,8 @@ function renderMarkdown(el, text) {
         ["#dec-decision", "#dec-why", "#dec-consequence", "#dec-revisit"].forEach((s) => {
           const el = $(s); if (el) el.value = "";
         });
+        const dateEl = $("#dec-date");
+        if (dateEl) dateEl.value = new Date().toISOString().slice(0, 10);
         setMsg("#dec-msg", "ok", "decision added", 4000);
         const txt = await getText(".ai/decisions.md").catch(() => "");
         renderMarkdown($("#decisions-doc"), txt);

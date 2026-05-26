@@ -184,10 +184,18 @@ def test_main_meta_textcontent_null_guarded():
         "main.js should no longer have unguarded `$(\"#meta\").textContent`"
     )
     # Both branches must reference metaEl with a guard.
-    assert re.search(
-        r'if\s*\(\s*metaEl\s*\)\s*metaEl\.textContent\s*=\s*`updated',
-        src,
-    ), "Success path should guard metaEl before writing the timestamp"
+    guarded_block_idx = src.find("if (metaEl) {")
+    guarded_block = src[guarded_block_idx : guarded_block_idx + 700] if guarded_block_idx != -1 else ""
+    assert (
+        re.search(
+            r'if\s*\(\s*metaEl\s*\)\s*metaEl\.textContent\s*=\s*`updated',
+            src,
+        )
+        or (
+            'label.textContent = "updated"' in guarded_block
+            and "metaEl.appendChild" in guarded_block
+        )
+    ), "Success path should guard metaEl before writing the timestamp/status"
     assert re.search(
         r'if\s*\(\s*metaEl\s*\)\s*metaEl\.textContent\s*=\s*"error"',
         src,
@@ -255,4 +263,23 @@ def test_dec_decision_enter_submits():
     ), (
         "#dec-decision needs a guarded keydown handler that calls submitDecision "
         "when Enter is pressed"
+    )
+
+
+def test_dec_date_reset_on_submit():
+    """After a successful decision POST, #dec-date should reset to today."""
+    src = _src("core.js")
+    body = _function_body(src, "submitDecision")
+    post_idx = body.find('await postJson("/api/decisions", payload)')
+    ok_idx = body.find('setMsg("#dec-msg", "ok"', post_idx)
+    assert post_idx != -1 and ok_idx != -1, (
+        "submitDecision should still have a successful POST branch before the ok toast"
+    )
+    success_window = body[post_idx:ok_idx]
+    assert re.search(
+        r'const\s+dateEl\s*=\s*\$\("#dec-date"\)\s*;\s*if\s*\(\s*dateEl\s*\)\s*dateEl\.value\s*=\s*new\s+Date\(\)\.toISOString\(\)\.slice\(0,\s*10\)',
+        success_window,
+    ), (
+        "submitDecision success branch should reset #dec-date to today's "
+        "YYYY-MM-DD value after clearing the other inputs"
     )
