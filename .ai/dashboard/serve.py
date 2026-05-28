@@ -191,8 +191,8 @@ JOBS_DIR = ROOT / ".ai" / "dashboard" / "jobs"
 # restart. Last snapshot per ``id`` wins. Tests override this with a tmp
 # path via monkeypatch.
 JOBS_PERSIST_FILE = ROOT / ".ai" / "ledgers" / "jobs.jsonl"
-# Append-only telemetry stream written by .ai/dashboard/log_event.py (a
-# PostToolUse hook). The /api/timeline endpoint aggregates phase_dispatch
+# Append-only telemetry stream written by .ai/dashboard/scripts/log_event.py
+# (a PostToolUse hook). The /api/timeline endpoint aggregates phase_dispatch
 # events from this file. Tests override it via monkeypatch.
 EVENTS_FILE = ROOT / ".ai" / "ledgers" / "events.jsonl"
 # Append-only metrics stream written by the orchestrate skill, one line per

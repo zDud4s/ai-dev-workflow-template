@@ -970,7 +970,7 @@ def test_load_persisted_jobs_is_idempotent_when_file_missing(tmp_path, serve_mod
 def test_persist_job_refuses_default_path_under_pytest(serve_module):
     """Defensive guard: under pytest, ``_persist_job`` must NOT write the
     real repo ledger. Tests that forget to monkeypatch ``JOBS_PERSIST_FILE``
-    would otherwise pollute the developer's working ``.ai/dashboard/jobs.jsonl``
+    would otherwise pollute the developer's working ``.ai/ledgers/jobs.jsonl``
     with fixture entries (1800+ such pollution entries observed in the wild
     before this guard landed).
 

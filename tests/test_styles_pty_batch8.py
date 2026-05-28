@@ -37,11 +37,11 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 DASH = ROOT / ".ai" / "dashboard"
 STYLES_CSS = DASH / "styles.css"
 INDEX_HTML = DASH / "index.html"
-PTY_PY = DASH / "pty_session.py"
+PTY_PY = DASH / "scripts" / "pty_session.py"
 
-# Insert .ai/dashboard on sys.path so we can ``import pty_session`` directly
-# (matches the pattern used by every other ``test_pty_*.py`` in the suite).
-sys.path.insert(0, str(DASH))
+# Insert .ai/dashboard/scripts on sys.path so we can ``import pty_session``
+# directly (matches the pattern used by every other ``test_pty_*.py``).
+sys.path.insert(0, str(DASH / "scripts"))
 import pty_session as _pty  # noqa: E402  (path-injection requires this order)
 
 
