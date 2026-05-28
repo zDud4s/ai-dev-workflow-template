@@ -218,6 +218,9 @@
       if (typeof window.trapFocusInModal === "function") {
         window.trapFocusInModal(modal, closeSkillDetail);
       }
+      // Hide the improve action by default; we re-show it post-metrics
+      // only when it's actionable (project scope + room to improve).
+      _setImproveAction(null, source, null);
       const titleEl = $("#skill-detail-title");
       if (titleEl) titleEl.textContent = name + (cached ? ` · ${cached.source_label}` : "");
       const contentEl = $("#skill-detail-content");
@@ -302,6 +305,14 @@
           }</div>`;
       }
 
+      // Improve-now action gating. Only show the button when the skill
+      // is editable (project scope) AND there's something to fix. A
+      // skill at 100% success over a meaningful sample size doesn't
+      // need a button — running the improver would just burn LLM cost
+      // for a near-guaranteed "no change needed" result.
+      const metricsObj = (metrics.status === "fulfilled" && metrics.value) ? metrics.value : null;
+      _setImproveAction(name, source, metricsObj);
+
       // Recent invocations
       const recentList = (metrics.status === "fulfilled" && metrics.value && metrics.value.recent)
         ? metrics.value.recent : [];
@@ -359,6 +370,53 @@
       }
     }
 
+    // Thresholds for the "Improve now" gate. A skill that:
+    //   * isn't in project scope -> button hidden (backend would 404)
+    //   * has no telemetry yet -> button SHOWN (the operator probably
+    //     just created it and wants a first-pass structural audit)
+    //   * has < SUFFICIENT_SAMPLE invocations -> button SHOWN (success
+    //     rate isn't yet trustworthy enough to skip the audit)
+    //   * has >= SUFFICIENT_SAMPLE invocations AND success_rate >=
+    //     HEALTHY_RATE -> button HIDDEN (running the improver here would
+    //     almost certainly produce "no change needed")
+    var IMPROVE_HEALTHY_RATE = 1.0;       // 100% — only gate-off perfect skills
+    var IMPROVE_SUFFICIENT_SAMPLE = 5;    // need ≥5 jobs before we trust the rate
+
+    function _setImproveAction(skillName, source, metricsObj) {
+      const actionsEl = $("#skill-detail-actions");
+      const improveBtn = $("#skill-detail-improve");
+      const improveMsgEl = $("#skill-detail-improve-msg");
+      if (improveMsgEl) improveMsgEl.textContent = "";
+      if (!actionsEl || !improveBtn) return;
+      // Default: hide. We re-show only when the helper has enough info
+      // to commit to a decision (skillName !== null means metrics phase).
+      improveBtn.disabled = false;
+      improveBtn.textContent = "Improve now";
+      improveBtn.onclick = null;
+      if (source !== "project") {
+        actionsEl.hidden = true;
+        return;
+      }
+      if (skillName === null) {
+        // Synchronous prelude — defer the show/hide until we have metrics.
+        actionsEl.hidden = true;
+        return;
+      }
+      const totalJobs = (metricsObj && metricsObj.total_jobs) || 0;
+      const successRate = (metricsObj && metricsObj.success_rate);
+      const healthy = (
+        totalJobs >= IMPROVE_SUFFICIENT_SAMPLE &&
+        typeof successRate === "number" &&
+        successRate >= IMPROVE_HEALTHY_RATE
+      );
+      if (healthy) {
+        actionsEl.hidden = true;
+        return;
+      }
+      actionsEl.hidden = false;
+      improveBtn.onclick = () => triggerImproveNow(skillName);
+    }
+
     function closeSkillDetail() {
       const modal = $("#skill-detail-modal");
       if (modal) modal.hidden = true;
@@ -366,6 +424,64 @@
         window.releaseFocusTrap();
       }
       _currentSkillKey = null;
+    }
+
+    // Tracks the in-flight improve fetch so a rapid double-click on the
+    // "Improve now" button doesn't fire two concurrent backend audits for
+    // the same skill (the backend caps via _SUGGESTION_SEMAPHORE anyway,
+    // but a UI guard avoids the visible 429 flash).
+    var _improveInFlight = new Set();
+
+    async function triggerImproveNow(skillName) {
+      if (!skillName || _improveInFlight.has(skillName)) return;
+      _improveInFlight.add(skillName);
+      const btn = $("#skill-detail-improve");
+      const msgEl = $("#skill-detail-improve-msg");
+      const oldLabel = btn ? btn.textContent : "Improve now";
+      if (btn) { btn.disabled = true; btn.textContent = "auditing…"; }
+      if (msgEl) msgEl.textContent = "";
+      try {
+        const r = await fetch(
+          `/api/skills/${encodeURIComponent(skillName)}/improve`,
+          { method: "POST" }
+        );
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+        const status = data.status || "?";
+        const summary = data.change_summary || data.reason || "";
+        if (msgEl) {
+          msgEl.textContent = status === "applied"
+            ? `applied (${data.diff_lines || 0} lines): ${summary}`
+            : status === "pending"
+              ? `proposal ready (${data.diff_lines || 0} lines): ${summary}`
+              : status === "no_change"
+                ? `no change needed — ${summary}`
+                : `${status}: ${summary}`;
+        }
+        if (btn) btn.textContent = status === "applied" || status === "pending"
+          ? "audited ✓" : "no change";
+        // Refresh dependent views so the modal + page reflect new state.
+        if (data.proposal_id) {
+          await Promise.all([loadSkillProposals(), loadSkills()]);
+          // Re-open this skill's detail so history + recent reflect the
+          // new audit row; openProposalModal jumps straight to the diff.
+          setTimeout(() => openProposalModal(data.proposal_id), DRAFT_AUTOOPEN_MS);
+        } else {
+          // No new proposal — still refresh history list inside the modal.
+          await loadSkillProposals();
+        }
+      } catch (e) {
+        if (msgEl) msgEl.textContent = "failed: " + e.message;
+        if (btn) btn.textContent = "failed";
+        setMsg("#skill-improve", "err", "Improve failed: " + e.message);
+      } finally {
+        _improveInFlight.delete(skillName);
+        // Re-enable after a brief reset window so the user can read the
+        // result text before clicking again.
+        setTimeout(() => {
+          if (btn) { btn.disabled = false; btn.textContent = oldLabel; }
+        }, DRAFT_BUTTON_RESET_MS);
+      }
     }
 
     // ----- Skill proposals (Phase 2/3/5) -----

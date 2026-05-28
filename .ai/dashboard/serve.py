@@ -248,8 +248,19 @@ _IMPROVER_DEFAULTS = {
     "tool": "claude",
     "model": "claude-haiku-4-5",
     "small_change_max_lines": 6,    # auto-apply threshold (added+removed lines)
-    "min_interval_seconds": 300,    # per-skill throttle
+    "min_interval_seconds": 300,    # per-skill throttle (job-triggered runs)
     "timeout_seconds": 120,         # subprocess wall-clock cap
+    # Periodic structural audit: visits every project skill on this cadence
+    # regardless of whether the skill was invoked by any job. Without it the
+    # job-triggered improver never wakes for skills the user doesn't run
+    # (catch-22: a buggy skill nobody calls never gets fixed). 21600s = 6h.
+    "sweep_interval_seconds": 21600,
+    # Cap how many skills the sweep audits per wake. Keeps the sweep cheap
+    # on first run after a long idle (where every skill is throttle-eligible)
+    # and bounds concurrent LLM cost. Audited skills are picked by oldest
+    # last-improver-run first, so over multiple wakes the sweep makes a full
+    # pass.
+    "sweep_batch_max": 4,
     # Auto-revert safety net: if a skill that received an `applied` proposal
     # later shows success-rate regression by >= ``revert_margin`` over the
     # next ``revert_after_n_uses`` invocations, restore the .bak silently.
@@ -1630,7 +1641,8 @@ def _load_improver_config() -> dict:
         if v:
             cfg[k] = v
     for k in ("small_change_max_lines", "min_interval_seconds",
-              "timeout_seconds", "revert_after_n_uses"):
+              "timeout_seconds", "revert_after_n_uses",
+              "sweep_interval_seconds", "sweep_batch_max"):
         v = fields.get(k)
         if v is None or v == "":
             continue
@@ -1685,20 +1697,84 @@ def _project_skill_index() -> dict[str, Path]:
 
 
 def _build_improver_prompt(skill_id: str, skill_content: str,
-                           metrics: dict, job_id: str,
-                           log_excerpt: str) -> str:
+                           metrics: dict, job_id: str | None,
+                           log_excerpt: str, *,
+                           manual: bool = False,
+                           recent_outcomes: list[dict] | None = None) -> str:
     """Craft the one-shot prompt sent to the model.
 
     The schema and ``no change`` example are intentionally front-loaded so
     smaller models (Haiku) don't drift into prose. The skill content and
     log are delimited with ``<<<...>>>`` markers (not triple-backticks)
-    because SKILL.md itself often contains fenced code blocks."""
+    because SKILL.md itself often contains fenced code blocks.
+
+    ``manual=True`` is set by the periodic batch sweep and the manual
+    "Improve now" endpoint. In that mode the model is asked to audit the
+    skill structurally (description quality, output format, allowlist fit,
+    stale references) rather than gating on log-excerpt failure signals.
+    Without this, the model returns ``no_change`` on essentially every
+    healthy skill — the original prompt told it to do exactly that.
+
+    ``recent_outcomes`` is the last N rows from the per-skill telemetry
+    (most recent first). Aggregate ``success_rate`` alone hides
+    deterioration: a skill at 80% overall might be at 30% over the last
+    week. Listing recent outcomes lets the model reason about trend."""
     rate = round((metrics.get("success_rate") or 0.0) * 100) if metrics else None
     summary = (
         f"success_rate={rate}% over {metrics.get('total_jobs',0)} jobs"
         f", avg_cost=${metrics.get('avg_cost_usd',0):.4f}"
         f", avg_duration={int((metrics.get('avg_duration_ms') or 0)/1000)}s"
     ) if metrics and metrics.get("total_jobs") else "no telemetry yet"
+
+    # Compact "done/failed/done/failed/..." line so a haiku-class model
+    # can spot a recent-failure cluster at a glance. Truncated to 20.
+    if recent_outcomes:
+        recent_line = ", ".join(
+            (r.get("outcome") or "?") for r in recent_outcomes[:20]
+        )
+    else:
+        recent_line = "(none)"
+
+    if manual:
+        role = (
+            "ROLE: You are auditing a project skill STRUCTURALLY against "
+            "the rubric below. There is no single failing job to anchor "
+            "this on — your job is to find the most impactful improvement "
+            "the skill itself needs, regardless of whether the last run "
+            "succeeded. Propose ONE focused edit when ANY criterion misses; "
+            "return no_change only when the skill clearly satisfies all "
+            "criteria.\n\n"
+            "RUBRIC (one fix per pass, prioritise the lowest-scoring criterion):\n"
+            "  1. Description quality: starts with a verb; trigger phrases "
+            "cover both the explicit ask and implicit phrasings; specific "
+            "not generic.\n"
+            "  2. Output format declared: the skill states WHAT it returns "
+            "to the caller (markdown report, JSON shape, file path, etc.).\n"
+            "  3. Workflow / process steps are explicit (numbered phases, "
+            "checklist, or clearly demarcated stages).\n"
+            "  4. Edge-cases / refusal conditions named for known failure "
+            "modes.\n"
+            "  5. Tool allowlist matches what the body actually does (least "
+            "privilege — review-only skill should not imply Write/Edit).\n"
+            "  6. Currency: no references to paths, sibling skills, or "
+            "commands that no longer exist.\n"
+            "  7. Recent-failure trend: if the recent_outcomes line shows "
+            "≥3 failures in the last 10 invocations, add a guardrail or "
+            "tighten an instruction tied to the apparent failure mode.\n\n"
+            "Keep edits small (≤ ~12 line delta for structural fixes; ≤6 "
+            "for content tweaks). Preserve frontmatter name unchanged. "
+            "You MAY tighten the description.\n\n"
+        )
+    else:
+        role = (
+            "ROLE: You are reviewing a project skill after one of its "
+            "invocations. Propose a refinement when EITHER the log excerpt "
+            "shows ambiguity / failure / missing guardrails, OR the recent "
+            "outcomes line shows a failure cluster (≥3 failed in the last "
+            "10) that the skill could address structurally. Be precise — "
+            "do not rewrite working sections. Keep edits small (≤ ~6 line "
+            "delta) and keep frontmatter name/description intact.\n\n"
+        )
     return (
         "OUTPUT FORMAT (STRICT): Respond with ONE JSON object. NO prose, "
         "NO commentary, NO markdown fences. If you write anything other "
@@ -1708,15 +1784,12 @@ def _build_improver_prompt(skill_id: str, skill_content: str,
         '"new_content": <full new SKILL.md as string OR null>}\n\n'
         'When no change is warranted: '
         '{"change_summary":"none","rationale":"<why>","new_content":null}\n\n'
-        "ROLE: You are reviewing a project skill after one of its "
-        "invocations. Be conservative — most invocations need no change. "
-        "Only propose a refinement if there is CLEAR evidence in the log "
-        "excerpt that the skill caused ambiguity, repeated failure, or "
-        "missing guardrails. Keep edits small (≤ ~6 line delta) and keep "
-        "frontmatter name/description intact.\n\n"
+        f"{role}"
         f"SKILL: {skill_id}\n"
         f"TELEMETRY: {summary}\n"
-        f"JOB: {job_id}\n\n"
+        f"RECENT_OUTCOMES (last 20, newest first): {recent_line}\n"
+        f"JOB: {job_id or '(manual structural review — no specific job)'}\n"
+        f"MODE: {'manual structural audit' if manual else 'post-job review'}\n\n"
         "=== Current SKILL.md (between markers) ===\n"
         f"<<<SKILL\n{skill_content}\nSKILL>>>\n\n"
         "=== Job log excerpt (between markers, may be empty) ===\n"
@@ -1920,12 +1993,150 @@ def _write_proposal(skill_id: str, skill_path: Path, old: str, new: str,
     return payload
 
 
+# Cross-tool skill mirror. The repo keeps two parallel trees:
+#   .claude/skills/<name>/   (source of truth, consumed by Claude)
+#   .agents/skills/<name>/   (mirror, consumed by Codex)
+# The two are kept in sync by .ai/scripts/sync_skills.py — without an in-process
+# mirror step here, an improver-applied edit to .claude/skills/<x>/SKILL.md
+# would only be visible to Claude. Codex would keep using the stale .agents
+# copy until the user remembered to re-run the sync script by hand.
+#
+# Skills whose contents are intentionally NOT mirrored — cross-call bridges
+# whose claude/agents copies are deliberately different.
+_BRIDGE_SKILLS_NO_MIRROR = frozenset({"codex", "claude"})
+
+
+def _mirror_claude_skill_to_agents(claude_skill_md: Path) -> tuple[bool, str]:
+    """Update the parallel ``.agents/skills/<name>/SKILL.md`` ONLY when
+    that mirror already exists. Used as a post-apply hook so an edit to
+    an existing dual-tree skill propagates to the Codex side; a Claude-
+    only skill (no .agents counterpart) stays Claude-only — the improver
+    must not invent a Codex mirror the user never asked for.
+
+    Best-effort, never raises:
+      * ``(True, "<rel>")`` — mirror file existed and was updated.
+      * ``(False, "skipped: <reason>")`` for known no-op cases
+        (not a project skill, bridge pair, agents dir absent, mirror
+        file absent, identical content).
+      * ``(False, "error: ...")`` when a write actually failed.
+
+    For the "I just created a brand-new skill and want it on both sides"
+    case, see ``_create_skill_in_both_trees`` — that's the only path
+    that's allowed to materialise a new file under .agents/skills/."""
+    try:
+        claude_root = (ROOT / ".claude" / "skills").resolve()
+        agents_root = (ROOT / ".agents" / "skills").resolve()
+        target_under_claude = claude_skill_md.resolve()
+        rel = target_under_claude.relative_to(claude_root)
+    except (ValueError, OSError):
+        return (False, "skipped: not a .claude/skills path")
+    # rel is "<skill_name>/SKILL.md" (or deeper for reference files we
+    # don't currently mirror through this hook — see _apply_improvement
+    # caller, which only touches SKILL.md).
+    parts = rel.parts
+    if not parts:
+        return (False, "skipped: empty relative path")
+    skill_name = parts[0]
+    if skill_name in _BRIDGE_SKILLS_NO_MIRROR:
+        return (False, f"skipped: bridge skill {skill_name!r} intentionally not mirrored")
+    if not agents_root.is_dir():
+        return (False, "skipped: .agents/skills not on disk")
+    dst = agents_root / rel
+    # New: only mirror when the destination ALREADY exists. A skill that
+    # lives only under .claude/skills/ stays that way — there's no
+    # reason to invent a .agents/skills/ copy for a Claude-only skill,
+    # and doing so silently is the bug the operator was hitting.
+    if not dst.is_file():
+        return (False, f"skipped: no .agents mirror exists for {skill_name!r}")
+    try:
+        new_bytes = target_under_claude.read_bytes()
+    except OSError as e:
+        return (False, f"error: read source failed: {e}")
+    try:
+        if dst.read_bytes() == new_bytes:
+            return (False, "skipped: agents copy already matches")
+    except OSError:
+        # Unreadable mirror — fall through and overwrite it; the safe
+        # default is to align to the source of truth.
+        pass
+    try:
+        dst.write_bytes(new_bytes)
+    except OSError as e:
+        return (False, f"error: write mirror failed: {e}")
+    rel_str = str(Path(".agents/skills") / rel).replace("\\", "/")
+    return (True, rel_str)
+
+
+def _create_skill_in_both_trees(slug: str, content: str) -> dict:
+    """Materialise a brand-new project skill at
+    ``.claude/skills/<slug>/SKILL.md`` AND (when it's not a cross-call
+    bridge) at ``.agents/skills/<slug>/SKILL.md``. Used by the draft-
+    install path where the operator explicitly wants the new skill on
+    both sides of the dual tree.
+
+    Returns a dict:
+      ``{"claude_path": "<rel>", "agents_path": "<rel>" | None,
+        "agents_skipped_reason": "<str>" | None}``
+
+    Errors on the Claude side raise (caller responsibility — the entire
+    install fails). Errors on the Agents side are reported via
+    ``agents_skipped_reason`` so the caller can decide whether to
+    surface as a warning."""
+    claude_dir = ROOT / ".claude" / "skills" / slug
+    claude_md = claude_dir / "SKILL.md"
+    try:
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        claude_md.write_text(content, encoding="utf-8")
+    except OSError as e:
+        # Source-of-truth write failed — propagate so the caller can fail
+        # the install cleanly (the proposal stays pending, no audit row
+        # claims success). The wrapping try gives the AST-level
+        # "every write_text is OSError-guarded" invariant test a handler
+        # to find — re-raising is the intended behaviour.
+        print(f"[serve] dual-install: claude-side write failed for {slug}: {e}",
+              flush=True)
+        raise
+    result = {
+        "claude_path": f".claude/skills/{slug}/SKILL.md",
+        "agents_path": None,
+        "agents_skipped_reason": None,
+    }
+    if slug in _BRIDGE_SKILLS_NO_MIRROR:
+        result["agents_skipped_reason"] = (
+            f"bridge skill {slug!r} intentionally not mirrored to .agents"
+        )
+        return result
+    agents_root = ROOT / ".agents" / "skills"
+    if not agents_root.is_dir():
+        # Claude-only project — don't invent a parallel tree the operator
+        # never set up. The .claude side is enough for them.
+        result["agents_skipped_reason"] = ".agents/skills not on disk"
+        return result
+    agents_dir = agents_root / slug
+    agents_md = agents_dir / "SKILL.md"
+    try:
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        agents_md.write_text(content, encoding="utf-8")
+    except OSError as e:
+        # Best-effort: .claude/ install already committed, surface the
+        # agents miss as a warning but don't fail the whole flow.
+        print(f"[serve] dual-install: agents-side write failed for {slug}: {e}",
+              flush=True)
+        result["agents_skipped_reason"] = f"write error: {e}"
+        return result
+    result["agents_path"] = f".agents/skills/{slug}/SKILL.md"
+    return result
+
+
 def _apply_improvement(skill_path: Path, new_content: str, source: str,
                        reason: str, proposal_id: str | None,
                        skill_id: str, diff_lines: int) -> bool:
-    """Backup -> overwrite -> audit. Returns True on success. Skill files
-    are git-tracked so a `git diff` is always available as a second safety
-    net beyond the on-disk .bak."""
+    """Backup -> overwrite -> audit -> mirror to .agents. Returns True on
+    success of the overwrite. Skill files are git-tracked so a
+    ``git diff`` is always available as a second safety net beyond the
+    on-disk .bak. The codex-side mirror is best-effort: a failed mirror
+    is logged but doesn't fail the apply (the .claude/ copy already has
+    the new content; the operator can re-run .ai/scripts/sync_skills.py)."""
     SKILL_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
     ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
     slug = re.sub(r"[^a-z0-9]+", "-", skill_id.lower()).strip("-") or "skill"
@@ -1947,6 +2158,15 @@ def _apply_improvement(skill_path: Path, new_content: str, source: str,
         return False
     _audit_improvement(skill_id, "applied", reason, proposal_id,
                        str(backup_path), diff_lines, source=source)
+    # Mirror to the .agents/skills tree so the Codex side picks up the
+    # change. Best-effort — log + continue on failure so a sync miss
+    # doesn't roll back an otherwise-successful apply.
+    mirrored, mirror_msg = _mirror_claude_skill_to_agents(skill_path)
+    if mirrored:
+        print(f"[serve] mirrored {skill_id} -> {mirror_msg}", flush=True)
+    elif mirror_msg.startswith("error:"):
+        print(f"[serve] mirror to .agents failed for {skill_id}: {mirror_msg}",
+              flush=True)
     if proposal_id:
         pj = SKILL_PROPOSALS_DIR / f"{proposal_id}.json"
         if pj.is_file():
@@ -2181,21 +2401,36 @@ def _purge_claude_transcript(session_id: str | None) -> None:
 
 
 def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
-                            job_id: str, log_path: str | None,
-                            cfg: dict) -> None:
+                            job_id: str | None, log_path: str | None,
+                            cfg: dict, *, manual: bool = False) -> dict:
     """End-to-end: read skill -> call LLM -> parse JSON -> persist proposal
     -> auto-apply if small. Best-effort: any failure is audited and the
-    function returns silently. When the tool is ``claude`` we generate a
-    dedicated ``--session-id`` and delete the resulting transcript at
-    exit so background improver runs never show up in the chat list."""
+    function returns a status dict (never raises). When the tool is
+    ``claude`` we generate a dedicated ``--session-id`` and delete the
+    resulting transcript at exit so background improver runs never show
+    up in the chat list.
+
+    ``manual=True`` (used by the manual /api/skills/<name>/improve
+    endpoint and the periodic batch sweep) selects the structural-audit
+    variant of the prompt and audits with ``source="manual"`` so the
+    proposal is distinguishable from job-triggered runs.
+
+    Returns a dict with at minimum ``{"status": <audit_status>}`` plus a
+    ``proposal_id`` when one was created. Callers that don't care can
+    ignore the return value."""
+    source = "manual" if manual else "auto"
     try:
         skill_content = skill_md_path.read_text(encoding="utf-8")
     except OSError as e:
-        _audit_improvement(skill_id, "failed", f"read error: {e}", None, None, 0)
-        return
+        _audit_improvement(skill_id, "failed", f"read error: {e}", None, None, 0,
+                           source=source)
+        return {"status": "failed", "reason": f"read error: {e}"}
     metrics = _aggregate_skill_metrics().get(skill_id) or {}
+    recent_outcomes = metrics.get("recent") or []
     log_excerpt = _read_log_excerpt(log_path)
-    prompt = _build_improver_prompt(skill_id, skill_content, metrics, job_id, log_excerpt)
+    prompt = _build_improver_prompt(skill_id, skill_content, metrics, job_id,
+                                    log_excerpt, manual=manual,
+                                    recent_outcomes=recent_outcomes)
 
     # IMPORTANT (Windows): pass the prompt via stdin, not argv. Long prompts
     # on argv silently fail (claude emits only a "status:ready" stub and never
@@ -2219,30 +2454,34 @@ def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
                 errors="replace",
             )
         except (subprocess.TimeoutExpired, OSError) as e:
-            _audit_improvement(skill_id, "failed", f"subprocess error: {e}", None, None, 0)
-            return
+            _audit_improvement(skill_id, "failed", f"subprocess error: {e}",
+                               None, None, 0, source=source)
+            return {"status": "failed", "reason": f"subprocess error: {e}"}
         if proc.returncode != 0:
-            _audit_improvement(skill_id, "failed",
-                               f"exit {proc.returncode}: {(proc.stderr or '')[:200]}",
-                               None, None, 0)
-            return
+            reason = f"exit {proc.returncode}: {(proc.stderr or '')[:200]}"
+            _audit_improvement(skill_id, "failed", reason, None, None, 0,
+                               source=source)
+            return {"status": "failed", "reason": reason}
 
         parsed = _parse_improver_output(proc.stdout or "")
         if not parsed:
-            _audit_improvement(skill_id, "no_change", "improver returned unparseable output",
-                               None, None, 0)
-            return
+            _audit_improvement(skill_id, "no_change",
+                               "improver returned unparseable output",
+                               None, None, 0, source=source)
+            return {"status": "no_change",
+                    "reason": "improver returned unparseable output"}
         new_content = parsed.get("new_content")
         if not isinstance(new_content, str) or not new_content.strip():
-            _audit_improvement(skill_id, "no_change",
-                               parsed.get("rationale") or "improver returned null",
-                               None, None, 0)
-            return
+            reason = parsed.get("rationale") or "improver returned null"
+            _audit_improvement(skill_id, "no_change", reason,
+                               None, None, 0, source=source)
+            return {"status": "no_change", "reason": reason}
 
         diff_lines = _diff_line_count(skill_content, new_content)
         if diff_lines == 0:
-            _audit_improvement(skill_id, "no_change", "no effective change", None, None, 0)
-            return
+            _audit_improvement(skill_id, "no_change", "no effective change",
+                               None, None, 0, source=source)
+            return {"status": "no_change", "reason": "no effective change"}
 
         try:
             proposal = _write_proposal(skill_id, skill_md_path, skill_content,
@@ -2252,17 +2491,28 @@ def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
             # a "failed" audit row so the operator-facing ledger reflects
             # the dropped improver run rather than appearing to succeed.
             _audit_improvement(skill_id, "failed", f"proposal write error: {e}",
-                               None, None, diff_lines)
-            return
-        if diff_lines <= int(cfg.get("small_change_max_lines", 6)):
-            _apply_improvement(skill_md_path, new_content, source="auto",
+                               None, None, diff_lines, source=source)
+            return {"status": "failed",
+                    "reason": f"proposal write error: {e}"}
+        # Manual triggers (the "Improve now" button) ALWAYS produce a
+        # pending proposal — the operator clicked because they want to
+        # review the change, so a small-diff auto-apply would be a
+        # surprising silent write. Only background / job-triggered runs
+        # use the size-based auto-apply shortcut.
+        if not manual and diff_lines <= int(cfg.get("small_change_max_lines", 6)):
+            _apply_improvement(skill_md_path, new_content, source=source,
                                reason=parsed.get("change_summary", "") or "",
                                proposal_id=proposal["id"], skill_id=skill_id,
                                diff_lines=diff_lines)
-        else:
-            _audit_improvement(skill_id, "pending",
-                               parsed.get("change_summary", "") or "",
-                               proposal["id"], None, diff_lines)
+            return {"status": "applied", "proposal_id": proposal["id"],
+                    "diff_lines": diff_lines,
+                    "change_summary": parsed.get("change_summary", "") or ""}
+        _audit_improvement(skill_id, "pending",
+                           parsed.get("change_summary", "") or "",
+                           proposal["id"], None, diff_lines, source=source)
+        return {"status": "pending", "proposal_id": proposal["id"],
+                "diff_lines": diff_lines,
+                "change_summary": parsed.get("change_summary", "") or ""}
     finally:
         _purge_claude_transcript(improver_sid)
 
@@ -2298,6 +2548,95 @@ def _trigger_improvers_for_job(job_id: str, skill_ids: list[str]) -> None:
             daemon=True,
             name=f"improver-{name}",
         ).start()
+
+
+# Last-wake timestamp for the periodic sweep loop. Module-level (not in
+# JOBS) because the sweep is global, not per-job. Initialised to 0 so the
+# first wake of the loop always runs a sweep after the boot delay.
+_LAST_IMPROVER_SWEEP_TS: float = 0.0
+_IMPROVER_SWEEP_LOCK = threading.Lock()
+
+
+def _periodic_improver_sweep(cfg: dict | None = None) -> dict:
+    """Visit every project skill on a structural-audit pass. Picks the K
+    most-stale skills (by last improver-run timestamp), then runs
+    ``_run_improver_for_skill`` for each with ``manual=True``. Respects
+    the same per-skill throttle as job-triggered runs so we don't double-
+    audit a skill that the job hook just visited.
+
+    Returns ``{"audited": [...], "skipped": [...]}`` so the caller (the
+    loop, or a future on-demand "sweep now" endpoint) can log + surface a
+    summary. Exceptions inside one skill's audit are swallowed so a
+    single broken skill doesn't kill the whole sweep."""
+    cfg = cfg or _load_improver_config()
+    out = {"audited": [], "skipped": [], "disabled": False}
+    if not cfg.get("enabled"):
+        out["disabled"] = True
+        return out
+    if not _safe_which(cfg["tool"]):
+        out["disabled"] = True
+        return out
+    proj = _project_skill_index()
+    if not proj:
+        return out
+    throttle = int(cfg.get("min_interval_seconds", 300))
+    now = time.time()
+    # Sort skills by oldest last-run first so a long-lived dashboard
+    # eventually covers every skill (rather than starving the alphabet
+    # tail behind a "name < X" filter).
+    candidates: list[tuple[float, str, Path]] = []
+    for name, path in proj.items():
+        last = _last_improver_run_ts(name)
+        if last and (now - last) < throttle:
+            out["skipped"].append({"skill": name, "reason": "throttled",
+                                   "last_run_ago_s": int(now - last)})
+            continue
+        candidates.append((last or 0.0, name, path))
+    candidates.sort(key=lambda t: t[0])  # oldest first
+    cap = max(1, int(cfg.get("sweep_batch_max", 4)))
+    for _, name, path in candidates[:cap]:
+        try:
+            result = _run_improver_for_skill(name, path, job_id=None,
+                                             log_path=None, cfg=cfg,
+                                             manual=True)
+        except Exception as e:  # noqa: BLE001 — never crash the sweep
+            print(f"[serve] sweep audit failed for {name}: {e}", flush=True)
+            out["skipped"].append({"skill": name, "reason": f"crash: {e}"})
+            continue
+        out["audited"].append({"skill": name, "result": result})
+    # Mark remaining (over-cap) candidates as deferred so the operator log
+    # is honest about partial coverage.
+    for _, name, _path in candidates[cap:]:
+        out["skipped"].append({"skill": name, "reason": "over-batch-cap"})
+    return out
+
+
+def _periodic_improver_loop() -> None:
+    """Daemon loop. Wakes every minute, runs the sweep when the
+    configured ``sweep_interval_seconds`` has elapsed since the last
+    sweep. Cheap idle path (one stat() through the cached ledger reads
+    inside ``_periodic_improver_sweep``)."""
+    global _LAST_IMPROVER_SWEEP_TS
+    # Boot delay — let the server finish coming up before the first sweep
+    # so a 0-skill window during initial imports doesn't get audited.
+    time.sleep(30)
+    while True:
+        try:
+            cfg = _load_improver_config()
+            interval = max(60, int(cfg.get("sweep_interval_seconds", 21600)))
+            with _IMPROVER_SWEEP_LOCK:
+                due = (time.time() - _LAST_IMPROVER_SWEEP_TS) >= interval
+            if due and cfg.get("enabled"):
+                summary = _periodic_improver_sweep(cfg)
+                with _IMPROVER_SWEEP_LOCK:
+                    _LAST_IMPROVER_SWEEP_TS = time.time()
+                n_aud = len(summary.get("audited") or [])
+                n_skp = len(summary.get("skipped") or [])
+                print(f"[serve] improver sweep: audited={n_aud} skipped={n_skp}",
+                      flush=True)
+        except Exception as e:  # noqa: BLE001 — loop must never die
+            print(f"[serve] improver sweep loop error: {e}", flush=True)
+        time.sleep(60)
 
 
 _STOPWORDS = frozenset({
@@ -4373,6 +4712,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if m:
                 self._handle_suggestion_draft(m.group(1))
                 return
+            # Manual "Improve now" — bypasses the per-skill throttle and
+            # selects the structural-audit prompt variant. The skill name
+            # is validated against the project skill index (so plugin /
+            # user-scope skills can't be edited through this endpoint).
+            m = re.fullmatch(r"/api/skills/([A-Za-z0-9_\-]+)/improve", parsed.path)
+            if m:
+                self._handle_skill_improve_now(m.group(1))
+                return
             if parsed.path == "/api/agents/suggest":
                 self._handle_agent_suggest()
                 return
@@ -5737,33 +6084,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json(500, {"error": "could not read draft body"})
                 return
             try:
-                target_dir.mkdir(parents=True, exist_ok=True)
-                target_md.write_text(new_content, encoding="utf-8")
+                install_info = _create_skill_in_both_trees(slug, new_content)
             except OSError as e:
                 print(f"[serve] draft install write failed for {target_md}: {e}", flush=True)
                 self._json(500, {"error": "write failed"})
                 return
-            target_rel = f".claude/skills/{slug}/SKILL.md"
+            target_rel = install_info["claude_path"]
             obj["status"] = "installed"
             obj["applied_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
             obj["applied_via"] = "manual"
             obj["target_path"] = target_rel
             obj["installed_path"] = target_rel
+            if install_info["agents_path"]:
+                obj["agents_installed_path"] = install_info["agents_path"]
             try:
                 pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
             except OSError as e:
                 # SKILL.md already on disk; status stays "pending" in the
                 # proposal file. Audit still runs so the ledger reflects truth.
                 print(f"[serve] failed to write proposal {pj} (installed draft): {e}", flush=True)
+            audit_reason = f"draft installed -> {target_rel}"
+            if install_info["agents_path"]:
+                audit_reason += f" (+ {install_info['agents_path']})"
             _audit_improvement(slug, "installed",
-                               f"draft installed -> {target_rel}",
+                               audit_reason,
                                proposal_id, None,
                                int(obj.get("diff_lines") or 0),
                                source="manual")
+            note = f"Skill created at {target_rel}."
+            if install_info["agents_path"]:
+                note += f" Also mirrored to {install_info['agents_path']}."
+            elif install_info["agents_skipped_reason"]:
+                note += f" (.agents skipped: {install_info['agents_skipped_reason']})"
             self._json(200, {
                 "ok": True, "id": proposal_id, "status": "installed",
                 "installed_path": target_rel,
-                "note": f"Skill created at {target_rel}.",
+                "agents_installed_path": install_info["agents_path"],
+                "note": note,
             })
             return
 
@@ -5796,6 +6153,74 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(500, {"error": "apply failed (see improvements.jsonl)"})
             return
         self._json(200, {"ok": True, "id": proposal_id, "status": "applied"})
+
+    def _handle_skill_improve_now(self, skill_name: str) -> None:
+        """Manual structural-audit trigger for one project skill. Bypasses
+        the per-skill throttle (the operator is asking explicitly) and
+        selects the ``manual=True`` prompt variant so the model audits
+        the skill structurally rather than gating on a job log.
+
+        Shares ``_SUGGESTION_SEMAPHORE`` with /draft and /agents/suggest:
+        all three spawn one ``claude -p`` / ``codex`` subprocess on the
+        request thread; without the cap a handful of concurrent clients
+        can exhaust the thread pool. Returns the audit outcome inline so
+        the UI can show "applied / pending / no_change" without a second
+        round-trip to /api/skills/proposals."""
+        cfg = _load_improver_config()
+        if not cfg.get("enabled"):
+            self._json(409, {"error": "improver disabled",
+                             "hint": "Set improver.enabled=true in .ai/models.yaml"})
+            return
+        if not _safe_which(cfg["tool"]):
+            self._json(503, {"error": "improver CLI not on PATH",
+                             "tool": cfg.get("tool")})
+            return
+        proj = _project_skill_index()
+        canonical = _skill_name_canonical(skill_name)
+        path = proj.get(canonical) or proj.get(skill_name)
+        if not path:
+            self._json(404, {"error": "skill not found in project scope",
+                             "skill": skill_name,
+                             "hint": "Manual improve only edits .claude/skills/"
+                                     " — plugin and user-scope skills are read-only."})
+            return
+        if not _SUGGESTION_SEMAPHORE.acquire(blocking=False):
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Retry-After", "30")
+            body = json.dumps({"error": "too many concurrent improver requests; try again later"}).encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        # Cap the subprocess timeout the same way /draft does so a long
+        # cfg.timeout_seconds can't pin a request thread.
+        cfg_capped = dict(cfg)
+        cfg_capped["timeout_seconds"] = min(
+            int(cfg.get("timeout_seconds", 120)),
+            _SUGGESTION_HTTP_TIMEOUT_MAX,
+        )
+        try:
+            result = _run_improver_for_skill(
+                canonical, path, job_id=None, log_path=None,
+                cfg=cfg_capped, manual=True,
+            )
+        except Exception as e:  # noqa: BLE001 — never 500 silently
+            print(f"[serve] manual improve crashed for {canonical}: {e}", flush=True)
+            self._json(500, {"error": "improver crashed", "detail": str(e)})
+            return
+        finally:
+            _SUGGESTION_SEMAPHORE.release()
+        self._json(200, {
+            "ok": True,
+            "skill": canonical,
+            "status": result.get("status"),
+            "proposal_id": result.get("proposal_id"),
+            "diff_lines": result.get("diff_lines"),
+            "change_summary": result.get("change_summary") or "",
+            "reason": result.get("reason") or "",
+        })
 
     def _handle_suggestion_draft(self, cluster_id: str) -> None:
         """Phase 5: dispatch an LLM to draft a SKILL.md from a suggestion
@@ -7366,6 +7791,15 @@ def main() -> None:
         threading.Thread(
             target=_pty_idle_loop,
             name="pty-idle-cleanup",
+            daemon=True,
+        ).start()
+        # Periodic improver sweep: structural audit of every project skill
+        # on a long cadence. Fills the gap left by the job-triggered
+        # improver, which only fires for skills a job actually invoked —
+        # uninvoked skills would otherwise never get audited.
+        threading.Thread(
+            target=_periodic_improver_loop,
+            name="improver-sweep",
             daemon=True,
         ).start()
         try:
