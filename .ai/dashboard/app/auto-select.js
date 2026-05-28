@@ -1,5 +1,5 @@
 /* Auto-select rankings view — fetches /api/auto-select and renders per-group
- * candidate tables (top 3). Powered by .ai/metrics.jsonl (PR 3).
+ * candidate tables (top 3). Powered by .ai/ledgers/metrics.jsonl (PR 3).
  */
 (function () {
   "use strict";
@@ -172,7 +172,7 @@
           `<div class="tl-empty">No ranked groups yet. The planner needs at least ${effective} record(s) per ` +
           `<code>(tool, model, effort)</code> for a <code>(phase, size, risk, budget)</code> tuple ` +
           `before adaptive scoring kicks in. Lower the threshold above, or run more tasks with ` +
-          `<code>auto_select.enabled: true</code> to populate <code>.ai/metrics.jsonl</code>.</div>`;
+          `<code>auto_select.enabled: true</code> to populate <code>.ai/ledgers/metrics.jsonl</code>.</div>`;
         return;
       }
       root.innerHTML = groups.map(renderGroup).join("");

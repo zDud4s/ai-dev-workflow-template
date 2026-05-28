@@ -127,7 +127,13 @@ _EXTERNAL_REF_PREFIXES = (
 # the repo tree but are produced at runtime, never checked in. Skip
 # resolution rather than pretending the repo should ship them.
 _RUNTIME_GENERATED_REFS = frozenset({
-    ".ai/todos.jsonl",
+    ".ai/ledgers/todos.jsonl",
+    ".ai/ledgers/todos-archive.jsonl",
+    ".ai/ledgers/events.jsonl",
+    ".ai/ledgers/metrics.jsonl",
+    ".ai/ledgers/jobs.jsonl",
+    ".ai/ledgers/skill_metrics.jsonl",
+    ".ai/ledgers/improvements.jsonl",
     ".ai/TODO.md",
     ".ai/.todos.lock",
     ".ai/dashboard/.todos-parser.log",

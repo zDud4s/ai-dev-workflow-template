@@ -37,7 +37,7 @@ def _empty_commit(repo: Path, message: str) -> str:
 
 
 def _write_jsonl(repo: Path, rows: list[dict]) -> None:
-    path = repo / ".ai" / "todos.jsonl"
+    path = repo / ".ai" / "ledgers" / "todos.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as f:
         for row in rows:
@@ -63,7 +63,7 @@ def _todo(title: str, rejected_hashes: list[str] | None = None) -> dict:
 
 
 def _latest(repo: Path) -> dict:
-    rows = todos_parser._load_jsonl(repo / ".ai" / "todos.jsonl")
+    rows = todos_parser._load_jsonl(repo / ".ai" / "ledgers" / "todos.jsonl")
     return rows[-1]
 
 

@@ -14,7 +14,7 @@ def _write(path: Path, text: str) -> None:
 
 
 def _append_rows(repo: Path, rows: list[dict]) -> None:
-    path = repo / ".ai" / "todos.jsonl"
+    path = repo / ".ai" / "ledgers" / "todos.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as f:
         for row in rows:
@@ -114,12 +114,12 @@ def test_regen_failure_leaves_jsonl_intact_and_banner_set(tmp_path, monkeypatch)
     repo = tmp_path / "repo"
     _append_rows(repo, [_todo("td_2026-05-26_001", "Keep source of truth")])
     _write(repo / ".ai" / "TODO.md", "old export\n")
-    before = (repo / ".ai" / "todos.jsonl").read_text(encoding="utf-8")
+    before = (repo / ".ai" / "ledgers" / "todos.jsonl").read_text(encoding="utf-8")
 
     monkeypatch.setattr(todos_parser, "_acquire_lock", lambda _path: None)
 
     result = todos_parser.regen_markdown(repo)
 
     assert result == {"ok": False, "banner": "TODO.md export stale"}
-    assert (repo / ".ai" / "todos.jsonl").read_text(encoding="utf-8") == before
+    assert (repo / ".ai" / "ledgers" / "todos.jsonl").read_text(encoding="utf-8") == before
     assert (repo / ".ai" / "TODO.md").read_text(encoding="utf-8") == "old export\n"

@@ -12,7 +12,7 @@ Serves the whole repo as static files (read-only) plus a small JSON API:
     POST /api/decisions    {date, decision,
                             why, consequence,
                             revisit}            ->  appends to .ai/decisions.md
-    POST /api/events/clear                      ->  truncates .ai/events.jsonl
+    POST /api/events/clear                      ->  truncates .ai/ledgers/events.jsonl
     POST /api/models/dispatch_mode {mode}       ->  flips dispatch_mode in
                                                     .ai/models.yaml
 
@@ -183,20 +183,20 @@ JOBS_DIR = ROOT / ".ai" / "dashboard" / "jobs"
 # JSON line so the dashboard can rebuild the JOBS dict after a server
 # restart. Last snapshot per ``id`` wins. Tests override this with a tmp
 # path via monkeypatch.
-JOBS_PERSIST_FILE = ROOT / ".ai" / "dashboard" / "jobs.jsonl"
+JOBS_PERSIST_FILE = ROOT / ".ai" / "ledgers" / "jobs.jsonl"
 # Append-only telemetry stream written by .ai/dashboard/log_event.py (a
 # PostToolUse hook). The /api/timeline endpoint aggregates phase_dispatch
 # events from this file. Tests override it via monkeypatch.
-EVENTS_FILE = ROOT / ".ai" / "events.jsonl"
+EVENTS_FILE = ROOT / ".ai" / "ledgers" / "events.jsonl"
 # Append-only metrics stream written by the orchestrate skill, one line per
 # dispatched phase. Powers the /api/auto-select ranking. See the orchestrate
 # skill "## Metrics logging" section for the schema.
-METRICS_FILE = ROOT / ".ai" / "metrics.jsonl"
+METRICS_FILE = ROOT / ".ai" / "ledgers" / "metrics.jsonl"
 # Append-only ledger of per-(skill, job) invocations. The auto skill-improver
 # (Phase 2+) reads this to decide which skills need adapting. One line per
 # unique skill invoked in a job; the entry-skill of orchestrate/plan jobs is
 # always credited even when the log isn't stream-json.
-SKILL_METRICS_FILE = ROOT / ".ai" / "dashboard" / "skill_metrics.jsonl"
+SKILL_METRICS_FILE = ROOT / ".ai" / "ledgers" / "skill_metrics.jsonl"
 # Auto-improver storage. Proposals are dropped here as JSON + .old.md + .new.md
 # triples so the dashboard can render a diff and the user can Accept / Reject.
 # Backups of overwritten SKILL.md content go to SKILL_BACKUPS_DIR; every
@@ -204,7 +204,7 @@ SKILL_METRICS_FILE = ROOT / ".ai" / "dashboard" / "skill_metrics.jsonl"
 # ledger for forensic readability.
 SKILL_PROPOSALS_DIR  = ROOT / ".ai" / "dashboard" / "skill_proposals"
 SKILL_BACKUPS_DIR    = ROOT / ".ai" / "dashboard" / "skill_backups"
-IMPROVEMENTS_LEDGER  = ROOT / ".ai" / "dashboard" / "improvements.jsonl"
+IMPROVEMENTS_LEDGER  = ROOT / ".ai" / "ledgers" / "improvements.jsonl"
 _JOBS_PERSIST_LOCK = threading.Lock()
 _IMPROVEMENTS_LEDGER_LOCK = threading.Lock()
 _SKILL_METRICS_LOCK = threading.Lock()
@@ -444,7 +444,7 @@ def _persist_job(job_id: str) -> None:
     # the test explicitly monkeypatched JOBS_PERSIST_FILE to a tmp path.
     # Without this, tests that import serve and trigger _persist_job
     # transitively (without per-test monkeypatch) silently pollute the
-    # developer's working .ai/dashboard/jobs.jsonl with hundreds of fake
+    # developer's working .ai/ledgers/jobs.jsonl with hundreds of fake
     # entries per pytest run.
     if os.environ.get("PYTEST_CURRENT_TEST") and JOBS_PERSIST_FILE == _DEFAULT_JOBS_PERSIST_FILE:
         return
@@ -4492,7 +4492,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # at class load so symlinks and Windows case differences cannot bypass.
     # The dashboard intentionally reads other project files (.ai/memory.md,
     # .ai/decisions.md, .ai/project.yaml, .ai/models.yaml, .ai/plans/*,
-    # .ai/specs/*, .ai/packets/*, .ai/events.jsonl, .claude/skills/*) via this
+    # .ai/specs/*, .ai/packets/*, .ai/ledgers/events.jsonl, .claude/skills/*) via this
     # handler — those must keep working, so we blocklist instead of allowlist.
     _BLOCKED_PATHS = tuple(
         os.path.normcase(os.path.realpath(str(p)))
@@ -5049,7 +5049,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """GET /api/events?tail=N — parsed events.jsonl with optional tail.
 
         Replaces the previous client-side approach of fetching the raw
-        .ai/events.jsonl static file and re-parsing every line each poll.
+        .ai/ledgers/events.jsonl static file and re-parsing every line each poll.
         With ``tail=N`` (default 2000, max 5000) only the most recent N
         rows are returned, so a 100k-event ledger no longer triggers a
         multi-second freeze on every 5s refresh.
@@ -5072,7 +5072,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         })
 
     def _handle_events_clear(self) -> None:
-        path = ROOT / ".ai" / "events.jsonl"
+        path = EVENTS_FILE
         # Audit-log the truncation BEFORE doing it. /api/events/clear is a
         # CSRF-gated POST but it's still an audit-erasing primitive — record
         # who/when so a future investigator can see when the ledger was wiped.
@@ -5288,12 +5288,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json(200, _aggregate_project_token_usage())
 
     def _handle_timeline(self) -> None:
-        """Pipeline Gantt data — phase_dispatch events from .ai/events.jsonl
+        """Pipeline Gantt data — phase_dispatch events from .ai/ledgers/events.jsonl
         grouped per session_id. Powers the Timeline view."""
         self._json(200, {"runs": _load_timeline_runs()})
 
     def _handle_auto_select(self, parsed) -> None:
-        """Auto-select scorer ranking — aggregated from .ai/metrics.jsonl.
+        """Auto-select scorer ranking — aggregated from .ai/ledgers/metrics.jsonl.
         Powers the Auto-select view. Accepts `?min_samples=N` (clamp 1..50,
         default 3); invalid values fall back to the default."""
         raw = urllib.parse.parse_qs(parsed.query or "").get("min_samples", [None])[0]
@@ -6150,7 +6150,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             diff_lines=int(obj.get("diff_lines") or 0),
         )
         if not ok:
-            self._json(500, {"error": "apply failed (see improvements.jsonl)"})
+            self._json(500, {"error": "apply failed (see .ai/ledgers/improvements.jsonl)"})
             return
         self._json(200, {"ok": True, "id": proposal_id, "status": "applied"})
 

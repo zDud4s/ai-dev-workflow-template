@@ -183,7 +183,7 @@
           <summary>How auto-select ranking works</summary>
           <div class="tl-hint">
             Ranking per <code>(phase, size, risk, budget)</code> tuple, computed from
-            <code>.ai/metrics.jsonl</code> (the orchestrator appends one line per dispatched phase).
+            <code>.ai/ledgers/metrics.jsonl</code> (the orchestrator appends one line per dispatched phase).
             Candidates with <strong>fewer than <span id="auto-select-threshold-label">3</span> samples</strong> are excluded; groups with no
             qualifying candidates are omitted. The planner's adaptive scorer ranks with the
             same formula: <code>0.6·success_rate + 0.2·(1-norm_duration) + 0.2·budget_align</code>.

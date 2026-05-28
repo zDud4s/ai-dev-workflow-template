@@ -17,7 +17,7 @@ auto_select:
   token_budget: high              # low | medium | high
   phases: [execute, review, rescue]
   # scope: project                # null/absent = all phases; else list of phase names to apply auto-selection to
-  adaptive: false                 # When true, planner scores against .ai/metrics.jsonl
+  adaptive: false                 # When true, planner scores against .ai/ledgers/metrics.jsonl
 
 dispatch_mode: auto    # auto | manual
 

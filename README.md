@@ -182,7 +182,7 @@ What was attempted: <summary>
 What failed: <evidence>
 ```
 
-Manual runs **don't** emit a `.ai/metrics.jsonl` row, so the adaptive selector can't score them. The orchestrator surfaces them as `source=manual` when replayed through the pipeline.
+Manual runs **don't** emit a `.ai/ledgers/metrics.jsonl` row, so the adaptive selector can't score them. The orchestrator surfaces them as `source=manual` when replayed through the pipeline.
 
 ## Dashboard
 
@@ -198,11 +198,11 @@ It serves the repo as read-only static files plus a small JSON / SSE / WebSocket
 
 - Browsing `.ai/plans/` and `.ai/specs/`
 - Appending entries to `memory.md` and `decisions.md` from the UI
-- Tailing `.ai/events.jsonl` in real time, clearing it on demand
+- Tailing `.ai/ledgers/events.jsonl` in real time, clearing it on demand
 - Flipping `dispatch_mode` between `auto` and `manual`
 - Spawning `orchestrate` and `planner` subprocesses, streaming their logs, and writing to their stdin
 
-Events and per-job logs (`.ai/events.jsonl`, `.ai/dashboard/jobs/`) are gitignored.
+Events and per-job logs (`.ai/ledgers/events.jsonl`, `.ai/dashboard/jobs/`) are gitignored.
 
 ## Skills
 
@@ -251,8 +251,7 @@ Filled packets flow via stdin / temp files. Editing `.ai/packets/*.md` during a 
 │   ├── memory.md                   # Operational facts
 │   ├── decisions.md                # Stable architecture decisions
 │   ├── memory-archive.md           # Append-only by consolidation; never read by phases
-│   ├── events.jsonl                # Append-only telemetry stream (gitignored)
-│   ├── metrics.jsonl               # Per-dispatch metrics (gitignored)
+│   ├── ledgers/                    # Append-only JSONL streams (events, metrics, jobs, todos) — gitignored
 │   ├── plans/                      # Persistent filled plans for medium/large tasks
 │   ├── specs/                      # Persistent spec documents
 │   ├── packets/
@@ -269,7 +268,7 @@ Filled packets flow via stdin / temp files. Editing `.ai/packets/*.md` during a 
 │       ├── index.html              # Local web UI
 │       ├── styles.css
 │       ├── serve.py                # Static + JSON/SSE/WS server
-│       ├── log_event.py            # PostToolUse hook → events.jsonl
+│       ├── log_event.py            # PostToolUse hook → .ai/ledgers/events.jsonl
 │       ├── app/                    # Split frontend modules (core/skills/jobs/terminals)
 │       └── jobs/                   # Per-job log dirs (gitignored)
 ├── .claude/

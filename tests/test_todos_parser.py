@@ -32,7 +32,7 @@ def _commit_all(repo: Path, message: str) -> str:
 
 
 def _latest(repo: Path) -> dict[str, dict]:
-    rows = todos_parser._load_jsonl(repo / ".ai" / "todos.jsonl")
+    rows = todos_parser._load_jsonl(repo / ".ai" / "ledgers" / "todos.jsonl")
     return {row["id"]: row for row in rows}
 
 
@@ -110,7 +110,7 @@ def test_dedup_hash_is_idempotent(tmp_path):
     first = todos_parser.scan_and_append(repo, last_sha=base)
     second = todos_parser.scan_and_append(repo, last_sha=base)
 
-    rows = todos_parser._load_jsonl(repo / ".ai" / "todos.jsonl")
+    rows = todos_parser._load_jsonl(repo / ".ai" / "ledgers" / "todos.jsonl")
     assert first["added"] == 1
     assert second["updated"] == 1
     assert len({row["id"] for row in rows}) == 1
