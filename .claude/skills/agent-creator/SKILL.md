@@ -49,7 +49,7 @@ Read [`references/agent-template.md`](references/agent-template.md) and summariz
 
 After approval, write exactly one new file: `.claude/agents/<name>.md`. The file must follow the approved spec and the template shape. Use an explicit `tools:` allowlist and include enough trigger examples in the description for reliable invocation.
 
-If `.claude/agents/` does not exist, create the directory only as part of writing the approved agent file. If the target file exists, do not overwrite it.
+If `.claude/agents/` does not exist, run `mkdir -p .claude/agents` via Bash first. Do not overwrite if the target file already exists; suggest using `agent-improver` instead.
 
 ### Phase 5: Suggest improver audit
 

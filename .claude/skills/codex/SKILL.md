@@ -1,6 +1,6 @@
 ---
 name: codex
-description: Use when the user asks to run Codex CLI (codex exec, codex resume) or references OpenAI Codex for code analysis, refactoring, or automated editing
+description: Use when the user asks to run the codex CLI (codex exec, codex resume) for code analysis, refactoring, or automated editing
 tools: Read, Bash, AskUserQuestion
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: bootstrap
-description: Adapt the workflow scaffold to the current repository. Use only when onboarding a repo or when project metadata is incomplete or stale.
+description: Initialize workflow scaffolding for a repository. Trigger when onboarding a new repository or when project metadata is incomplete or stale; outputs stack analysis and scaffold configuration.
 tools: Read, Glob, Grep, Bash, Edit, Write
 ---
 
