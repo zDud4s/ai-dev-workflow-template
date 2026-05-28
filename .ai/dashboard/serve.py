@@ -64,12 +64,19 @@ import uuid
 from collections import deque
 from pathlib import Path
 
+# Helper modules live in the sibling `scripts/` folder. Inject it onto
+# sys.path so direct invocation (`python .ai/dashboard/serve.py`) and
+# tests that load serve via importlib both resolve the imports below.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent / "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
 # PTY helper (cross-platform). The Terminals page can spawn real shell
 # sessions in addition to the existing chat-claude / chat-codex panes;
 # this module wraps POSIX `pty.fork` and Windows `pywinpty.PtyProcess`
 # behind one interface.
-import pty_session as _pty_session  # noqa: E402 — sibling module
-import todos_parser as _todos_parser  # noqa: E402 — sibling module
+import pty_session as _pty_session  # noqa: E402 — scripts/ helper
+import todos_parser as _todos_parser  # noqa: E402 — scripts/ helper
 
 PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
 # The actually-bound port. Diverges from PORT when main()'s dynamic-port
@@ -202,8 +209,8 @@ SKILL_METRICS_FILE = ROOT / ".ai" / "ledgers" / "skill_metrics.jsonl"
 # Backups of overwritten SKILL.md content go to SKILL_BACKUPS_DIR; every
 # decision (auto-apply, manual-apply, reject, skip) is appended to the
 # ledger for forensic readability.
-SKILL_PROPOSALS_DIR  = ROOT / ".ai" / "dashboard" / "skill_proposals"
-SKILL_BACKUPS_DIR    = ROOT / ".ai" / "dashboard" / "skill_backups"
+SKILL_PROPOSALS_DIR  = ROOT / ".ai" / "dashboard" / "proposals" / "skills"
+SKILL_BACKUPS_DIR    = ROOT / ".ai" / "dashboard" / "proposals" / "skill_backups"
 IMPROVEMENTS_LEDGER  = ROOT / ".ai" / "ledgers" / "improvements.jsonl"
 _JOBS_PERSIST_LOCK = threading.Lock()
 _IMPROVEMENTS_LEDGER_LOCK = threading.Lock()
@@ -239,7 +246,7 @@ _SUGGESTION_HTTP_TIMEOUT_MAX = 60
 # agent-improver "Suggest-new-agents" mode: one .json payload + one .body.md
 # per proposal. Accept writes a real file at .claude/agents/<slug>.md;
 # reject just marks status="rejected" and leaves the proposal on disk.
-AGENT_PROPOSALS_DIR  = ROOT / ".ai" / "dashboard" / "agent_proposals"
+AGENT_PROPOSALS_DIR  = ROOT / ".ai" / "dashboard" / "proposals" / "agents"
 # Defaults used when models.yaml has no `improver:` block. The improver
 # only edits skills under PROJECT (.claude/skills/) — global skills are
 # never modified.

@@ -268,8 +268,9 @@ Filled packets flow via stdin / temp files. Editing `.ai/packets/*.md` during a 
 │       ├── index.html              # Local web UI
 │       ├── styles.css
 │       ├── serve.py                # Static + JSON/SSE/WS server
-│       ├── log_event.py            # PostToolUse hook → .ai/ledgers/events.jsonl
 │       ├── app/                    # Split frontend modules (core/skills/jobs/terminals)
+│       ├── scripts/                # Sibling helpers (log_event, pty_session, todos_parser, demo)
+│       ├── proposals/              # Auto-improver artifacts (agents/, skills/, backups)
 │       └── jobs/                   # Per-job log dirs (gitignored)
 ├── .claude/
 │   ├── skills/                     # Canonical source for shared skills

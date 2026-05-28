@@ -27,12 +27,12 @@ os.environ.setdefault("AI_WORKFLOW_DISABLE_IMPROVER", "1")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Tests that load `serve.py` via `importlib.util.spec_from_file_location` hit
-# `import pty_session as _pty_session` inside serve.py (sibling module under
-# .ai/dashboard/). Without this insert, those tests fail with
-# `ModuleNotFoundError: No module named 'pty_session'`. Files using the simpler
-# `sys.path.insert(...); import serve` pattern do it themselves; this conftest
-# covers the importlib pattern too so the same fix lands once for all suites.
+# `import pty_session as _pty_session` inside serve.py. The helper modules
+# live in `.ai/dashboard/scripts/` (sibling folder); serve.py itself stays at
+# `.ai/dashboard/serve.py`. Insert both so tests can `import serve` AND
+# `import pty_session`/`import todos_parser` directly.
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
+sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard" / "scripts"))
 
 WORKFLOW_DIR = REPO_ROOT / ".ai" / "workflow"
 PACKETS_DIR = REPO_ROOT / ".ai" / "packets"

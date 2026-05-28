@@ -144,9 +144,17 @@ fi
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/serve.py" "$TARGET_DIR/.ai/dashboard/serve.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/index.html" "$TARGET_DIR/.ai/dashboard/index.html"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/styles.css" "$TARGET_DIR/.ai/dashboard/styles.css"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/log_event.py" "$TARGET_DIR/.ai/dashboard/log_event.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/pty_session.py" "$TARGET_DIR/.ai/dashboard/pty_session.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/todos_parser.py" "$TARGET_DIR/.ai/dashboard/todos_parser.py"
+mkdir -p "$TARGET_DIR/.ai/dashboard/scripts"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/log_event.py" "$TARGET_DIR/.ai/dashboard/scripts/log_event.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/pty_session.py" "$TARGET_DIR/.ai/dashboard/scripts/pty_session.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/todos_parser.py" "$TARGET_DIR/.ai/dashboard/scripts/todos_parser.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/demo.py" "$TARGET_DIR/.ai/dashboard/scripts/demo.py"
+# Clean up old top-level locations from pre-scripts/ layouts so old + new
+# don't co-exist in upgraded projects.
+rm -f "$TARGET_DIR/.ai/dashboard/log_event.py" \
+      "$TARGET_DIR/.ai/dashboard/pty_session.py" \
+      "$TARGET_DIR/.ai/dashboard/todos_parser.py" \
+      "$TARGET_DIR/.ai/dashboard/demo.py"
 # Glob every app/*.js so new modules (settings.js, auto-select.js, future ones)
 # propagate without an explicit list to maintain. index.html references files
 # by name — if any are missing, the dashboard silently 404s and dependent

@@ -1,6 +1,7 @@
 """Claude Code hook: log workflow phase dispatches to .ai/ledgers/events.jsonl.
 
-Invoked by the PostToolUse hook for the Bash tool. Reads the hook payload
+Invoked by the PostToolUse hook for the Bash tool (see .claude/settings.json,
+which points at `.ai/dashboard/scripts/log_event.py`). Reads the hook payload
 from stdin (JSON), detects whether the executed command was a workflow
 phase dispatch (Claude or Codex subprocess), and appends a structured
 event line if so.
@@ -16,7 +17,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 EVENTS_FILE = ROOT / ".ai" / "ledgers" / "events.jsonl"
 # Cache parent-dir existence across hook invocations in the same process.
 # This hook fires on every PostToolUse so the mkdir syscall would otherwise

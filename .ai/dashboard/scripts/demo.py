@@ -1,7 +1,7 @@
 """Demo: start the dashboard server and inject 3 simulated agents.
 
 Run from repo root:
-    python .ai/dashboard/demo.py
+    python .ai/dashboard/scripts/demo.py
 
 Then open the printed URL, switch to the "Terminals" tab, and click
 "Open all running" to see the three fake agents streaming side by side.
@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path
 
 PORT = int(os.environ.get("DEMO_PORT", "8770"))
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
 
 
