@@ -1,13 +1,10 @@
-// .ai/dashboard/app/settings.js -- Settings tab: workflow knobs (improver,
-// auto_select, per-phase tuning) + git update controls. Loads current values
-// from `/api/settings` on init and whenever the tab is opened.
+// .ai/dashboard/app/settings.js -- Settings tab (improver + workflow
+// updates) plus the auto-select form + warning banner that live under
+// Models & dispatch. Loads current values from `/api/settings` on init
+// and whenever either tab is opened.
 
 (function () {
-  var ALL_PHASES = ["plan", "execute", "review", "rescue", "maintenance", "bootstrap"];
   var AS_PHASES_AVAILABLE = ["execute", "review", "rescue"];
-  // Union of claude (low/medium/high/xhigh/max) and codex (low/medium/high/xhigh).
-  // `max` applies only to claude; the codex dispatcher rejects it.
-  var REASONING_LEVELS = ["", "low", "medium", "high", "xhigh", "max"];
 
   var loadedOnce = false;
   // Busy guard for the reload button — prevents two concurrent loadAllSettings
@@ -88,10 +85,9 @@
       return await fn();
     } finally {
       // The button may have been detached from the DOM while we were
-      // awaiting (e.g. renderPhasesTable rebuilt #phases-table during a
-      // long save). Skip the restore in that case — writing to a stale
-      // node leaks references and confuses the GC; the new node already
-      // has the correct enabled state.
+      // awaiting (e.g. a parallel rerender swapped its container). Skip
+      // the restore in that case — writing to a stale node leaks references
+      // and confuses the GC; the new node already has the correct state.
       if (btn.isConnected) {
         btn.disabled = false;
         btn.textContent = btn.dataset.prevLabel || label;
@@ -256,144 +252,40 @@
   }
 
   // Re-fetch /api/settings without triggering showLoadingState() so the user
-  // doesn't see a skeleton flicker on every save. Only repaints the phases
-  // table + auto-select-warning banner — the two regions that depend on
-  // auto-select state. Safe to call from any save handler.
+  // doesn't see a skeleton flicker on every save. Only repaints the
+  // auto-select-warning banner — that's the one region that depends on the
+  // just-changed auto-select state (the table itself is rendered by core.js
+  // renderModels and reloads via loadAll on phase-row save).
   async function refreshPhasesSection() {
     try {
       var data = await getJson("/api/settings");
       _settingsVersion = data.version != null ? data.version : _settingsVersion;
-      renderPhasesTable(data.phases || {}, data.auto_select || {});
+      renderAutoSelectBanner(data.auto_select || {});
     } catch (e) {
-      // Non-fatal: the previous table content stays on screen, which is
-      // strictly better than a skeleton flash followed by a load failure.
+      // Non-fatal: the previous banner stays as-is — strictly better than
+      // a flash-clear followed by a load failure.
       console.warn("[settings] refreshPhasesSection failed:", e.message);
     }
   }
 
-  // ---------- Per-phase tuning ----------
-  function renderPhasesTable(phases, autoSelect) {
-    phases = phases || {};
+  // ---------- Auto-select banner above Phase routing ----------
+  // The phases table itself is rendered by core.js renderModels() — this
+  // function only paints the auto-select-on banner that sits above it.
+  // Per-row Save is handled by core.js savePhaseRow() (one editable table,
+  // one save path).
+  function renderAutoSelectBanner(autoSelect) {
     autoSelect = autoSelect || {};
     var autoOn = !!autoSelect.enabled;
     var autoPhases = autoOn ? (autoSelect.phases || []) : [];
-
-    // Banner above the table when auto-select is on.
     var warn = $q("#phases-auto-warning");
-    if (warn) {
-      if (autoOn) {
-        warn.textContent = "Auto-select is ON for phases: " + autoPhases.join(", ")
-          + ". The planner picks tool / model / reasoning_effort per task for these phases. The values below are the fallback used only when auto-select has no match.";
-        warn.classList.add("is-active");
-      } else {
-        warn.classList.remove("is-active");
-        warn.textContent = "";
-      }
-    }
-
-    var rows = ALL_PHASES.map(function (ph) {
-      var p = phases[ph] || {};
-      var tool = (p.tool || "").toLowerCase();
-      var isClaude = tool === "claude";
-      var isCodex = tool === "codex";
-      var isAuto = autoOn && autoPhases.indexOf(ph) >= 0;
-      // Normalize the stored value to lowercase so a YAML that drifted
-      // ("Low", "HIGH") still matches the canonical option (which is always
-      // lowercase). Without this, the dropdown would silently render "no
-      // selection" and a save would overwrite a non-empty value with "".
-      var current = String(p.reasoning_effort || "").toLowerCase();
-      var options = REASONING_LEVELS.map(function (r) {
-        // `max` is claude-only; hide it from the dropdown for codex phases.
-        if (r === "max" && !isClaude) return "";
-        var sel = current === r ? " selected" : "";
-        var label = r || "(default)";
-        return '<option value="' + r + '"' + sel + '>' + label + '</option>';
-      }).join("");
-      var to = p.timeout_seconds || "";
-      var reasoningTitle = isCodex
-        ? "codex --config model_reasoning_effort (low/medium/high/xhigh)"
-        : "claude --effort (low/medium/high/xhigh/max)";
-      var reasoningCell = '<select class="ph-reasoning" title="' + reasoningTitle + '">' + options + '</select>';
-      // Restrict tool to safe class-name chars [a-z0-9_-] (defense in depth:
-      // today's values come from a known set, but YAML could grow to include
-      // characters that would break the attribute and enable injection).
-      var toolClass = String(tool || "unknown").replace(/[^a-z0-9_-]/gi, "");
-      var toolPill = '<span class="ph-tool-pill ph-tool-' + toolClass + '">' + escHtml(p.tool || "?") + '</span>';
-      var effectiveCell = isAuto
-        ? '<span class="ph-eff ph-eff-auto" title="The planner picks this per task at runtime via auto-select">auto · per task</span>'
-        : '<span class="ph-eff ph-eff-yaml" title="The orchestrator reads this row directly from models.yaml">from fallback ↑</span>';
-      var rowClass = isAuto ? "ph-row is-auto" : "ph-row";
-      return ''
-        + '<tr class="' + rowClass + '" data-phase="' + ph + '">'
-        + '  <td class="ph-name">' + ph + (isAuto ? ' <span class="ph-auto-pill" title="auto-select active">AUTO</span>' : '') + '</td>'
-        + '  <td>' + toolPill + ' <span class="ph-meta">' + escHtml(p.model || "?") + '</span></td>'
-        + '  <td>' + reasoningCell + '</td>'
-        + '  <td><input type="number" class="ph-timeout" min="30" max="7200" value="' + to + '" placeholder="(default)" /></td>'
-        + '  <td>' + effectiveCell + '</td>'
-        + '  <td><button class="btn secondary ph-save" type="button">Save</button></td>'
-        + '</tr>';
-    }).join("");
-    var html = ''
-      + '<table class="phases-table">'
-      + '  <thead><tr>'
-      + '    <th>Phase</th><th>Tool / model</th><th>Reasoning effort</th>'
-      + '    <th>Timeout</th><th>Effective at runtime</th><th></th>'
-      + '  </tr></thead>'
-      + '  <tbody>' + rows + '</tbody>'
-      + '</table>';
-    var wrap = $q("#phases-table");
-    delete wrap.dataset.skeletoned;
-    wrap.innerHTML = html;
-    wrap.querySelectorAll("button.ph-save").forEach(function (btn) {
-      btn.addEventListener("click", function () { savePhaseRow(btn.closest("tr"), btn); });
-    });
-  }
-
-  async function savePhaseRow(tr, btn) {
-    var ph = tr.dataset.phase;
-    // Validate phase against the known set. tr.dataset.phase is user-mutable
-    // via devtools; missing/tampered values would otherwise POST {phase:undefined}.
-    if (!ph || ALL_PHASES.indexOf(ph) < 0) {
-      setMsg("phases-msg", "invalid phase", "bad");
-      return;
-    }
-    // HTML5 constraint validation (min=30 max=7200) only fires on form-submit,
-    // not on type=button clicks. Check validity.valid before sending so the
-    // server doesn't reject (or worse, accept) out-of-range integers.
-    var tInput = tr.querySelector(".ph-timeout");
-    if (tInput && !tInput.validity.valid) {
-      setMsg("phases-msg", "timeout: " + tInput.validationMessage, "bad");
-      return;
-    }
-    var body = { phase: ph, timeout_seconds: tInput ? tInput.value : "" };
-    var rEl = tr.querySelector(".ph-reasoning");
-    // Gemini ignores reasoning_effort (dispatch silently discards it); omit the
-    // field from the POST body so the YAML doesn't drift from the UI promise
-    // and a stale value can't reload next time.
-    var toolPill = tr.querySelector(".ph-tool-pill");
-    var tool = "";
-    if (toolPill) {
-      var m = (toolPill.className || "").match(/ph-tool-([a-z]+)/);
-      if (m) tool = m[1];
-    }
-    if (rEl) body.reasoning_effort = rEl.value;
-    if (_settingsVersion != null) body._if_match = _settingsVersion;
-    setMsg("phases-msg", "");
-    // Re-fetch the settings version if the form has been open for more
-    // than ~2 minutes — _if_match would otherwise reject the save under
-    // optimistic concurrency even though no one else actually edited the
-    // yaml. Threshold is short enough to catch the common "left tab open"
-    // case without re-querying on every fast edit.
-    var STALE_MS = 2 * 60 * 1000;
-    if (_settingsLoadedAt && (Date.now() - _settingsLoadedAt) > STALE_MS) {
-      try { await loadAllSettings(); } catch (_) { /* ignore — save will surface 409 */ }
-      if (_settingsVersion != null) body._if_match = _settingsVersion;
-    }
-    try {
-      await withBusy(btn, function () { return postJson("/api/models/phase", body); });
-      setMsg("phases-msg", "Saved " + ph, "good");
-    } catch (e) {
-      setMsg("phases-msg", ph + ": " + (e.message || "save failed"), "bad");
+    if (!warn) return;
+    if (autoOn && autoPhases.length) {
+      warn.textContent = "Auto-select is ON for phases: " + autoPhases.join(", ")
+        + ". The planner picks tool / model / reasoning_effort per task for these phases; the values in the table below are the fallback used when auto-select has no match.";
+      warn.classList.add("is-active");
+    } else {
+      warn.classList.remove("is-active");
+      warn.textContent = "";
     }
   }
 
@@ -559,27 +451,8 @@
   }
 
   // ---------- Loading & coordination ----------
-  // Builds the structured skeleton variant used elsewhere in the dashboard
-  // (.skeleton + .skeleton-table-row), so the Settings tab matches the
-  // visual language of Agents / Skills / Events while data loads.
-  function phasesTableSkeletonHtml() {
-    var row = '<div class="skeleton-table-row">'
-      + '<span class="skeleton skeleton-cell narrow"></span>'
-      + '<span class="skeleton skeleton-cell"></span>'
-      + '<span class="skeleton skeleton-cell narrow"></span>'
-      + '<span class="skeleton skeleton-cell narrow"></span>'
-      + '<span class="skeleton skeleton-cell"></span>'
-      + '<span class="skeleton skeleton-cell narrow"></span>'
-      + '</div>';
-    return new Array(6).fill(row).join("");
-  }
   function showLoadingState() {
     setMsg("settings-meta", "Loading…");
-    var phases = $q("#phases-table");
-    if (phases) {
-      phases.innerHTML = phasesTableSkeletonHtml();
-      phases.dataset.skeletoned = "1";
-    }
   }
 
   async function loadAllSettings() {
@@ -592,7 +465,7 @@
       _settingsLoadedAt = Date.now();
       fillImprover(data.improver || {});
       fillAutoSelect(data.auto_select || {});
-      renderPhasesTable(data.phases || {}, data.auto_select || {});
+      renderAutoSelectBanner(data.auto_select || {});
       setMsg("settings-meta", "Loaded " + new Date().toLocaleTimeString(), "good");
       loadedOnce = true;
     } catch (e) {
@@ -601,11 +474,6 @@
       // _if_match. Without this, a subsequent save would be rejected
       // with "stale version" when the real cause is "never reloaded".
       _settingsVersion = null;
-      var wrap = $q("#phases-table");
-      if (wrap) {
-        delete wrap.dataset.skeletoned;
-        wrap.innerHTML = '<div class="settings-skeleton" style="color:var(--bad)">load failed</div>';
-      }
     }
   }
 
@@ -641,13 +509,18 @@
     }
   }
 
-  // Re-fetch every time the user navigates back to the Settings tab so the
-  // form reflects whatever is currently on disk (e.g. after an external edit).
+  // Re-fetch every time the user navigates back to Settings OR Models &
+  // dispatch — auto-select + phase-tuning live under Models now, but the
+  // same /api/settings endpoint feeds both views, so a single loader keeps
+  // them in sync. Missing target elements degrade gracefully (every fill
+  // function is null-guarded).
   function bindNavRefresh() {
-    var btn = document.querySelector('nav button[data-view="settings"]');
-    if (!btn || btn.dataset.refreshWired === "1") return;
-    btn.dataset.refreshWired = "1";
-    btn.addEventListener("click", function () { loadAllSettings(); });
+    ["settings", "models"].forEach(function (view) {
+      var btn = document.querySelector('nav button[data-view="' + view + '"]');
+      if (!btn || btn.dataset.refreshWired === "1") return;
+      btn.dataset.refreshWired = "1";
+      btn.addEventListener("click", function () { loadAllSettings(); });
+    });
   }
 
   window.initSettings = initSettings;

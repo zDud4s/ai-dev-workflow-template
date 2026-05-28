@@ -35,7 +35,9 @@
         if (btn.dataset.view === "run" || btn.dataset.view === "terminals") loadJobs();
         if (btn.dataset.view === "terminals") termRefreshTranscriptPicker();
         if (btn.dataset.view === "timeline") loadTimeline();
-        if (btn.dataset.view === "auto-select" && typeof loadAutoSelect === "function") loadAutoSelect();
+        // Auto-select rankings now live under Models & dispatch (alongside
+        // the auto-select config and phase-tuning table they explain).
+        if (btn.dataset.view === "models" && typeof loadAutoSelect === "function") loadAutoSelect();
       });
     });
 
@@ -522,7 +524,10 @@
         `;
       }
       tBtn.dataset.current = mode;
-      tBtn.textContent = mode === "auto" ? "Switch to manual" : "Switch to auto";
+      // mode === "auto" → orchestrator inlines when tool/model match; clicking
+      // moves to "manual" (always-subprocess). Labels describe the TARGET so
+      // the user knows what will happen on click, not what's currently set.
+      tBtn.textContent = mode === "auto" ? "Switch to always-subprocess" : "Switch to inline-when-possible";
       const phases = ["session", "plan", "execute", "review", "rescue", "maintenance", "bootstrap"];
       const rows = phases.map((ph) => {
         const cfg = models[ph] || {};
@@ -537,18 +542,24 @@
         } else if (mode === "manual") resolved = "dispatcher";
         const pillCls = resolved === "inline" ? "good" : resolved === "agent" ? "warn" : (resolved === "n/a" ? "" : "claude");
         const showMode = ph !== "session";
+        // Effort + timeout are knobs on a dispatched phase. The `session`
+        // pseudo-phase doesn't dispatch, so render an em-dash there.
+        const effort = showMode ? escape(cfg.reasoning_effort || "default") : "—";
+        const timeout = showMode ? (cfg.timeout_seconds ? escape(String(cfg.timeout_seconds)) + "s" : "default") : "—";
         return `<tr data-phase="${ph}">
           <td class="mono"><strong>${ph}</strong></td>
           <td data-field="tool">${pillTool(cfg.tool)}</td>
           <td class="mono" data-field="model">${escape(cfg.model || "—")}</td>
           <td data-field="mode">${showMode ? (cfg.mode ? `<span class="pill warn">${cfg.mode}</span>` : `<span class="pill" style="color:var(--fg-dim)">auto</span>`) : "—"}</td>
+          <td class="mono" data-field="effort" style="color:var(--text-2)">${effort}</td>
+          <td class="mono" data-field="timeout" style="color:var(--text-2)">${timeout}</td>
           <td><span class="pill ${pillCls}">${resolved}</span></td>
           <td style="text-align:right"><button class="btn secondary" style="padding:3px 10px;font-size:11px" data-edit-phase="${escape(ph)}">Edit</button></td>
         </tr>`;
       }).join("");
       delete modelsTable.dataset.skeletoned;
       modelsTable.innerHTML = `<table>
-        <thead><tr><th>Phase</th><th>Tool</th><th>Model</th><th>Override</th><th>Resolved</th><th></th></tr></thead>
+        <thead><tr><th>Phase</th><th>Tool</th><th>Model</th><th>Override</th><th>Effort</th><th>Timeout</th><th>Resolved</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
       _modelsCache = models;
@@ -606,6 +617,7 @@
       const cfg = (_modelsCache && _modelsCache[phase]) || {};
       const showMode = phase !== "session";
       const initialTool = cfg.tool || "claude";
+      const currentTimeout = cfg.timeout_seconds != null && cfg.timeout_seconds !== "" ? String(cfg.timeout_seconds) : "";
       tr.innerHTML = `
         <td class="mono"><strong>${phase}</strong></td>
         <td>
@@ -628,14 +640,26 @@
           </select>` : "—"}
         </td>
         <td>
-          ${showMode ? `<select id="pe-reff" class="cmp-select" title="reasoning_effort (codex only)">
-            <option value=""${!cfg.reasoning_effort ? " selected" : ""}>(default)</option>
-            <option value="xhigh"${cfg.reasoning_effort === "xhigh" ? " selected" : ""}>xhigh</option>
-            <option value="high"${cfg.reasoning_effort === "high" ? " selected" : ""}>high</option>
-            <option value="medium"${cfg.reasoning_effort === "medium" ? " selected" : ""}>medium</option>
-            <option value="low"${cfg.reasoning_effort === "low" ? " selected" : ""}>low</option>
-          </select>` : "—"}
+          ${showMode ? (() => {
+            // Normalize so a YAML that drifted ("Low", "HIGH") still
+            // matches the canonical lowercase option; without this the
+            // dropdown silently shows (default) and a save would overwrite
+            // a non-empty value with "".
+            const reff = String(cfg.reasoning_effort || "").toLowerCase();
+            return `<select id="pe-reff" class="cmp-select" title="reasoning_effort — claude: low/medium/high/xhigh/max · codex: low/medium/high/xhigh">
+            <option value=""${!reff ? " selected" : ""}>(default)</option>
+            <option value="max"${reff === "max" ? " selected" : ""}>max (claude only)</option>
+            <option value="xhigh"${reff === "xhigh" ? " selected" : ""}>xhigh</option>
+            <option value="high"${reff === "high" ? " selected" : ""}>high</option>
+            <option value="medium"${reff === "medium" ? " selected" : ""}>medium</option>
+            <option value="low"${reff === "low" ? " selected" : ""}>low</option>
+          </select>`;
+          })() : "—"}
         </td>
+        <td>
+          ${showMode ? `<input id="pe-timeout" type="number" class="cmp-select" min="30" max="7200" step="30" placeholder="default" value="${escape(currentTimeout)}" title="seconds before the phase is killed — default 1800 for execute, 600 for others" style="width:7em" />` : "—"}
+        </td>
+        <td>—</td>
         <td style="text-align:right;white-space:nowrap">
           <button class="btn" style="padding:3px 10px;font-size:11px" data-save-phase="${escape(phase)}">Save</button>
           <button class="btn secondary" style="padding:3px 10px;font-size:11px" data-phase-cancel="1">Cancel</button>
@@ -650,8 +674,16 @@
       });
     }
 
+    // Canonical phases the orchestrator dispatches plus the `session`
+    // pseudo-phase that owns the top-of-loop tool. data-save-phase is
+    // user-mutable via devtools, so validate before POST.
+    var ALL_SAVABLE_PHASES = ["session", "plan", "execute", "review", "rescue", "maintenance", "bootstrap"];
     async function savePhaseRow(phase) {
       if (!$("#pe-tool")) return;
+      if (!phase || ALL_SAVABLE_PHASES.indexOf(phase) < 0) {
+        setMsg("#models-phase-msg", "err", "invalid phase: " + String(phase));
+        return;
+      }
       const tool = $("#pe-tool")?.value;
       const model = $("#pe-model")?.value.trim();
       const showMode = phase !== "session";
@@ -659,6 +691,16 @@
       if (showMode) {
         payload.mode = $("#pe-mode")?.value || "";
         payload.reasoning_effort = $("#pe-reff")?.value || "";
+        // HTML5 min/max only fires on form submit, not on type=button. Reject
+        // out-of-range timeouts client-side so the server doesn't have to.
+        const tInput = $("#pe-timeout");
+        if (tInput) {
+          if (!tInput.validity.valid) {
+            setMsg("#models-phase-msg", "err", "Timeout: " + tInput.validationMessage);
+            return;
+          }
+          payload.timeout_seconds = tInput.value;
+        }
       }
       if (!model) {
         setMsg("#models-phase-msg", "err", "Model is required");

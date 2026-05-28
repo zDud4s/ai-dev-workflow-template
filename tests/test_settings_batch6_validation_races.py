@@ -153,7 +153,13 @@ def test_save_auto_select_uses_surgical_refresh():
 
 
 def test_refresh_phases_section_does_not_flash_skeleton():
-    """The optimistic refresh helper must avoid showLoadingState entirely."""
+    """The optimistic refresh helper must avoid showLoadingState entirely.
+
+    Post-merge: the editable per-phase table now lives under core.js
+    renderModels (Phase routing). settings.js's refreshPhasesSection only
+    repaints the auto-select-on banner, since that's the one region that
+    depends on the just-changed auto-select state.
+    """
     src = _src()
     assert re.search(r"function\s+refreshPhasesSection\s*\(", src), (
         "settings.js must define refreshPhasesSection()"
@@ -166,8 +172,8 @@ def test_refresh_phases_section_does_not_flash_skeleton():
     assert "/api/settings" in body or "getJson" in body, (
         "refreshPhasesSection must re-fetch the latest server state"
     )
-    assert "renderPhasesTable" in body, (
-        "refreshPhasesSection must repaint via renderPhasesTable"
+    assert "renderAutoSelectBanner" in body, (
+        "refreshPhasesSection must repaint via renderAutoSelectBanner"
     )
 
 
@@ -199,13 +205,19 @@ def test_load_all_settings_captures_version_from_response():
 
 
 def test_save_handlers_echo_if_match_on_concurrent_save():
-    """Every save path (improver, auto_select, phase row) must attach
+    """Every settings-owned save path (improver, auto_select) must attach
     _if_match to the POST body when a version is known. The server
     ignores it today; the moment it grows version-aware this becomes
     the lost-edit guard with no further client change.
+
+    Post-merge: per-phase saves are owned by core.js savePhaseRow (one
+    editable Phase routing table). Optimistic concurrency was best-effort
+    only (server never enforced it), so it's not ported for the merged
+    editor — keep the guard in saveImprover + saveAutoSelect where it
+    started.
     """
     src = _src()
-    for fn in ("saveImprover", "saveAutoSelect", "savePhaseRow"):
+    for fn in ("saveImprover", "saveAutoSelect"):
         body = _slice(src, fn)
         assert "_if_match" in body, (
             f"{fn} must attach _if_match (from _settingsVersion) to the "
@@ -224,7 +236,7 @@ def test_save_handlers_guard_if_match_against_null():
     Sending `_if_match: null` would break a future version-aware server.
     """
     src = _src()
-    for fn in ("saveImprover", "saveAutoSelect", "savePhaseRow"):
+    for fn in ("saveImprover", "saveAutoSelect"):
         body = _slice(src, fn)
         # Look for any null-guard pattern. Accept:
         #   `_settingsVersion != null` / `!== null`
@@ -258,28 +270,34 @@ def test_save_handlers_guard_if_match_against_null():
         )
 
 
-# ---- Target 4: savePhaseRow phase-name validation against ALL_PHASES ----
+# ---- Target 4: savePhaseRow phase-name validation against the canonical set ----
 def test_savePhaseRow_validates_phase_against_known_set():
-    """tr.dataset.phase is user-mutable via devtools. The save handler
-    must validate it against the canonical ALL_PHASES set before POSTing.
+    """`data-save-phase` (and the editPhaseRow `phase` arg derived from it)
+    is user-mutable via devtools. The save handler must validate it against
+    the canonical phase set before POSTing.
+
+    Post-merge: the editor lives in core.js (one editable table under Phase
+    routing). The guard moved with it; ALL_SAVABLE_PHASES is the canonical
+    list there.
     """
-    body = _slice(_src(), "savePhaseRow")
+    core_js = SETTINGS_JS.parent / "core.js"
+    src = core_js.read_text(encoding="utf-8")
+    body = _slice(src, "savePhaseRow")
     post_idx = body.find("postJson")
     assert post_idx > 0, "savePhaseRow must still call postJson"
     pre = body[:post_idx]
-    assert "ALL_PHASES" in pre, (
-        "savePhaseRow must reference ALL_PHASES in its validation guard "
-        "BEFORE calling postJson"
+    assert "ALL_SAVABLE_PHASES" in pre, (
+        "core.js savePhaseRow must reference ALL_SAVABLE_PHASES in its "
+        "validation guard BEFORE calling postJson"
     )
-    # The check must be a membership test (indexOf < 0 or includes negation).
     has_membership = (
-        "ALL_PHASES.indexOf(ph) < 0" in pre
-        or "!ALL_PHASES.includes(ph)" in pre
-        or "ALL_PHASES.indexOf(ph) === -1" in pre
+        "ALL_SAVABLE_PHASES.indexOf(phase) < 0" in pre
+        or "!ALL_SAVABLE_PHASES.includes(phase)" in pre
+        or "ALL_SAVABLE_PHASES.indexOf(phase) === -1" in pre
     )
     assert has_membership, (
-        "savePhaseRow must check ALL_PHASES membership (indexOf<0 or "
-        "!includes) before posting"
+        "core.js savePhaseRow must check ALL_SAVABLE_PHASES membership "
+        "(indexOf<0 or !includes) before posting"
     )
 
 

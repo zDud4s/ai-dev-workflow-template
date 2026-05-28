@@ -3137,6 +3137,11 @@
       margin: 0 0 var(--s-3);
       line-height: 1.5;
     }
+    /* Variant: hint sitting between a content block (table, etc.) and an
+       actions row. Needs top breathing room since the default is 0. */
+    section.block .settings-hint.settings-hint-spaced {
+      margin-top: var(--s-4);
+    }
     section.block .settings-env-warning {
       display: none;
       margin: 0 0 var(--s-3);
@@ -4347,14 +4352,14 @@
       border-color: var(--border-strong);
     }
 
-    /* ---------------- Auto-select view ---------------- */
-    #view-auto-select .as-threshold {
+    /* ---------------- Auto-select rankings (under Models & dispatch) ---------------- */
+    #view-models .as-threshold {
       display: inline-flex;
       align-items: center;
       gap: 7px;
       color: var(--text-2);
     }
-    #view-auto-select .as-threshold input {
+    #view-models .as-threshold input {
       width: 64px;
       background: var(--bg-inset);
       border: 1px solid var(--border-soft);
@@ -4366,22 +4371,22 @@
       font-variant-numeric: tabular-nums;
       transition: border-color 120ms var(--easing), box-shadow 120ms var(--easing);
     }
-    #view-auto-select .as-threshold input:hover {
+    #view-models .as-threshold input:hover {
       border-color: var(--border-strong);
     }
-    #view-auto-select .as-threshold input:focus {
+    #view-models .as-threshold input:focus {
       outline: none;
       border-color: var(--accent);
       box-shadow: var(--accent-glow-soft);
     }
-    #view-auto-select .as-meta-fresh {
+    #view-models .as-meta-fresh {
       color: var(--text-2);
       font-family: var(--ff-mono);
     }
-    #view-auto-select .as-meta-fresh.is-stale { color: var(--warn); }
-    #view-auto-select .as-group { margin-top: var(--s-4); }
-    #view-auto-select .as-group:first-child { margin-top: var(--s-3); }
-    #view-auto-select .as-group-key {
+    #view-models .as-meta-fresh.is-stale { color: var(--warn); }
+    #view-models .as-group { margin-top: var(--s-4); }
+    #view-models .as-group:first-child { margin-top: var(--s-3); }
+    #view-models .as-group-key {
       margin: 0 0 var(--s-2) 0;
       font-family: var(--ff-mono);
       font-size: var(--fs-1);
@@ -4389,47 +4394,47 @@
       text-transform: uppercase;
       color: var(--text-dim);
     }
-    #view-auto-select .as-group-key .as-phase {
+    #view-models .as-group-key .as-phase {
       color: var(--accent);
       letter-spacing: 0.20em;
     }
-    #view-auto-select .as-table { font-size: var(--fs-2); }
-    #view-auto-select .as-table th { padding: 7px 12px; }
-    /* Merged two `#view-auto-select .as-table td` blocks into one to avoid
+    #view-models .as-table { font-size: var(--fs-2); }
+    #view-models .as-table th { padding: 7px 12px; }
+    /* Merged two `#view-models .as-table td` blocks into one to avoid
        a second definition of the same selector at the next line. */
-    #view-auto-select .as-table td {
+    #view-models .as-table td {
       padding: 7px 12px;
       font-variant-numeric: tabular-nums;
     }
-    #view-auto-select .as-table .as-num { text-align: right; }
-    #view-auto-select .as-table th.as-num { text-align: right; }
-    #view-auto-select .as-rank {
+    #view-models .as-table .as-num { text-align: right; }
+    #view-models .as-table th.as-num { text-align: right; }
+    #view-models .as-rank {
       font-family: var(--ff-mono);
       font-size: var(--fs-1);
       letter-spacing: 0.08em;
       color: var(--text-dim);
     }
-    #view-auto-select .as-table tr.as-top { background: var(--accent-bg); }
-    #view-auto-select .as-table tr.as-top:hover { background: var(--accent-bg); filter: brightness(1.10); }
-    #view-auto-select .as-table tr.as-top .as-rank {
+    #view-models .as-table tr.as-top { background: var(--accent-bg); }
+    #view-models .as-table tr.as-top:hover { background: var(--accent-bg); filter: brightness(1.10); }
+    #view-models .as-table tr.as-top .as-rank {
       color: var(--accent);
       font-weight: 700;
     }
-    #view-auto-select .as-tool,
-    #view-auto-select .as-model,
-    #view-auto-select .as-effort { font-family: var(--ff-mono); }
-    #view-auto-select .as-model { color: var(--text-2); }
-    #view-auto-select .as-effort { color: var(--text-dim); }
-    #view-auto-select .as-sr-good { color: var(--good); }
-    #view-auto-select .as-sr-warn { color: var(--warn); }
-    #view-auto-select .as-sr-bad { color: var(--bad); }
-    #view-auto-select .as-score {
+    #view-models .as-tool,
+    #view-models .as-model,
+    #view-models .as-effort { font-family: var(--ff-mono); }
+    #view-models .as-model { color: var(--text-2); }
+    #view-models .as-effort { color: var(--text-dim); }
+    #view-models .as-sr-good { color: var(--good); }
+    #view-models .as-sr-warn { color: var(--warn); }
+    #view-models .as-sr-bad { color: var(--bad); }
+    #view-models .as-score {
       display: inline-flex;
       align-items: center;
       gap: var(--s-2);
       justify-content: flex-end;
     }
-    #view-auto-select .as-score-bar {
+    #view-models .as-score-bar {
       position: relative;
       width: 64px;
       height: 4px;
@@ -4437,12 +4442,12 @@
       border: 1px solid var(--border-soft);
       flex-shrink: 0;
     }
-    #view-auto-select .as-score-bar > span {
+    #view-models .as-score-bar > span {
       position: absolute;
       inset: 0 auto 0 0;
       background: linear-gradient(90deg, var(--accent-soft), var(--accent));
     }
-    #view-auto-select .as-table tr.as-top .as-score-bar > span {
+    #view-models .as-table tr.as-top .as-score-bar > span {
       background: linear-gradient(90deg, var(--accent), var(--accent-hi));
       box-shadow: var(--accent-glow-soft);
     }

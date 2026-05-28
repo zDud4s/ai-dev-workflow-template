@@ -153,8 +153,6 @@
       const dropped = data.dropped_candidates ?? 0;
       const effective = data.min_samples ?? threshold;
       const lastRecord = formatLastRecord(data.last_record_ts);
-      const cnt = $("#count-auto-select");
-      if (cnt) cnt.textContent = groups.length;
       const label = $("#auto-select-threshold-label");
       if (label) label.textContent = String(effective);
       const parts = [

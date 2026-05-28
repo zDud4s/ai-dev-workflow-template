@@ -79,7 +79,6 @@
     <button id="tab-run" data-view="run" role="tab" aria-controls="view-run" aria-selected="false">Run <span class="count" id="count-jobs">·</span></button>
     <button id="tab-terminals" data-view="terminals" role="tab" aria-controls="view-terminals" aria-selected="false">Terminals <span class="count" id="count-terminals">·</span></button>
     <button id="tab-timeline" data-view="timeline" role="tab" aria-controls="view-timeline" aria-selected="false">Timeline <span class="count" id="count-timeline">·</span></button>
-    <button id="tab-auto-select" data-view="auto-select" role="tab" aria-controls="view-auto-select" aria-selected="false">Auto-select <span class="count" id="count-auto-select">·</span></button>
     <div class="section-label" role="presentation">settings</div>
     <button id="tab-settings" data-view="settings" role="tab" aria-controls="view-settings" aria-selected="false">Settings</button>
   </nav>
@@ -116,19 +115,86 @@
           <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
           <div class="card skeleton-summary-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span><span class="skeleton skeleton-sub"></span></div>
         </div>
-        <div class="form-actions">
-          <button class="btn secondary" id="dispatch-toggle" disabled>Toggle dispatch mode</button>
-          <span class="form-msg" id="dispatch-msg"></span>
-        </div>
       </section>
       <section class="block">
         <h2>Phase routing</h2>
+        <p class="settings-hint">
+          Which tool / model handles each phase, plus the runtime knobs (<code>reasoning_effort</code>, <code>timeout_seconds</code>). Click <strong>Edit</strong> on a row to change any column.
+        </p>
+        <div id="phases-auto-warning" class="settings-env-warning" role="status"></div>
         <div id="models-table" data-skeletoned="1">
-          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
-          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
-          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
-          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
-          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span></div>
+        </div>
+        <p class="settings-hint settings-hint-spaced">
+          <strong>Inline-when-possible:</strong> phase runs in the current session if the tool / model match, otherwise as a fresh subprocess.
+          <strong>Always-subprocess:</strong> every phase starts a fresh subprocess regardless.
+        </p>
+        <div class="form-actions">
+          <button class="btn secondary" id="dispatch-toggle" disabled>Toggle execution mode</button>
+          <span class="form-msg" id="dispatch-msg"></span>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Auto-select</h2>
+        <p class="settings-hint">
+          When enabled, the planner picks tool / model per phase based on the task's <code>(size, risk, budget)</code> using the rankings below.
+          When disabled, the Phase routing table above is used as-is.
+        </p>
+        <div class="settings-grid">
+          <label for="as-enabled">Enabled</label>
+          <input type="checkbox" id="as-enabled" />
+          <label for="as-budget">token_budget</label>
+          <select id="as-budget">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+          <label>Phases</label>
+          <div id="as-phases" class="as-phases"></div>
+        </div>
+        <div class="form-actions">
+          <button class="btn" id="btn-as-save">Save auto-select</button>
+          <span class="form-msg" id="as-msg" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Auto-select rankings</h2>
+        <p class="settings-hint">
+          Telemetry-driven scores backing the planner's per-task pick. Read-only.
+        </p>
+        <div class="toolbar">
+          <button class="refresh" data-action="loadAutoSelect">reload</button>
+          <label class="as-threshold" for="auto-select-min-samples">
+            min samples
+            <input type="number" id="auto-select-min-samples" name="auto-select-min-samples"
+                   min="1" max="50" step="1" value="3"
+                   aria-label="Minimum samples per candidate before inclusion in rankings"
+                   title="Candidates with fewer samples are dropped. Persisted in localStorage." />
+          </label>
+          <span class="meta toolbar-meta-end" id="auto-select-meta" aria-live="polite"></span>
+        </div>
+        <details class="as-hint-details">
+          <summary>How auto-select ranking works</summary>
+          <div class="tl-hint">
+            Ranking per <code>(phase, size, risk, budget)</code> tuple, computed from
+            <code>.ai/metrics.jsonl</code> (the orchestrator appends one line per dispatched phase).
+            Candidates with <strong>fewer than <span id="auto-select-threshold-label">3</span> samples</strong> are excluded; groups with no
+            qualifying candidates are omitted. The planner's adaptive scorer ranks with the
+            same formula: <code>0.6·success_rate + 0.2·(1-norm_duration) + 0.2·budget_align</code>.
+            When the planner falls back to the static table (cold-start or guard rail), the line in
+            <code>## Selected models</code> annotates <code>reason="static: …"</code>.
+          </div>
+        </details>
+        <div id="auto-select-rankings" data-skeletoned="1">
+          <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
+          <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
+          <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
         </div>
       </section>
     </section>
@@ -352,6 +418,10 @@
               <div id="skill-detail-history"><div class="empty">No proposals have targeted this skill yet.</div></div>
             </section>
           </div>
+          <footer class="proposal-modal-actions" id="skill-detail-actions" hidden>
+            <button class="btn" id="skill-detail-improve" title="Run a structural-audit pass on this skill — bypasses the throttle">Improve now</button>
+            <span class="form-msg" id="skill-detail-improve-msg"></span>
+          </footer>
         </div>
       </div>
 
@@ -746,40 +816,6 @@
       </section>
     </section>
 
-    <section class="view" id="view-auto-select" role="tabpanel" aria-labelledby="tab-auto-select">
-      <section class="block">
-        <h2>Auto-select rankings</h2>
-        <div class="toolbar">
-          <button class="refresh" data-action="loadAutoSelect">reload</button>
-          <label class="as-threshold" for="auto-select-min-samples">
-            min samples
-            <input type="number" id="auto-select-min-samples" name="auto-select-min-samples"
-                   min="1" max="50" step="1" value="3"
-                   aria-label="Minimum samples per candidate before inclusion in rankings"
-                   title="Candidates with fewer samples are dropped. Persisted in localStorage." />
-          </label>
-          <span class="meta toolbar-meta-end" id="auto-select-meta" aria-live="polite"></span>
-        </div>
-        <details class="as-hint-details">
-          <summary>How auto-select ranking works</summary>
-          <div class="tl-hint">
-            Ranking per <code>(phase, size, risk, budget)</code> tuple, computed from
-            <code>.ai/metrics.jsonl</code> (the orchestrator appends one line per dispatched phase).
-            Candidates with <strong>fewer than <span id="auto-select-threshold-label">3</span> samples</strong> are excluded; groups with no
-            qualifying candidates are omitted. The planner's adaptive scorer ranks with the
-            same formula: <code>0.6·success_rate + 0.2·(1-norm_duration) + 0.2·budget_align</code>.
-            When the planner falls back to the static table (cold-start or guard rail), the line in
-            <code>## Selected models</code> annotates <code>reason="static: …"</code>.
-          </div>
-        </details>
-        <div id="auto-select-rankings" data-skeletoned="1">
-          <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
-          <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
-          <div class="skeleton-as-group"><span class="skeleton skeleton-as-head"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span><span class="skeleton skeleton-as-line"></span></div>
-        </div>
-      </section>
-    </section>
-
     <section class="view" id="view-settings" role="tabpanel" aria-labelledby="tab-settings">
       <div class="settings-toolbar">
         <button class="btn secondary" id="btn-settings-reload">Reload from disk</button>
@@ -808,49 +844,6 @@
         <div class="form-actions">
           <button class="btn" id="btn-imp-save">Save improver</button>
           <span class="form-msg" id="imp-msg" aria-live="polite"></span>
-        </div>
-      </section>
-
-      <section class="block">
-        <h2>Auto-select</h2>
-        <p class="settings-hint">
-          Reads/writes the <code>auto_select:</code> block. When enabled, the planner picks tool/model per phase based on the task.
-        </p>
-        <div class="settings-grid">
-          <label for="as-enabled">Enabled</label>
-          <input type="checkbox" id="as-enabled" />
-          <label for="as-budget">token_budget</label>
-          <select id="as-budget">
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-          </select>
-          <label>Phases</label>
-          <div id="as-phases" class="as-phases"></div>
-        </div>
-        <div class="form-actions">
-          <button class="btn" id="btn-as-save">Save auto-select</button>
-          <span class="form-msg" id="as-msg" aria-live="polite"></span>
-        </div>
-      </section>
-
-      <section class="block">
-        <h2>Per-phase fallback</h2>
-        <p class="settings-hint">
-          Fallback values written to <code>.ai/models.yaml</code>. Used when auto-select is off, or when the planner has no auto-select match for a phase.
-          <code>reasoning_effort</code> maps to <code>claude --effort</code> (low/medium/high/xhigh/<strong>max</strong>) and to <code>codex --config model_reasoning_effort</code> (low/medium/high/xhigh — no <code>max</code>).
-          <code>timeout_seconds</code> overrides the default (1800s for execute, 600s for others); empty = default.
-        </p>
-        <div id="phases-auto-warning" class="settings-env-warning" role="status"></div>
-        <div id="phases-table" data-skeletoned="1">
-          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span></div>
-          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span></div>
-          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span></div>
-          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span></div>
-          <div class="skeleton-table-row"><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell narrow"></span><span class="skeleton skeleton-cell"></span><span class="skeleton skeleton-cell narrow"></span></div>
-        </div>
-        <div class="form-actions">
-          <span class="form-msg" id="phases-msg" aria-live="polite"></span>
         </div>
       </section>
 
