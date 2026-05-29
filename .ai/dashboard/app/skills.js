@@ -56,6 +56,13 @@
         const data = await r.json();
         _skillsState.all = data.skills || [];
         _skillsState.sources = data.sources || {};
+        // Pre-lowercase name/description so the search filter doesn't
+        // re-lowercase both strings per skill on every keystroke. Cheap
+        // one-shot work, big win on long catalogs.
+        _skillsState.all.forEach((s) => {
+          s._nameLower = (s.name || "").toLowerCase();
+          s._descLower = (s.description || "").toLowerCase();
+        });
         const countSkillsEl = $("#count-skills");
         if (countSkillsEl) countSkillsEl.textContent = _skillsState.all.length;
         renderSkillsSummary();
@@ -142,11 +149,13 @@
     function renderSkillsGrid() {
       const q = (_skillsState.query || "").trim().toLowerCase();
       const filter = _skillsState.filter;
+      // _nameLower / _descLower are cached in loadSkills() so the search
+      // filter does not re-lowercase per skill on every keystroke.
       const filtered = _skillsState.all.filter((s) => {
         if (filter !== "all" && s.source !== filter) return false;
         if (!q) return true;
-        return (s.name || "").toLowerCase().includes(q)
-            || (s.description || "").toLowerCase().includes(q);
+        return (s._nameLower || "").includes(q)
+            || (s._descLower || "").includes(q);
       });
       const metaEl = $("#skills-meta");
       if (metaEl) metaEl.textContent = `${filtered.length} of ${_skillsState.all.length} shown`;
@@ -168,32 +177,33 @@
           <div class="meta-row">${sourcePill}</div>
         </div>`;
       }).join("");
-      grid.querySelectorAll(".skill-card[data-name]").forEach((card) => {
-        card.addEventListener("click", () => {
+      // Click + keydown are both delegated on the stable grid container.
+      // Previously click listeners were attached per card on every render
+      // (~50 listeners per keystroke while searching). Now we wire once
+      // and let event bubbling resolve the target card. The grid element
+      // is never replaced by re-renders, so a one-time wire is sufficient.
+      if (!_skillsGridDelegationWired) {
+        grid.addEventListener("click", (e) => {
+          const card = e.target.closest(".skill-card[data-name]");
+          if (!card || !grid.contains(card)) return;
           openSkillDetail(card.dataset.source, card.dataset.name);
         });
-      });
-      // Delegated keydown so Enter/Space activate a focused card without
-      // wiring an extra listener per card (and without leaking listeners
-      // every re-render — the grid element itself is stable).
-      if (!_skillsGridKeydownWired) {
         grid.addEventListener("keydown", (e) => {
           if (e.key !== "Enter" && e.key !== " ") return;
           const card = e.target.closest(".skill-card[data-name]");
           if (!card) return;
           e.preventDefault();
-          card.click();
+          openSkillDetail(card.dataset.source, card.dataset.name);
         });
-        _skillsGridKeydownWired = true;
+        _skillsGridDelegationWired = true;
       }
     }
 
-    // Wired-once flag for the delegated keydown listener on #skills-grid.
-    // Click handlers are rebound per-render (innerHTML wipes the previous
-    // ones), but the keydown listener lives on the grid container itself,
-    // which is NOT replaced by re-renders. Wiring it more than once would
-    // fire the same opener N times per Enter/Space press.
-    var _skillsGridKeydownWired = false;
+    // Wired-once flag for the delegated click + keydown listeners on
+    // #skills-grid. The grid container is stable across renders (innerHTML
+    // replaces children, not the host element), so wiring is one-shot.
+    // Wiring more than once would fire the same opener N times per click.
+    var _skillsGridDelegationWired = false;
 
     // ----- Skill detail modal -----
     var _currentSkillKey = null;

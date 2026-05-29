@@ -85,6 +85,34 @@ PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
 # concurrent dashboard validates Origins against its real port instead of
 # the stale configured one.
 BOUND_PORT = PORT
+
+# Pre-compiled URL-routing patterns. Previously each do_GET / do_POST
+# invocation rebuilt these via inline `re.fullmatch(r"...", path)` calls.
+# Dashboard boot fires ~7 GETs in parallel and the user can spam-click
+# job/PTY actions, so the per-request compile cost added up. Compiling
+# once at import time drops the routing overhead to a single dispatch
+# table lookup + a hashed regex execution.
+_RE_TRANSCRIPT_STREAM = re.compile(r"/api/transcripts/([0-9a-fA-F-]+)/stream")
+_RE_AGENT_PROPOSAL_GET = re.compile(r"/api/agents/proposals/([A-Za-z0-9_\-]+)")
+_RE_SKILL_PROPOSAL_GET = re.compile(r"/api/skills/proposals/([A-Za-z0-9_\-]+)")
+_RE_JOB_STREAM = re.compile(r"/api/jobs/([0-9a-f-]+)/stream")
+_RE_JOB_GET = re.compile(r"/api/jobs/([0-9a-f-]+)")
+_RE_PTY_IO = re.compile(r"/api/ptys/([0-9a-f-]+)/io")
+_RE_PTY_GET = re.compile(r"/api/ptys/([0-9a-f-]+)")
+_RE_JOB_CANCEL = re.compile(r"/api/jobs/([0-9a-f-]+)/cancel")
+_RE_JOB_INPUT = re.compile(r"/api/jobs/([0-9a-f-]+)/input")
+_RE_PTY_KILL = re.compile(r"/api/ptys/([0-9a-f-]+)/kill")
+_RE_JOB_INTERRUPT = re.compile(r"/api/jobs/([0-9a-f-]+)/interrupt")
+_RE_SKILL_PROPOSAL_DECIDE = re.compile(r"/api/skills/proposals/([A-Za-z0-9_\-]+)/(accept|reject)")
+_RE_SKILL_SUGGESTION_DRAFT = re.compile(r"/api/skills/suggestions/([A-Za-z0-9_\-]+)/draft")
+_RE_SKILL_IMPROVE_NOW = re.compile(r"/api/skills/([A-Za-z0-9_\-]+)/improve")
+_RE_AGENT_PROPOSAL_DECIDE = re.compile(r"/api/agents/proposals/([A-Za-z0-9_\-]+)/(accept|reject)")
+
+# Windows `tasklist /NH /FO CSV` lines look like:
+#   "ImageName","PID","SessionName","Session#","MemUsage"
+# We only need the PID to know who's alive — match the second CSV field
+# without splitting the whole row.
+_RE_TASKLIST_PID = re.compile(r'"[^"]*","(\d+)"')
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 _SERVER_STARTED_AT = time.time()
 # Source of truth for the workflow template. /api/workflow/check and
@@ -768,6 +796,17 @@ def _normalise_path_for_match(s: str) -> str:
 # can refresh without re-scanning ~/.codex/sessions on every reload.
 _USAGE_CACHE: dict = {"at": 0.0, "data": None}
 _USAGE_TTL_SECONDS = 30.0
+
+# Cached responses for /api/skills/all and /api/agents/all. Both endpoints
+# walk 3-4 disk locations (.claude/skills, ~/.claude/skills, ~/.codex/skills
+# for skills; project + user + plugin marketplaces/cache for agents) and the
+# dashboard fires them in parallel at boot — combined ~500-1000ms of FS work
+# on cold cache. A 15s TTL absorbs the boot storm + tab-switch refresh
+# without making manual edits invisible for long: SKILL.md tweaks show up
+# within 15 s, which matches the "auto-refresh" cadence elsewhere.
+_SKILLS_ALL_CACHE: dict = {"at": 0.0, "data": None}
+_AGENTS_ALL_CACHE: dict = {"at": 0.0, "data": None}
+_CATALOG_TTL_SECONDS = 15.0
 
 
 def _aggregate_claude_usage(repo_root: Path, now: _dt.datetime) -> dict:
@@ -3813,6 +3852,41 @@ def _pid_is_alive(pid: int) -> bool:
     return alive
 
 
+def _batch_prime_pid_cache_windows(pids: set[int]) -> None:
+    """Prime ``_PID_ALIVE_CACHE`` for ``pids`` in a single ``tasklist`` call.
+
+    The per-PID ``tasklist /FI "PID eq X"`` calls in ``_pid_is_alive`` cost
+    ~100-300 ms each on Windows. Issuing one ``tasklist /NH /FO CSV`` and
+    matching the requested PIDs against the full process snapshot turns N
+    sequential subprocess spawns into a single one. Any tasklist failure
+    (timeout, OS error, non-zero exit) leaves the cache untouched so
+    ``_pid_is_alive`` falls back to its per-PID query — the worst case is
+    the pre-batch behaviour."""
+    if not pids:
+        return
+    try:
+        out = subprocess.run(
+            ["tasklist", "/NH", "/FO", "CSV"],
+            capture_output=True, text=True, timeout=4,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if out.returncode != 0:
+        return
+    live: set[int] = set()
+    for line in (out.stdout or "").splitlines():
+        m = _RE_TASKLIST_PID.match(line)
+        if not m:
+            continue
+        try:
+            live.add(int(m.group(1)))
+        except ValueError:
+            pass
+    now = time.monotonic()
+    for pid in pids:
+        _PID_ALIVE_CACHE[pid] = (now, pid in live)
+
+
 def _reconcile_running_pids() -> int:
     """Flip jobs marked ``running`` / ``queued`` / ``cancelling`` whose
     tracked PID is no longer alive into ``failed``. Jobs whose ``proc``
@@ -3821,6 +3895,30 @@ def _reconcile_running_pids() -> int:
     reconciled so the caller can log it."""
     flipped: list[str] = []
     with JOBS_LOCK:
+        # Windows: prime the PID-alive cache with a single tasklist call so
+        # the per-job _pid_is_alive() checks below all hit the cache rather
+        # than spawning one subprocess per running job. With N jobs this
+        # collapses ~N tasklist spawns into 1, saving ~(N-1)*150ms per
+        # GET /api/jobs that triggers reconciliation.
+        if os.name == "nt":
+            now_pre = time.monotonic()
+            to_query: set[int] = set()
+            for j in JOBS.values():
+                if j.get("status") not in {"running", "queued", "cancelling"}:
+                    continue
+                pid_raw = j.get("pid")
+                if not pid_raw:
+                    continue
+                try:
+                    pid_i = int(pid_raw)
+                except (TypeError, ValueError):
+                    continue
+                if pid_i <= 0:
+                    continue
+                cached = _PID_ALIVE_CACHE.get(pid_i)
+                if cached is None or (now_pre - cached[0]) >= _PID_ALIVE_TTL_SECONDS:
+                    to_query.add(pid_i)
+            _batch_prime_pid_cache_windows(to_query)
         for jid, j in list(JOBS.items()):
             if j.get("status") not in {"running", "queued", "cancelling"}:
                 continue
@@ -4584,7 +4682,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/settings":
             self._handle_settings_get()
             return
-        m = re.fullmatch(r"/api/transcripts/([0-9a-fA-F-]+)/stream", parsed.path)
+        m = _RE_TRANSCRIPT_STREAM.fullmatch(parsed.path)
         if m:
             self._handle_transcript_stream(m.group(1))
             return
@@ -4622,7 +4720,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/skills/proposals":
             self._handle_proposals_list()
             return
-        m = re.fullmatch(r"/api/skills/proposals/([A-Za-z0-9_\-]+)", parsed.path)
+        m = _RE_SKILL_PROPOSAL_GET.fullmatch(parsed.path)
         if m:
             self._handle_proposal_get(m.group(1))
             return
@@ -4632,11 +4730,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/files/read":
             self._handle_file_read(urllib.parse.parse_qs(parsed.query))
             return
-        m = re.fullmatch(r"/api/jobs/([0-9a-f-]+)/stream", parsed.path)
+        m = _RE_JOB_STREAM.fullmatch(parsed.path)
         if m:
             self._handle_job_stream(m.group(1))
             return
-        m = re.fullmatch(r"/api/jobs/([0-9a-f-]+)", parsed.path)
+        m = _RE_JOB_GET.fullmatch(parsed.path)
         if m:
             self._handle_job_get(m.group(1), urllib.parse.parse_qs(parsed.query))
             return
@@ -4644,11 +4742,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/ptys":
             self._handle_ptys_list()
             return
-        m = re.fullmatch(r"/api/ptys/([0-9a-f-]+)/io", parsed.path)
+        m = _RE_PTY_IO.fullmatch(parsed.path)
         if m:
             self._handle_pty_ws(m.group(1), urllib.parse.parse_qs(parsed.query))
             return
-        m = re.fullmatch(r"/api/ptys/([0-9a-f-]+)", parsed.path)
+        m = _RE_PTY_GET.fullmatch(parsed.path)
         if m:
             self._handle_pty_get(m.group(1))
             return
@@ -4695,27 +4793,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path == "/api/ptys":
             self._handle_pty_create(body)
         else:
-            m = re.fullmatch(r"/api/jobs/([0-9a-f-]+)/cancel", parsed.path)
+            m = _RE_JOB_CANCEL.fullmatch(parsed.path)
             if m:
                 self._handle_job_cancel(m.group(1))
                 return
-            m = re.fullmatch(r"/api/jobs/([0-9a-f-]+)/input", parsed.path)
+            m = _RE_JOB_INPUT.fullmatch(parsed.path)
             if m:
                 self._handle_job_input(m.group(1), body)
                 return
-            m = re.fullmatch(r"/api/ptys/([0-9a-f-]+)/kill", parsed.path)
+            m = _RE_PTY_KILL.fullmatch(parsed.path)
             if m:
                 self._handle_pty_kill(m.group(1))
                 return
-            m = re.fullmatch(r"/api/jobs/([0-9a-f-]+)/interrupt", parsed.path)
+            m = _RE_JOB_INTERRUPT.fullmatch(parsed.path)
             if m:
                 self._handle_job_interrupt(m.group(1))
                 return
-            m = re.fullmatch(r"/api/skills/proposals/([A-Za-z0-9_\-]+)/(accept|reject)", parsed.path)
+            m = _RE_SKILL_PROPOSAL_DECIDE.fullmatch(parsed.path)
             if m:
                 self._handle_proposal_decision(m.group(1), m.group(2))
                 return
-            m = re.fullmatch(r"/api/skills/suggestions/([A-Za-z0-9_\-]+)/draft", parsed.path)
+            m = _RE_SKILL_SUGGESTION_DRAFT.fullmatch(parsed.path)
             if m:
                 self._handle_suggestion_draft(m.group(1))
                 return
@@ -4723,14 +4821,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # selects the structural-audit prompt variant. The skill name
             # is validated against the project skill index (so plugin /
             # user-scope skills can't be edited through this endpoint).
-            m = re.fullmatch(r"/api/skills/([A-Za-z0-9_\-]+)/improve", parsed.path)
+            m = _RE_SKILL_IMPROVE_NOW.fullmatch(parsed.path)
             if m:
                 self._handle_skill_improve_now(m.group(1))
                 return
             if parsed.path == "/api/agents/suggest":
                 self._handle_agent_suggest()
                 return
-            m = re.fullmatch(r"/api/agents/proposals/([A-Za-z0-9_\-]+)/(accept|reject)", parsed.path)
+            m = _RE_AGENT_PROPOSAL_DECIDE.fullmatch(parsed.path)
             if m:
                 self._handle_agent_proposal_decision(m.group(1), m.group(2))
                 return
@@ -5790,7 +5888,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         Each entry carries ``metrics: null`` as a forward-looking hook for
         the auto skill-improver that will record per-skill performance
-        after jobs."""
+        after jobs.
+
+        Cached for ``_CATALOG_TTL_SECONDS`` because dashboard boot fires
+        this endpoint in parallel with /api/agents/all and /api/usage/total
+        — without the cache the FS walks across 3 dirs + the metrics
+        aggregator add ~300-500 ms to first paint."""
+        now_mono = time.monotonic()
+        if _SKILLS_ALL_CACHE["data"] is not None and (now_mono - _SKILLS_ALL_CACHE["at"]) < _CATALOG_TTL_SECONDS:
+            self._json(200, _SKILLS_ALL_CACHE["data"])
+            return
         home = Path.home()
         sources = [
             ("project",       "Project workflow", "claude", ROOT / ".claude" / "skills"),
@@ -5828,7 +5935,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "exists": path.is_dir(),
                 "count": len(entries),
             }
-        self._json(200, {"skills": all_skills, "sources": source_meta})
+        payload = {"skills": all_skills, "sources": source_meta}
+        _SKILLS_ALL_CACHE["data"] = payload
+        _SKILLS_ALL_CACHE["at"] = now_mono
+        self._json(200, payload)
 
     def _handle_agent_content(self, qs: dict[str, list[str]]) -> None:
         """Return the raw markdown of an agent file by path.
@@ -5903,7 +6013,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
           * ``plugin_cache``  -> ``~/.claude/plugins/cache/**/agents/*.md``        (read-only)
 
         Plugin agents are surfaced so the user can spot duplication with
-        their own agents but are never editable from the dashboard."""
+        their own agents but are never editable from the dashboard.
+
+        Cached for ``_CATALOG_TTL_SECONDS`` — the plugin_market and
+        plugin_cache scans use recursive ``glob("**/agents/*.md")`` which
+        can walk thousands of plugin files; without the cache, every
+        dashboard tab switch back to Agents would re-walk them."""
+        now_mono = time.monotonic()
+        if _AGENTS_ALL_CACHE["data"] is not None and (now_mono - _AGENTS_ALL_CACHE["at"]) < _CATALOG_TTL_SECONDS:
+            self._json(200, _AGENTS_ALL_CACHE["data"])
+            return
         home = Path.home()
         sources = [
             ("project",       "Project",          True,  ROOT / ".claude" / "agents",                       False),
@@ -5939,7 +6058,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             name_counts[a["name"]] = name_counts.get(a["name"], 0) + 1
         for a in all_agents:
             a["duplicate"] = name_counts[a["name"]] > 1
-        self._json(200, {"agents": all_agents, "sources": source_meta})
+        payload = {"agents": all_agents, "sources": source_meta}
+        _AGENTS_ALL_CACHE["data"] = payload
+        _AGENTS_ALL_CACHE["at"] = now_mono
+        self._json(200, payload)
 
     def _handle_skills_suggestions(self, qs: dict[str, list[str]]) -> None:
         """Detect clusters of repeated work in the persistent job ledger and

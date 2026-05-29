@@ -4,6 +4,38 @@
     var $ = (sel) => document.querySelector(sel);
     var $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+    // Trailing-edge debounce. Used for high-frequency input handlers
+    // (search boxes) where each keystroke would otherwise drive a full
+    // grid re-render. Exposed on window so app/*.js can share it without
+    // each module redefining its own copy.
+    function debounce(fn, waitMs) {
+      let timer = null;
+      return function debounced(...args) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => { timer = null; fn.apply(this, args); }, waitMs);
+      };
+    }
+    window.debounce = debounce;
+
+    // Render-skip guard. Many dashboard renderers (timeline, events table,
+    // session/phase dropdowns) wipe + rebuild large innerHTML blocks on
+    // every poll, even when the underlying data didn't change. Wrap a
+    // render with `renderIfChanged(el, fingerprint, fn)`: if the fingerprint
+    // is identical to the one stored on the element, the render is skipped.
+    // Otherwise the fingerprint is updated and `fn()` runs. Use a coarse
+    // fingerprint string built from the data's identity-bearing fields —
+    // arrays of ids, counts, durations of live rows. Returns true if a
+    // render ran, false if it was skipped (callers can use this to also
+    // skip downstream meta updates).
+    function renderIfChanged(el, fingerprint, fn) {
+      if (!el) return false;
+      if (el.dataset.renderFp === fingerprint) return false;
+      el.dataset.renderFp = fingerprint;
+      fn();
+      return true;
+    }
+    window.renderIfChanged = renderIfChanged;
+
     // `marked.setOptions` runs at script-parse time. If the CDN script that
     // defines `marked` failed to load, accessing it here throws synchronously
     // and aborts the rest of core.js — every later module fails to load and
@@ -83,16 +115,19 @@
         $(s)?.addEventListener("keydown", (e) => { if (e.key === "Enter") submitMemory(); });
       });
       $("#dec-decision")?.addEventListener("keydown", (e) => { if (e.key === "Enter") submitDecision(); });
-      // Skills search input
-      $("#skills-search")?.addEventListener("input", (e) => {
+      // Skills / Agents search inputs.
+      // Without a debounce, every keystroke wipes the grid via innerHTML and
+      // re-binds N click listeners (one per card). On a catalog with 50+
+      // skills/agents that was visibly janky while typing. 120 ms is the
+      // sweet spot between "feels responsive" and "skip 80% of redraws".
+      $("#skills-search")?.addEventListener("input", debounce((e) => {
         _skillsState.query = e.target.value;
         renderSkillsGrid();
-      });
-      // Agents search input
-      $("#agents-search")?.addEventListener("input", (e) => {
+      }, 120));
+      $("#agents-search")?.addEventListener("input", debounce((e) => {
         _agentsState.query = e.target.value;
         renderAgentsGrid();
-      });
+      }, 120));
       // Proposal modal wiring
       $("#proposal-modal-close")?.addEventListener("click", closeProposalModal);
       $("#proposal-modal")?.addEventListener("click", (e) => {

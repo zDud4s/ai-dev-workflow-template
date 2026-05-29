@@ -5,11 +5,12 @@
 
     var _agentsState = { all: [], sources: {}, filter: "all", query: "" };
 
-    // Wired-once flag for the delegated keydown listener on #agents-grid.
-    // Click handlers are rebound per-render (innerHTML replaces them), but
-    // the keydown listener lives on the stable grid container and must
-    // only be attached once or each Enter/Space would fire N openers.
-    var _agentsGridKeydownWired = false;
+    // Wired-once flag for the delegated click + keydown listeners on
+    // #agents-grid. The grid container is stable across renders (innerHTML
+    // replaces children, not the host element), so a one-shot wire suffices.
+    // Without this, every search keystroke re-attached N click listeners,
+    // which was the primary perf complaint on the agents view.
+    var _agentsGridDelegationWired = false;
 
     // Shorten an absolute path by collapsing the project root to "<repo>"
     // and the user's home to "~". Both values are derived dynamically from
@@ -101,6 +102,19 @@
         const data = await r.json();
         _agentsState.all = data.agents || [];
         _agentsState.sources = data.sources || {};
+        // Pre-compute the per-agent fields that renderAgentsGrid() needs.
+        // parseAgentTools does a try/catch around JSON.parse (a known perf
+        // footgun when the input is rarely JSON), and shortPath rebuilds
+        // the repo/home prefixes from _agentsState.sources on every call.
+        // Both are stable for the lifetime of this data load, so we cache
+        // them once instead of recomputing per card on every render
+        // (search keystroke = full grid re-render).
+        _agentsState.all.forEach((a) => {
+          a._toolsParsed = parseAgentTools(a.tools || "");
+          a._pathShort = shortPath(a.path || "");
+          a._nameLower = (a.name || "").toLowerCase();
+          a._descLower = (a.description || "").toLowerCase();
+        });
         const countEl = $("#count-agents");
         if (countEl) countEl.textContent = _agentsState.all.length;
         renderAgentsSummary();
@@ -179,11 +193,14 @@
     function renderAgentsGrid() {
       const q = (_agentsState.query || "").trim().toLowerCase();
       const filter = _agentsState.filter;
+      // Use pre-lowercased name/description cached in loadAgents() so the
+      // search filter stops re-lowercasing both strings per agent per
+      // keystroke. On a 100-agent catalog this is a measurable win.
       const filtered = _agentsState.all.filter((a) => {
         if (filter !== "all" && a.source !== filter) return false;
         if (!q) return true;
-        return (a.name || "").toLowerCase().includes(q)
-            || (a.description || "").toLowerCase().includes(q);
+        return (a._nameLower || "").includes(q)
+            || (a._descLower || "").includes(q);
       });
       const metaEl = $("#agents-meta");
       if (metaEl) metaEl.textContent = `${filtered.length} of ${_agentsState.all.length} shown`;
@@ -206,7 +223,10 @@
         const sourcePill = `<span class="pill">${escape(a.source_label || a.source)}</span>`;
         const modelPill = a.model ? `<span class="metric-pill">${escape(a.model)}</span>` : "";
         const dupPill = a.duplicate ? `<span class="metric-pill warn" title="another agent shares this name in a different scope">duplicate name</span>` : "";
-        const tools = parseAgentTools(a.tools || "");
+        // Read pre-parsed tools + short path from loadAgents(); fall back
+        // to a fresh parse only if some future code path injects an agent
+        // without going through the loader.
+        const tools = a._toolsParsed || parseAgentTools(a.tools || "");
         const toolsRow = tools.length
           ? `<div class="metrics-row" title="${escape(a.tools)}">${
               tools.slice(0, 6)
@@ -214,30 +234,33 @@
                 .join("")
             }</div>`
           : "";
+        const pathShort = a._pathShort != null ? a._pathShort : shortPath(a.path);
         return `<div class="card skill-card agent-card" tabindex="0" role="button" data-source="${escape(a.source)}" data-name="${escape(a.name)}" data-path="${escape(a.path)}" title="Click for details">
           <h3>${escape(a.name)} ${modelPill} ${dupPill}</h3>
           <div class="desc">${escape(a.description || "-")}</div>
           ${toolsRow}
-          <div class="path" title="${escape(a.path)}">${escape(shortPath(a.path))}</div>
+          <div class="path" title="${escape(a.path)}">${escape(pathShort)}</div>
           <div class="meta-row">${sourcePill}</div>
         </div>`;
       }).join("");
-      grid.querySelectorAll(".skill-card[data-name]").forEach((card) => {
-        card.addEventListener("click", () => {
+      // Click + keydown are both delegated on the stable grid container.
+      // Previously a click listener was attached to every card on every
+      // render, so typing in the search box re-attached N listeners per
+      // keystroke. Now we wire once and bubble.
+      if (!_agentsGridDelegationWired) {
+        grid.addEventListener("click", (e) => {
+          const card = e.target.closest(".agent-card[data-name]");
+          if (!card || !grid.contains(card)) return;
           openAgentDetail(card.dataset.path, card.dataset.name, card.dataset.source);
         });
-      });
-      // Delegated keydown so Enter/Space activate a focused agent card.
-      // Wired once on the stable grid container — see _agentsGridKeydownWired.
-      if (!_agentsGridKeydownWired) {
         grid.addEventListener("keydown", (e) => {
           if (e.key !== "Enter" && e.key !== " ") return;
           const card = e.target.closest(".agent-card[data-name]");
           if (!card) return;
           e.preventDefault();
-          card.click();
+          openAgentDetail(card.dataset.path, card.dataset.name, card.dataset.source);
         });
-        _agentsGridKeydownWired = true;
+        _agentsGridDelegationWired = true;
       }
     }
 

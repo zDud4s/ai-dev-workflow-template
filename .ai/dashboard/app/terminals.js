@@ -3129,16 +3129,27 @@
           } catch (e) { console.warn("[terminals] PTY resize send failed: " + (e && e.message ? e.message : e)); }
         }
       });
+      // Debounce so a window-drag burst (~60 Hz of resize events) collapses
+      // into a handful of fit.fit() calls instead of one per frame. xterm's
+      // fit() reflows + repaints the cell grid, which is the expensive bit —
+      // the WS resize message itself is already deduped via lastCols/Rows.
+      // 80 ms is short enough that the terminal still feels alive during a
+      // drag (user sees a settle within ~5 frames) and long enough to absorb
+      // typical burst patterns. Uses window.debounce (defined in core.js,
+      // loaded earlier in defer order).
+      const debouncedResize = (typeof window.debounce === "function")
+        ? window.debounce(sendResize, 80)
+        : sendResize;
       if (typeof ResizeObserver !== "undefined") {
-        const ro = new ResizeObserver(() => sendResize());
+        const ro = new ResizeObserver(() => debouncedResize());
         ro.observe(body);
         t._resizeObserver = ro;
       } else {
         // Capture the fallback listener so termClosePty can remove it.
         // Without this, every closed PTY pane leaks a window-level
         // resize handler that keeps the term object alive forever.
-        t._resizeFallback = sendResize;
-        window.addEventListener("resize", sendResize);
+        t._resizeFallback = debouncedResize;
+        window.addEventListener("resize", debouncedResize);
       }
       // (The expand button's own click listener already re-fits xterm on
       // the post-expand frame; the ResizeObserver above catches every

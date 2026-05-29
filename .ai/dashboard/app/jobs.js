@@ -412,34 +412,49 @@
         // IDE transcripts are Claude-only; only relevant when kind === "chat".
         const ideSessions = (kind === "chat") ? (ideData.transcripts || []) : [];
 
-        const parts = [`<option value="">— new session —</option>`];
-        if (dashSessions.length) {
-          parts.push(`<optgroup label="Dashboard chats">`);
-          for (const s of dashSessions) {
-            const preview = (s.task || "").replace(/\s+/g, " ").slice(0, 60);
-            const when = s.started_at ? s.started_at.slice(11, 16) : "—";
-            parts.push(`<option value="${escape(s.session_id)}">[${escape(when)}] ${escape(preview)}</option>`);
-          }
-          parts.push(`</optgroup>`);
-        }
-        if (ideSessions.length) {
-          parts.push(`<optgroup label="IDE chats (this repo)">`);
-          for (const s of ideSessions) {
-            const when = s.modified ? s.modified.slice(5, 16).replace("T", " ") : "—";
-            const preview = (s.task || "").replace(/\s+/g, " ").slice(0, 60)
-              || `(${(s.session_id || "").slice(0, 8)})`;
-            parts.push(`<option value="${escape(s.session_id)}">[${escape(when)}] ${escape(preview)}</option>`);
-          }
-          parts.push(`</optgroup>`);
-        }
-        sel.innerHTML = parts.join("");
-
-        // Preserve selection if it survived the refresh.
+        // Fingerprint so polls that return the same session list skip the
+        // innerHTML rebuild. Key fields: id + ended_at for dashboard chats
+        // (started_at doesn't change but ended_at flips when the chat
+        // finishes) and id + modified for IDE transcripts (mtime advances
+        // when the user replies, so the timestamp captures activity).
+        const fp = kind + "|" + String(dashSessions.length) + ":"
+          + dashSessions.map((s) => (s.session_id || "") + "@" + (s.ended_at || "")).join(",")
+          + "|" + String(ideSessions.length) + ":"
+          + ideSessions.map((s) => (s.session_id || "") + "@" + (s.modified || "")).join(",");
+        const changed = (typeof window.renderIfChanged === "function")
+          ? window.renderIfChanged(sel, fp, () => {
+              const parts = [`<option value="">— new session —</option>`];
+              if (dashSessions.length) {
+                parts.push(`<optgroup label="Dashboard chats">`);
+                for (const s of dashSessions) {
+                  const preview = (s.task || "").replace(/\s+/g, " ").slice(0, 60);
+                  const when = s.started_at ? s.started_at.slice(11, 16) : "—";
+                  parts.push(`<option value="${escape(s.session_id)}">[${escape(when)}] ${escape(preview)}</option>`);
+                }
+                parts.push(`</optgroup>`);
+              }
+              if (ideSessions.length) {
+                parts.push(`<optgroup label="IDE chats (this repo)">`);
+                for (const s of ideSessions) {
+                  const when = s.modified ? s.modified.slice(5, 16).replace("T", " ") : "—";
+                  const preview = (s.task || "").replace(/\s+/g, " ").slice(0, 60)
+                    || `(${(s.session_id || "").slice(0, 8)})`;
+                  parts.push(`<option value="${escape(s.session_id)}">[${escape(when)}] ${escape(preview)}</option>`);
+                }
+                parts.push(`</optgroup>`);
+              }
+              sel.innerHTML = parts.join("");
+            })
+          : true;
+        // Preserve selection if it survived the refresh. Always re-apply
+        // even on skip, because some other code path (e.g. the user
+        // clicking an option) may have changed sel.value since last poll.
         const allIds = new Set([
           ...dashSessions.map((s) => s.session_id),
           ...ideSessions.map((s) => s.session_id),
         ]);
         if (prev && allIds.has(prev)) sel.value = prev;
+        void changed;  // keep symbol for future telemetry hooks
       } catch (e) {
         // Network failure or malformed response — surface to the console so
         // operators can diagnose, and drop an "(error)" placeholder into the
@@ -760,11 +775,41 @@
       const filterSid = window._timelineSessionFilter || null;
       chart.classList.toggle("tl-many", runs.length > 8);
       if (!runs.length) {
-        chart.innerHTML = bannerHtml + (filterSid
-          ? `<div class="tl-empty">No runs match session <code>${escape(filterSid.slice(0, 8))}</code>. Clear the filter to see all runs.</div>`
-          : `<div class="tl-empty">No pipeline runs match the current filters.</div>`);
+        const emptyFp = "empty|" + (filterSid || "") + "|" + bannerHtml.length;
+        if (typeof window.renderIfChanged === "function") {
+          window.renderIfChanged(chart, emptyFp, () => {
+            chart.innerHTML = bannerHtml + (filterSid
+              ? `<div class="tl-empty">No runs match session <code>${escape(filterSid.slice(0, 8))}</code>. Clear the filter to see all runs.</div>`
+              : `<div class="tl-empty">No pipeline runs match the current filters.</div>`);
+          });
+        } else {
+          chart.innerHTML = bannerHtml + (filterSid
+            ? `<div class="tl-empty">No runs match session <code>${escape(filterSid.slice(0, 8))}</code>. Clear the filter to see all runs.</div>`
+            : `<div class="tl-empty">No pipeline runs match the current filters.</div>`);
+        }
         return;
       }
+      // Fingerprint built from identity-bearing fields + per-row durations,
+      // so a pure auto-refresh of an idle pipeline (no running phases)
+      // skips the entire SVG/innerHTML rebuild. Includes phase count +
+      // total_duration_ms so live runs (whose duration ticks each poll)
+      // correctly invalidate. globalStart/globalSpan are folded in because
+      // an axis rescale must always re-render the bars.
+      const fp = "rows|" + (filterSid || "") + "|" + globalStart + ":" + globalSpan
+        + "|" + runs.length + ":"
+        + runs.map((r) => (r.session_id || "")
+            + "/" + (r.ended_at || "live")
+            + "/" + ((r.phases || []).length)
+            + "/" + (r.total_duration_ms || 0)).join(",");
+      if (typeof window.renderIfChanged === "function" && !window.renderIfChanged(chart, fp, () => _tlBuildRowsHtml(runs, globalStart, globalSpan, bannerHtml, filterSid, chart))) {
+        return;
+      }
+      if (typeof window.renderIfChanged !== "function") {
+        _tlBuildRowsHtml(runs, globalStart, globalSpan, bannerHtml, filterSid, chart);
+      }
+    }
+
+    function _tlBuildRowsHtml(runs, globalStart, globalSpan, bannerHtml, filterSid, chart) {
       chart.innerHTML = bannerHtml + runs.map((run) => {
         const phases = run.phases || [];
         const bars = phases.map((ph) => {
@@ -1089,7 +1134,32 @@
         if (meta) meta.textContent = `0 / ${_eventsCache.length}`;
         return;
       }
-      body.innerHTML = _eventsState.group ? _evRenderGrouped(filtered) : _evRenderFlat(filtered);
+      // Fingerprint: filter state (so filter/search changes invalidate) +
+      // the per-row identity tuple (ts + session_id + phase) + the open-row
+      // set (expanding/collapsing must re-render that row's <tr.ev-expand>).
+      // On a 5s auto-refresh with no new events and no UI change, this skips
+      // the full ~2000-row innerHTML rebuild entirely.
+      const fp = "ev|"
+        + (_eventsState.group ? "g" : "f") + "|"
+        + (_eventsState.search || "") + "|"
+        + (_eventsState.phase || "") + "|"
+        + (_eventsState.exit || "") + "|"
+        + (_eventsState.range || "") + "|"
+        + filtered.length + ":"
+        + filtered.map((e) => (e.ts || "") + ":" + (e.session_id || "") + ":" + (e.phase || "")).join(",")
+        + "|"
+        + Array.from(_eventsState.expanded || []).sort().join(",");
+      const doRender = () => {
+        body.innerHTML = _eventsState.group ? _evRenderGrouped(filtered) : _evRenderFlat(filtered);
+      };
+      if (typeof window.renderIfChanged === "function") {
+        window.renderIfChanged(body, fp, doRender);
+      } else {
+        doRender();
+      }
+      // Meta always refreshes its timestamp — the "updated HH:MM:SS" line
+      // is the visible signal that the auto-refresh actually ran, even
+      // when no rows changed.
       if (meta) meta.textContent = `${filtered.length} / ${_eventsCache.length} · updated ${new Date().toLocaleTimeString()}`;
     }
 
@@ -1098,10 +1168,22 @@
       if (!sel) return;
       const current = sel.value;
       const phases = Array.from(new Set(_eventsCache.map((e) => e.phase).filter(Boolean))).sort();
-      const opts = [`<option value="">all phases</option>`].concat(
-        phases.map((p) => `<option value="${escape(p)}">${escape(p)}</option>`)
-      );
-      sel.innerHTML = opts.join("");
+      // The phase set rarely changes between 5s polls — skip the rebuild
+      // when it's identical to last render. Sorted join is the fingerprint.
+      const fp = phases.join(",");
+      if (typeof window.renderIfChanged === "function") {
+        window.renderIfChanged(sel, fp, () => {
+          const opts = [`<option value="">all phases</option>`].concat(
+            phases.map((p) => `<option value="${escape(p)}">${escape(p)}</option>`)
+          );
+          sel.innerHTML = opts.join("");
+        });
+      } else {
+        const opts = [`<option value="">all phases</option>`].concat(
+          phases.map((p) => `<option value="${escape(p)}">${escape(p)}</option>`)
+        );
+        sel.innerHTML = opts.join("");
+      }
       if (current && phases.includes(current)) sel.value = current;
     }
 
