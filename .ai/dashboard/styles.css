@@ -2492,6 +2492,64 @@
     }
     .skeleton-events-stats .skeleton-stat { width: 80px; height: 12px; }
 
+    /* Skill detail modal — meta row override.
+       The shared .proposal-modal-meta is a flex-wrap row of bare spans.
+       That works for the proposal modal's short labels but crowded the
+       skill modal where path + tool + source + telemetry all collided
+       on one wrapping line. Stack them as: [labelled chips row] / [path] /
+       [rationale], with labels as dim uppercase eyebrows so values pop. */
+    #skill-detail-meta {
+      flex-direction: column;
+      gap: var(--s-2);
+      align-items: stretch;
+    }
+    #skill-detail-meta .skill-meta-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--s-2) var(--s-3);
+      align-items: center;
+    }
+    #skill-detail-meta .skill-meta-item {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    #skill-detail-meta .skill-meta-item .k,
+    #skill-detail-meta .skill-meta-path .k {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--text-dim);
+    }
+    #skill-detail-meta .skill-meta-item .v,
+    #skill-detail-meta .skill-meta-path .v {
+      color: var(--text);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+    }
+    #skill-detail-meta .skill-meta-item.is-empty {
+      font-size: 10px;
+      color: var(--text-faint);
+      letter-spacing: 0.04em;
+    }
+    #skill-detail-meta .skill-meta-path {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding-top: var(--s-2);
+      border-top: 1px dashed var(--border-soft);
+    }
+    #skill-detail-meta .skill-meta-path .v {
+      word-break: break-all;
+      color: var(--text-2);
+    }
+    #skill-detail-meta .skill-detail-rationale {
+      color: var(--text-2);
+      font-family: var(--ff-body);
+      font-size: var(--fs-3);
+      line-height: 1.5;
+      max-width: 75ch;
+    }
     /* Skill detail modal body */
     .skill-detail-body {
       flex: 1 1 auto;
@@ -2521,12 +2579,13 @@
       background: var(--bg);
       border: 1px solid var(--border-soft);
       padding: var(--s-3) var(--s-4);
-      white-space: pre-wrap;
       word-break: break-word;
       /* No inner max-height — .skill-detail-body owns the scroll. Nested
          scrolls forced the user to scroll twice for long SKILL.md files. */
       overflow: visible;
     }
+    /* Plain-text fallback (marked/DOMPurify unavailable): preserve newlines. */
+    .skill-detail-content.is-raw { white-space: pre-wrap; }
     .skill-detail-content h1,
     .skill-detail-content h2,
     .skill-detail-content h3 {
@@ -2535,6 +2594,14 @@
       letter-spacing: 0.04em;
       margin: var(--s-4) 0 var(--s-2);
     }
+    .skill-detail-content h1:first-child,
+    .skill-detail-content h2:first-child,
+    .skill-detail-content h3:first-child { margin-top: 0; }
+    .skill-detail-content p { margin: 0 0 var(--s-2); }
+    .skill-detail-content ul,
+    .skill-detail-content ol { margin: 0 0 var(--s-2); padding-left: 22px; }
+    .skill-detail-content li { margin: 2px 0; }
+    .skill-detail-content li > p { margin: 0; }
     .skill-detail-content code {
       background: var(--bg-inset);
       padding: 1px 5px;
@@ -2544,6 +2611,7 @@
       background: var(--bg-inset);
       padding: var(--s-3);
       overflow-x: auto;
+      margin: 0 0 var(--s-2);
     }
     #agent-detail-content {
       overflow: auto;

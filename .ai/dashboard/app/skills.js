@@ -234,26 +234,40 @@
       const historyCountEl = $("#skill-detail-history-count");
       if (historyCountEl) historyCountEl.textContent = "·";
 
-      // Meta row
-      const meta = [];
+      // Meta row — structured key/value pairs so labels can be styled as
+      // dim uppercase eyebrows while values keep mono weight. Path lives
+      // on its own line because it's typically the longest and crowding
+      // it inline forced horizontal scanning in the previous flat layout.
+      const lineItems = [];
+      let pathHtml = "";
+      let telemetryPill = "";
       if (cached) {
         const m = cached.metrics;
-        meta.push(`tool: ${escape(cached.tool || "—")}`);
-        meta.push(`source: ${escape(cached.source_label || cached.source)}`);
-        meta.push(`path: ${escape(cached.path)}`);
+        const kv = (k, v) =>
+          `<span class="skill-meta-item"><span class="k">${escape(k)}</span><span class="v">${escape(v)}</span></span>`;
+        lineItems.push(kv("tool", cached.tool || "—"));
+        lineItems.push(kv("source", cached.source_label || cached.source));
         if (m && m.total_jobs) {
           const rate = Math.round((m.success_rate || 0) * 100);
-          meta.push(`success: ${rate}%`);
-          meta.push(`${m.total_jobs} jobs · ${m.total_invocations} calls`);
+          // Match the grid's threshold logic so the modal's pill agrees
+          // with the card the user just clicked through from.
+          const rateCls = rate >= 80 ? "ok" : rate >= 50 ? "warn" : "bad";
+          telemetryPill = `<span class="metric-pill ${rateCls}" title="${m.total_jobs} jobs · ${m.total_invocations} calls">${rate}% ok</span>`;
+          lineItems.push(kv("jobs", `${m.total_jobs} · ${m.total_invocations} calls`));
         } else {
-          meta.push("no telemetry yet");
+          lineItems.push(`<span class="skill-meta-item is-empty">no telemetry yet</span>`);
+        }
+        if (cached.path) {
+          pathHtml = `<div class="skill-meta-path"><span class="k">path</span><span class="v">${escape(cached.path)}</span></div>`;
         }
       }
       const rationaleHtml = cached && cached.description
-        ? `<div style="margin-top:6px;color:var(--text-2)">${escape(cached.description)}</div>`
+        ? `<div class="skill-detail-rationale">${escape(cached.description)}</div>`
         : "";
       $("#skill-detail-meta").innerHTML =
-        meta.map((s) => `<span>${s}</span>`).join("") + rationaleHtml;
+        `<div class="skill-meta-line">${lineItems.join("")}${telemetryPill}</div>`
+        + pathHtml
+        + rationaleHtml;
 
       // Pre-await guard: if a later click has already updated
       // _currentSkillKey, abandon this opener so we don't waste a fetch
@@ -289,8 +303,10 @@
         const el = $("#skill-detail-content");
         try {
           el.innerHTML = DOMPurify.sanitize(marked.parse(text));
+          el.classList.remove("is-raw");
         } catch (_) {
           el.textContent = text;
+          el.classList.add("is-raw");
         }
         if (content.value.truncated) {
           el.insertAdjacentHTML(
