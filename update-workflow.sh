@@ -648,6 +648,78 @@ merge_claude_settings(
     script_dir / ".claude/settings.json",
     target_dir / ".claude/settings.json",
 )
+
+# --- Pre-refactor structure migration ---
+# Before the May-2026 refactor the dashboard wrote ledgers directly under
+# .ai/ and .ai/dashboard/, and stored proposals/backups in flat directories
+# under .ai/dashboard/. The refactored serve.py reads ONLY from the new
+# paths, so pre-refactor user data (events, metrics, accepted proposals)
+# would become invisible. Move it into place. Idempotent: if the new path
+# already holds data we merge ledgers (old lines first, append new) and
+# skip per-file collisions inside proposal dirs to avoid clobbering.
+LEDGER_MIGRATIONS = [
+    (".ai/dashboard/jobs.jsonl",          ".ai/ledgers/jobs.jsonl"),
+    (".ai/events.jsonl",                  ".ai/ledgers/events.jsonl"),
+    (".ai/metrics.jsonl",                 ".ai/ledgers/metrics.jsonl"),
+    (".ai/dashboard/skill_metrics.jsonl", ".ai/ledgers/skill_metrics.jsonl"),
+    (".ai/dashboard/improvements.jsonl",  ".ai/ledgers/improvements.jsonl"),
+]
+PROPOSAL_DIR_MIGRATIONS = [
+    (".ai/dashboard/skill_proposals", ".ai/dashboard/proposals/skills"),
+    (".ai/dashboard/agent_proposals", ".ai/dashboard/proposals/agents"),
+    (".ai/dashboard/skill_backups",   ".ai/dashboard/proposals/skill_backups"),
+]
+
+def migrate_ledger_file(old_rel, new_rel):
+    old = target_dir / old_rel
+    new = target_dir / new_rel
+    if not old.is_file():
+        return
+    new.parent.mkdir(parents=True, exist_ok=True)
+    if not new.exists():
+        old.replace(new)
+        print(f"Migrated {old} -> {new} (pre-refactor ledger)")
+        return
+    old_text = old.read_text(encoding="utf-8")
+    if not old_text:
+        old.unlink()
+        return
+    if not old_text.endswith("\n"):
+        # JSONL is line-oriented; missing trailing newline on old would fuse
+        # the last old record with the first new one. Force one.
+        old_text += "\n"
+    new_text = new.read_text(encoding="utf-8")
+    new.write_text(old_text + new_text, encoding="utf-8", newline="\n")
+    old.unlink()
+    print(f"Merged {old} into {new} (pre-refactor ledger; old lines kept on top)")
+
+def migrate_proposal_dir(old_rel, new_rel):
+    old = target_dir / old_rel
+    new = target_dir / new_rel
+    if not old.is_dir() or old.is_symlink():
+        return
+    new.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for child in list(old.iterdir()):
+        dest = new / child.name
+        if dest.exists():
+            continue  # don't overwrite — leave the collision in the old dir
+        child.replace(dest)
+        moved += 1
+    leftovers = list(old.iterdir())
+    if not leftovers:
+        try:
+            old.rmdir()
+            print(f"Migrated {old} -> {new} ({moved} item(s) moved, legacy dir removed)")
+        except OSError:
+            print(f"Migrated {old} -> {new} ({moved} item(s) moved; legacy dir not removable)")
+    else:
+        print(f"Partially migrated {old} -> {new} ({moved} moved, {len(leftovers)} collision(s) left in old)")
+
+for old_rel, new_rel in LEDGER_MIGRATIONS:
+    migrate_ledger_file(old_rel, new_rel)
+for old_rel, new_rel in PROPOSAL_DIR_MIGRATIONS:
+    migrate_proposal_dir(old_rel, new_rel)
 PY
 
 # Global skill mirror for Codex.
