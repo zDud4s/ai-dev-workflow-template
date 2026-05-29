@@ -289,6 +289,27 @@
       return `in ${minutes}m`;
     }
 
+    // Compact "hours-until-reset" for the topbar. Rounded to the nearest
+    // whole hour ("4h"); shows "<1h" when there's less than 30min left so
+    // operators don't misread a near-rollover window as "0h". Returns ""
+    // when the timestamp is missing/invalid so the caller can hide the
+    // span. Accepts the same inputs as formatResetIn (unix-seconds or ISO).
+    function formatResetHoursCompact(when) {
+      if (!when) return "";
+      let target;
+      if (typeof when === "number") target = when * 1000;
+      else if (typeof when === "string") {
+        const t = Date.parse(when);
+        if (isNaN(t)) return "";
+        target = t;
+      } else return "";
+      const ms = target - Date.now();
+      if (ms <= 0) return "0h";
+      const hours = Math.round(ms / 3600000);
+      if (hours === 0) return "<1h";
+      return hours + "h";
+    }
+
     function formatPct(v) {
       // v is 0..100 (claude) or 0..1 (codex used_percent). Caller picks scale.
       if (v == null || isNaN(v)) return "—";
@@ -377,6 +398,41 @@
     }
     window.scheduleTokenUsageRefresh = scheduleTokenUsageRefresh;
 
+    // Visibility-gated poll. The dashboard has no push signal from
+    // external Claude/Codex sessions (no webhook from the OAuth endpoint,
+    // ledger rows only land for workflow phases). Without a poll, the
+    // operator can have many IDE chats running with the dashboard tab
+    // visible and never see the bars move. We run a 60s interval ONLY
+    // while the tab is visible, and pair it with focus/visibility-edge
+    // refreshes so a tab-switch fires immediately rather than waiting
+    // out the interval. The schedule helper's 60s cooldown deduplicates
+    // back-to-back triggers (e.g. focus event firing alongside a tick).
+    var TOKEN_USAGE_POLL_MS = 60000;
+    var _tokenUsagePollTimer = null;
+    function startTokenUsagePoll() {
+      if (_tokenUsagePollTimer) return;
+      _tokenUsagePollTimer = setInterval(scheduleTokenUsageRefresh, TOKEN_USAGE_POLL_MS);
+    }
+    function stopTokenUsagePoll() {
+      if (!_tokenUsagePollTimer) return;
+      clearInterval(_tokenUsagePollTimer);
+      _tokenUsagePollTimer = null;
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        scheduleTokenUsageRefresh();
+        startTokenUsagePoll();
+      } else {
+        stopTokenUsagePoll();
+      }
+    });
+    window.addEventListener("focus", () => { scheduleTokenUsageRefresh(); });
+    // Kick off the poll if the page loads already visible (typical case);
+    // the visibilitychange handler covers the page-loaded-hidden case.
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      startTokenUsagePoll();
+    }
+
     async function loadTokenUsage() {
       if (!$("#ov-claude-total")) return;
       // In-flight sentinel: token usage is fetched on init and from
@@ -429,23 +485,34 @@
         // header shows just the 5h utilization per tool as an at-a-glance
         // strip. Coerce nullish/NaN to "na" so the bar dims rather than
         // pinning to 0% and looking like a healthy quota.
-        function setHeaderUsage(tool, pct) {
+        function setHeaderUsage(tool, pct, resetsAt) {
           const item = document.querySelector(`.usage-item[data-tool="${tool}"]`);
           const bar = document.getElementById(`usage-bar-${tool}`);
           const fill = bar ? bar.querySelector(".usage-bar-fill") : null;
           const pctEl = document.getElementById(`usage-pct-${tool}`);
           if (!item || !bar || !fill || !pctEl) return;
+          // Lazily create the reset-hours sibling so existing markup doesn't
+          // need an HTML change; reused on subsequent refreshes.
+          let resetEl = item.querySelector(".usage-reset");
+          if (!resetEl) {
+            resetEl = document.createElement("span");
+            resetEl.className = "usage-reset";
+            resetEl.title = "Hours until this window resets";
+            item.appendChild(resetEl);
+          }
           const n = pct == null || isNaN(pct) ? null : Math.max(0, Math.min(100, Number(pct)));
           if (n === null) {
             item.dataset.state = "na";
             fill.style.width = "0%";
             pctEl.textContent = "—";
+            resetEl.textContent = "";
             bar.setAttribute("aria-valuenow", "0");
             return;
           }
           item.dataset.state = n >= 90 ? "crit" : n >= 70 ? "warn" : "ok";
           fill.style.width = n + "%";
           pctEl.textContent = formatPct(n);
+          resetEl.textContent = formatResetHoursCompact(resetsAt);
           bar.setAttribute("aria-valuenow", String(Math.round(n)));
         }
 
@@ -457,7 +524,7 @@
           const sd = d.seven_day;
           if (fh) {
             claude5hEl.innerHTML = `<strong>${formatPct(fh.utilization)}</strong> <span style="color:var(--fg-dim);font-size:11px">${formatResetIn(fh.resets_at)}</span>`;
-            setHeaderUsage("claude", fh.utilization);
+            setHeaderUsage("claude", fh.utilization, fh.resets_at);
           } else {
             claude5hEl.textContent = "—";
             setHeaderUsage("claude", null);
@@ -512,7 +579,7 @@
           // Stale snapshots (resets_at in the past) are dimmed in the card
           // strip; mirror that here by treating them as no-data rather than
           // pretending the old number reflects current quota.
-          setHeaderUsage("codex", (p && !p.stale) ? p.used_percent : null);
+          setHeaderUsage("codex", (p && !p.stale) ? p.used_percent : null, (p && !p.stale) ? p.resets_at : null);
           if (codexRL.plan_type) metaBits.push(`Codex plan: ${codexRL.plan_type}`);
           if (codexRL.last_event_at) {
             try {
@@ -526,6 +593,27 @@
           }
         }
         metaEl.textContent = metaBits.join(" · ");
+
+        // Reflect the actual usage-refresh time in the topbar "UPDATED"
+        // label. main.js writes this once on loadAll() boot, so without
+        // this update the timestamp froze at page-load time even when
+        // scheduleTokenUsageRefresh() fetched fresh data. Markup mirrors
+        // the stack used in main.js so the styling stays consistent.
+        const topMeta = document.getElementById("meta");
+        if (topMeta) {
+          const time = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+          topMeta.replaceChildren();
+          const stack = document.createElement("span");
+          stack.className = "meta-stack";
+          const lbl = document.createElement("span");
+          lbl.className = "meta-label";
+          lbl.textContent = "updated";
+          const val = document.createElement("span");
+          val.className = "meta-value";
+          val.textContent = time;
+          stack.append(lbl, val);
+          topMeta.appendChild(stack);
+        }
       } catch (err) {
         console.error(err);
         // Surface the failure to the operator via the toast stack if the

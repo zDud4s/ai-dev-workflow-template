@@ -1257,6 +1257,13 @@
           const dropped = (data.total || 0) - (data.returned || events.length);
           console.warn("[dashboard] events: dropped " + dropped + " older rows (server tail cap; refresh shows newest)");
         }
+        // New ledger rows since the last poll → a workflow phase just
+        // completed somewhere (typically an external Claude/Codex session
+        // outside the dashboard's terminals view). Nudge the topbar usage
+        // bars; the schedule helper rate-limits the actual fetch.
+        if (events.length > _eventsCache.length) {
+          try { window.scheduleTokenUsageRefresh?.(); } catch (_) {}
+        }
         _eventsCache = events;
         const totalCount = (typeof data.total === "number") ? data.total : events.length;
         const countEvEl = $("#count-events");

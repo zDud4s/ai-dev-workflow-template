@@ -350,8 +350,12 @@
       align-items: center;
       /* No border-left — meta + actions form a single right-edge cluster
          (the timestamp pairs naturally with the Refresh button). The
-         left-side separator now belongs to .header-usage. */
-      padding: 0 var(--s-3) 0 var(--s-4);
+         left-side separator now belongs to .header-usage. Left padding
+         tightened to --s-2 after the topbar usage bars gained a
+         reset-hours sibling; the right edge of the usage strip is now
+         the rounded hours, not the percentage, so the perceived gap to
+         UPDATED widened by ~4 chars. */
+      padding: 0 var(--s-3) 0 var(--s-2);
       color: var(--text-2);
       font-family: var(--ff-mono);
       font-size: 10px;
@@ -436,6 +440,21 @@
       color: var(--text);
       font-variant-numeric: tabular-nums;
     }
+    /* Rounded hours-until-reset for the active 5h window. Dim + tabular-
+       nums so the value sits next to the percentage without jitter as it
+       ticks down. min-width fits "<1h" (worst case) without reflow.
+       Negative margin-left tightens the visible gap to the percentage —
+       the .usage-item's 8px flex gap reads as ~12px between two
+       right-aligned numeric boxes, which felt disconnected. */
+    header .usage-reset {
+      min-width: 22px;
+      margin-left: -4px;
+      text-align: right;
+      color: var(--fg-dim);
+      font-variant-numeric: tabular-nums;
+      opacity: 0.75;
+    }
+    header .usage-item[data-state="na"] .usage-reset { color: transparent; }
     @media (prefers-reduced-motion: reduce) {
       header .usage-bar-fill { transition: none; }
     }
@@ -2349,6 +2368,42 @@
     }
     .agent-card .meta-row {
       flex: 0 0 auto;
+    }
+
+    /* ---- Catalog grid paint optimisation ----
+       Skills + Agents grids commonly hold 40-100+ cards. Each .card has a
+       clip-path, a ::before gradient border, an animated ::after beacon
+       and a fade-in animation — the browser was paint-bound on scroll,
+       filter changes, and search keystrokes.
+
+       `content-visibility: auto` makes the browser skip layout + paint for
+       cards that are offscreen, dropping the per-keystroke render cost
+       drastically on long catalogs. `contain: layout paint style` scopes
+       reflows to each card so a single card's hover/focus does not
+       invalidate the whole grid.
+
+       `contain-intrinsic-size` is a placeholder so the browser still
+       reserves vertical space for offscreen cards (otherwise the
+       scrollbar jumps as cards skip rendering). 280×220 matches the
+       agent card and is a safe lower bound for skill cards. */
+    .skill-grid .skill-card,
+    .skill-grid .agent-card {
+      content-visibility: auto;
+      contain: layout paint style;
+      contain-intrinsic-size: 280px 220px;
+    }
+
+    /* Skip the staggered card-in animation on the long catalog grids.
+       The animation uses `filter: blur(3px)` which forces a GPU pass per
+       card per frame — on a 100-card grid that's ~600 blurred passes
+       across the 460ms ramp, dominating the first-paint cost on the
+       Skills and Agents tabs. Other `.cards` containers (overview,
+       summaries, ~3-8 cards) keep the streaming-telemetry feel. */
+    .skill-grid .card,
+    #skills-summary .card,
+    #agents-summary .card {
+      animation: none;
+      opacity: 1;
     }
     /* Skeleton placeholders — shown before data lands so the page
        structure is visible immediately and content swap is smooth.
