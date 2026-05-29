@@ -317,13 +317,40 @@
     }
 
     var _tokenUsageInFlight = false;
+    var _tokenUsageLastFetchAt = 0;
+    var _tokenUsagePendingTimer = null;
+    // Minimum gap between /api/usage/total fetches when refresh is
+    // event-driven (e.g. a terminal turn just finished). Coalesces bursts
+    // when several panes finish at once and avoids hammering the OAuth
+    // endpoint, which is also rate-limited upstream.
+    var TOKEN_USAGE_MIN_INTERVAL_MS = 60000;
+
+    // Event-driven refresh entry point. Call this whenever something
+    // *probably* changed the quota — currently from terminals.js when a
+    // turn completes. Coalesces bursts: a second call while one is queued
+    // is a no-op, and calls inside the cooldown window defer to the trailing
+    // edge instead of firing immediately.
+    function scheduleTokenUsageRefresh() {
+      if (!$("#ov-claude-total")) return;
+      if (_tokenUsagePendingTimer) return;
+      const since = Date.now() - _tokenUsageLastFetchAt;
+      const delay = Math.max(0, TOKEN_USAGE_MIN_INTERVAL_MS - since);
+      _tokenUsagePendingTimer = setTimeout(() => {
+        _tokenUsagePendingTimer = null;
+        loadTokenUsage();
+      }, delay);
+    }
+    window.scheduleTokenUsageRefresh = scheduleTokenUsageRefresh;
+
     async function loadTokenUsage() {
       if (!$("#ov-claude-total")) return;
-      // In-flight sentinel: token usage is also fetched on every tab focus
-      // and a 5s poll. Without this guard a slow /api/usage/total would
-      // stack callers and overwrite each other's results.
+      // In-flight sentinel: token usage is fetched on init and from
+      // scheduleTokenUsageRefresh() on turn-complete. Without this guard a
+      // slow /api/usage/total would stack callers and overwrite each
+      // other's results.
       if (_tokenUsageInFlight) return;
       _tokenUsageInFlight = true;
+      _tokenUsageLastFetchAt = Date.now();
       const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
       const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 30000) : null;
       try {

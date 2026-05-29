@@ -2655,6 +2655,11 @@
       t.body.appendChild(div);
       t.currentAssistant = null;  // next assistant goes in a fresh block
       termRefreshCost(t);          // bring the header pill up to date
+      // A turn just consumed quota — nudge the topbar usage bars to
+      // refresh. The schedule helper coalesces bursts (multiple panes
+      // finishing simultaneously → one fetch) and enforces a cooldown so
+      // we don't hammer /api/usage/total.
+      try { window.scheduleTokenUsageRefresh?.(); } catch (_) {}
       // Turn finished — the pane is now idle and the operator can take
       // the next turn. Warn-colored chip makes it easy to scan the list
       // for "what wants my attention". On error we mark the activity as
