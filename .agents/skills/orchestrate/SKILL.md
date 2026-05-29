@@ -18,6 +18,16 @@ Throughout this skill, "discovery path" means: `.claude/skills/<name>/SKILL.md` 
 
 The user invokes you with `Use the orchestrate skill. Task: [description]`.
 
+## Output format
+
+Returns a Markdown report containing:
+- Task summary and outcome
+- Files changed (paths and counts)
+- Validation results (exit codes and test evidence)
+- Unresolved risks (if any)
+- Memory updates applied
+- Phase execution log (plan, execute, review, wrap-up with tool/model/source columns)
+
 ## Pre-flight checks
 
 Stop immediately if any fail: `.ai/models.yaml` exists; `.ai/project.yaml` `project_name` is not `unknown` (otherwise run bootstrap first); `.ai/workflow/dispatch.md` exists; the executor skill for `execute.tool` exists in your discovery path. If missing, use the dispatch error table wording.

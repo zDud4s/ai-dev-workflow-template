@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Critically review a plan, diff, or implementation for regressions, hidden risk, and unnecessary complexity. Use for risky or cross-cutting tasks.
+description: Critically review a plan, diff, or implementation for scope creep, regressions, broken contracts, and missing validation. Use when implementation is complete and needs pre-merge assessment.
 tools: Read, Glob, Grep, Bash
 ---
 

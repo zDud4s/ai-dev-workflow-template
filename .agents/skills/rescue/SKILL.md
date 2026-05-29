@@ -12,6 +12,14 @@ Use this skill after repeated failure, unclear regressions, or when implementati
 
 Check `.ai/project.yaml`. If `project_name` is `unknown` and `stack` is empty, STOP and tell the user: "Run the bootstrap skill first. The project metadata is empty."
 
+## When NOT to use this skill
+
+- **Problem is localized to one file/function**: Use systematic-debugging instead; rescue is for cross-system failures
+- **No error logs or failure evidence available**: Fix the missing data first (run tests, capture output)
+- **Suspected environmental or permission issue**: Check prerequisites, toolchain setup, and credentials; not an implementation failure
+- **You have not yet tried the simplest fix**: Attempt obvious solutions before escalating to rescue
+- **Already at architectural redesign stage**: If the feature itself is wrong, escalate to review directly
+
 ## Rules
 
 1. Do not continue patching blindly.

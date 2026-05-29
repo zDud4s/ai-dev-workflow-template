@@ -1,6 +1,6 @@
 ---
 name: maintenance
-description: Maintain mutable workflow metadata after repo changes without changing the workflow core.
+description: Maintain project-specific workflow metadata (project.yaml, memory.md, decisions.md) after bootstrap, CI changes, restructuring, or refresh requests—never alter the immutable core.
 tools: Read, Glob, Grep, Edit, Write
 ---
 

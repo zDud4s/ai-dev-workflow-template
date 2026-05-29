@@ -58,6 +58,8 @@ Bootstrap output ≤150 lines.
 
 ## Output format
 
+The skill returns a **markdown report** with the following sections:
+
 - Detected stack
 - Commands (confirmed vs assumed)
 - Important dirs/files
