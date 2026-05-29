@@ -33,11 +33,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import signal
 import socket
 import socketserver
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.client import HTTPResponse
@@ -1061,3 +1064,114 @@ def test_run_improver_for_skill_manual_records_source_manual(
     assert captured["source"] == "manual"
     assert captured["status"] == "no_change"
     assert result["status"] == "no_change"
+
+
+def test_tracked_sids_purged_on_atexit(serve_module, monkeypatch):
+    """The atexit hook snapshots tracked improver SIDs, clears them, and
+    purges each transcript once."""
+    calls = []
+    with serve_module._IMPROVER_TRACKED_SIDS_LOCK:
+        serve_module._IMPROVER_TRACKED_SIDS.clear()
+        serve_module._IMPROVER_TRACKED_SIDS.add("fake-sid")
+
+    monkeypatch.setattr(serve_module, "_purge_claude_transcript", lambda sid: calls.append(sid) or True)
+    serve_module._purge_all_tracked_improver_sids()
+
+    assert calls == ["fake-sid"]
+    with serve_module._IMPROVER_TRACKED_SIDS_LOCK:
+        assert not serve_module._IMPROVER_TRACKED_SIDS
+
+
+def test_tracked_sids_purged_on_sigterm(serve_module, monkeypatch):
+    """The installed signal handler purges tracked SIDs, then chains to the
+    previous handler."""
+    calls = []
+    captured = {}
+    signum = signal.SIGTERM if hasattr(signal, "SIGTERM") else signal.SIGINT
+
+    def previous_handler(_signum, _frame):
+        raise SystemExit(99)
+
+    monkeypatch.setattr(serve_module.atexit, "register", lambda _fn: None)
+    monkeypatch.setattr(serve_module.signal, "getsignal", lambda _sig: previous_handler)
+    monkeypatch.setattr(serve_module.signal, "signal", lambda sig, handler: captured.setdefault(sig, handler))
+    monkeypatch.setattr(serve_module, "_purge_claude_transcript", lambda sid: calls.append(sid) or True)
+    monkeypatch.setattr(serve_module, "_IMPROVER_SHUTDOWN_HANDLERS_INSTALLED", False)
+
+    with serve_module._IMPROVER_TRACKED_SIDS_LOCK:
+        serve_module._IMPROVER_TRACKED_SIDS.clear()
+        serve_module._IMPROVER_TRACKED_SIDS.add("term-sid")
+
+    serve_module._install_improver_shutdown_handlers()
+    with pytest.raises(SystemExit) as exc:
+        captured[signum](signum, None)
+
+    assert exc.value.code == 99
+    assert calls == ["term-sid"]
+    with serve_module._IMPROVER_TRACKED_SIDS_LOCK:
+        assert not serve_module._IMPROVER_TRACKED_SIDS
+
+
+def test_shutdown_signal_chains_default_ignored_and_callable(serve_module, monkeypatch):
+    signum = signal.SIGTERM if hasattr(signal, "SIGTERM") else signal.SIGINT
+    events = []
+
+    monkeypatch.setattr(serve_module, "_purge_all_tracked_improver_sids", lambda: events.append(("purge",)))
+    monkeypatch.setattr(
+        serve_module.signal,
+        "signal",
+        lambda sig, handler: events.append(("signal", sig, handler)),
+    )
+
+    def fake_kill(pid, sig):
+        events.append(("kill", pid, sig))
+        raise SystemExit(128 + sig)
+
+    monkeypatch.setattr(serve_module.os, "kill", fake_kill)
+
+    with pytest.raises(SystemExit) as exc:
+        serve_module._chain_improver_shutdown_signal(signum, None, signal.SIG_DFL)
+    assert exc.value.code == 128 + signum
+    assert ("signal", signum, signal.SIG_DFL) in events
+    assert ("kill", os.getpid(), signum) in events
+
+    before_ignored = len(events)
+    serve_module._chain_improver_shutdown_signal(signum, None, signal.SIG_IGN)
+    assert events[before_ignored:] == [("purge",)]
+
+    called = []
+
+    def previous_handler(sig, frame):
+        called.append((sig, frame))
+
+    with pytest.raises(SystemExit) as exc:
+        serve_module._chain_improver_shutdown_signal(signum, "frame", previous_handler)
+    assert called == [(signum, "frame")]
+    assert exc.value.code == 128 + signum
+
+
+def test_purge_retry_on_permission_error(serve_module, tmp_path, monkeypatch, capsys):
+    """Locked files on Windows are retried before the purge gives up."""
+    sid = "retry-sid"
+    transcript = tmp_path / f"{sid}.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    attempts = {"n": 0}
+    real_unlink = os.unlink
+
+    def flaky_unlink(path):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise PermissionError("locked")
+        real_unlink(path)
+
+    monkeypatch.setattr(serve_module, "_transcripts_dir_for_cwd", lambda _root: tmp_path)
+    monkeypatch.setattr(serve_module.os, "unlink", flaky_unlink)
+
+    started = time.monotonic()
+    assert serve_module._purge_claude_transcript(sid) is True
+    elapsed = time.monotonic() - started
+
+    assert attempts["n"] == 3
+    assert elapsed >= 0.09
+    assert not transcript.exists()
+    assert "after 3 attempts" in capsys.readouterr().out

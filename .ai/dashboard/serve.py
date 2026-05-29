@@ -41,6 +41,7 @@ on Windows when pywinpty isn't installed.
 from __future__ import annotations
 
 import base64
+import atexit
 import datetime as _dt
 import hashlib
 import http.server
@@ -50,6 +51,7 @@ import queue as _stdqueue
 import re
 import secrets
 import select
+import signal
 import shutil
 import socket
 import socketserver
@@ -77,6 +79,8 @@ if _SCRIPTS_DIR not in sys.path:
 # behind one interface.
 import pty_session as _pty_session  # noqa: E402 — scripts/ helper
 import todos_parser as _todos_parser  # noqa: E402 — scripts/ helper
+
+from _improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
 PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
 # The actually-bound port. Diverges from PORT when main()'s dynamic-port
@@ -242,6 +246,9 @@ SKILL_BACKUPS_DIR    = ROOT / ".ai" / "dashboard" / "proposals" / "skill_backups
 IMPROVEMENTS_LEDGER  = ROOT / ".ai" / "ledgers" / "improvements.jsonl"
 _JOBS_PERSIST_LOCK = threading.Lock()
 _IMPROVEMENTS_LEDGER_LOCK = threading.Lock()
+_IMPROVER_TRACKED_SIDS: set[str] = set()
+_IMPROVER_TRACKED_SIDS_LOCK = threading.Lock()
+_IMPROVER_SHUTDOWN_HANDLERS_INSTALLED = False
 _SKILL_METRICS_LOCK = threading.Lock()
 # Serialises /api/workflow/update so two concurrent clients can't both spawn
 # update-workflow.sh against the same tree at the same time (interleaved file
@@ -2424,26 +2431,137 @@ def _post_job_skill_actions(job_id: str, skill_ids: list[str]) -> None:
     _trigger_improvers_for_job(job_id, skill_ids)
 
 
-def _purge_claude_transcript(session_id: str | None) -> None:
+def _purge_claude_transcript(session_id: str | None) -> bool:
     """Delete the per-session JSONL Claude Code wrote for a one-shot
     background call (e.g. an improver run). Without this every improver
     invocation pollutes ``~/.claude/projects/<slug>/`` with a stray
     "OUTPUT FORMAT (STRICT)" session row in the user's chat history.
     Best-effort: missing dir / missing file / OS errors are swallowed."""
     if not session_id:
-        return
+        return False
     try:
         tdir = _transcripts_dir_for_cwd(ROOT)
         if tdir is None:
-            return
+            return False
         f = tdir / f"{session_id}.jsonl"
-        if f.is_file():
-            f.unlink()
+        if not f.is_file():
+            return True
+        for attempt in range(3):
+            try:
+                os.unlink(f)
+                if attempt:
+                    print(
+                        f"[serve] transcript deleted for {session_id} after {attempt + 1} attempts",
+                        flush=True,
+                    )
+                return True
+            except FileNotFoundError:
+                return True
+            except (PermissionError, OSError) as e:
+                if attempt == 2:
+                    print(f"[serve] transcript delete failed for {session_id}: {e}", flush=True)
+                    return False
+                time.sleep(0.05)
     except OSError as e:
         # Best-effort delete (file may be locked on Windows, or removed
         # by a concurrent caller). Log so the operator can see why a
         # stale transcript stuck around.
         print(f"[serve] transcript delete failed for {session_id}: {e}", flush=True)
+        return False
+    return True
+
+
+def _snapshot_tracked_improver_sids() -> list[str]:
+    with _IMPROVER_TRACKED_SIDS_LOCK:
+        sids = sorted(_IMPROVER_TRACKED_SIDS)
+        _IMPROVER_TRACKED_SIDS.clear()
+    return sids
+
+
+def _purge_all_tracked_improver_sids() -> None:
+    for sid in _snapshot_tracked_improver_sids():
+        _purge_claude_transcript(sid)
+
+
+def _chain_improver_shutdown_signal(signum: int, frame, previous_handler) -> None:
+    _purge_all_tracked_improver_sids()
+    if callable(previous_handler):
+        previous_handler(signum, frame)
+        raise SystemExit(128 + signum)
+    if previous_handler == signal.SIG_IGN:
+        return
+    if previous_handler == signal.SIG_DFL:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    raise SystemExit(128 + signum)
+
+
+def _install_improver_shutdown_handlers() -> None:
+    global _IMPROVER_SHUTDOWN_HANDLERS_INSTALLED
+    if _IMPROVER_SHUTDOWN_HANDLERS_INSTALLED:
+        return
+    _IMPROVER_SHUTDOWN_HANDLERS_INSTALLED = True
+    atexit.register(_purge_all_tracked_improver_sids)
+
+    signals = [signal.SIGINT]
+    if hasattr(signal, "SIGTERM"):
+        signals.append(signal.SIGTERM)
+    for sig in signals:
+        try:
+            previous = signal.getsignal(sig)
+            signal.signal(
+                sig,
+                lambda signum, frame, previous_handler=previous: _chain_improver_shutdown_signal(
+                    signum,
+                    frame,
+                    previous_handler,
+                ),
+            )
+        except (ValueError, OSError):
+            continue
+
+
+def _purge_stale_improver_transcripts_once() -> dict[str, int]:
+    counts = {"orphan": 0, "resolved": 0, "unmatched_pre_audit": 0, "keep": 0, "failed": 0}
+    tdir = _transcripts_dir_for_cwd(ROOT)
+    if tdir is None:
+        return counts
+    ledger_rows = load_ledger_rows(IMPROVEMENTS_LEDGER)
+    now = time.time()
+    for path in sorted(tdir.glob("*.jsonl")):
+        bucket = classify_transcript(path, ledger_rows, now)
+        counts[bucket] += 1
+        if bucket == "keep":
+            continue
+        try:
+            path.unlink()
+        except OSError as e:
+            counts["failed"] += 1
+            print(f"[serve] stale transcript delete failed for {path}: {e}", flush=True)
+    return counts
+
+
+def _periodic_transcript_purge_loop(interval_seconds: int = 86400, *, run_once: bool = False) -> None:
+    """Daemon loop that purges stale improver transcript backlog daily."""
+    if os.environ.get("AI_WORKFLOW_DISABLE_IMPROVER"):
+        return
+    while True:
+        try:
+            counts = _purge_stale_improver_transcripts_once()
+            candidates = counts["orphan"] + counts["resolved"] + counts["unmatched_pre_audit"]
+            if candidates or counts["failed"]:
+                print(
+                    "[serve] improver transcript purge: "
+                    f"orphan={counts['orphan']} resolved={counts['resolved']} "
+                    f"unmatched_pre_audit={counts['unmatched_pre_audit']} "
+                    f"failed={counts['failed']}",
+                    flush=True,
+                )
+        except Exception as e:  # noqa: BLE001 - loop must never die
+            print(f"[serve] improver transcript purge loop error: {e}", flush=True)
+        if run_once:
+            return
+        time.sleep(max(60, int(interval_seconds)))
 
 
 def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
@@ -2490,6 +2608,8 @@ def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
     improver_sid: str | None = None
     if cfg.get("tool") == "claude":
         improver_sid = str(uuid.uuid4())
+        with _IMPROVER_TRACKED_SIDS_LOCK:
+            _IMPROVER_TRACKED_SIDS.add(improver_sid)
         argv += ["--session-id", improver_sid]
     try:
         try:
@@ -2560,6 +2680,9 @@ def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
                 "diff_lines": diff_lines,
                 "change_summary": parsed.get("change_summary", "") or ""}
     finally:
+        if improver_sid:
+            with _IMPROVER_TRACKED_SIDS_LOCK:
+                _IMPROVER_TRACKED_SIDS.discard(improver_sid)
         _purge_claude_transcript(improver_sid)
 
 
@@ -4821,6 +4944,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # selects the structural-audit prompt variant. The skill name
             # is validated against the project skill index (so plugin /
             # user-scope skills can't be edited through this endpoint).
+            # POST /api/skills/<name>/improve
             m = _RE_SKILL_IMPROVE_NOW.fullmatch(parsed.path)
             if m:
                 self._handle_skill_improve_now(m.group(1))
@@ -7875,7 +7999,6 @@ def main() -> None:
     # Replay the on-disk job ledger so sessions, costs and history
     # survive `python serve.py` restarts.
     _load_persisted_jobs()
-    import atexit, signal
     atexit.register(_shutdown_all_ptys)
     try:
         signal.signal(signal.SIGTERM, lambda *_: (_shutdown_all_ptys(), sys.exit(0)))
@@ -7929,6 +8052,12 @@ def main() -> None:
         threading.Thread(
             target=_periodic_improver_loop,
             name="improver-sweep",
+            daemon=True,
+        ).start()
+        _install_improver_shutdown_handlers()
+        threading.Thread(
+            target=_periodic_transcript_purge_loop,
+            name="improver-transcript-purge",
             daemon=True,
         ).start()
         try:
