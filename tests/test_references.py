@@ -134,7 +134,9 @@ _RUNTIME_GENERATED_REFS = frozenset({
     ".ai/ledgers/jobs.jsonl",
     ".ai/ledgers/skill_metrics.jsonl",
     ".ai/ledgers/improvements.jsonl",
-    ".ai/TODO.md",
+    # .ai/TODO.md is NOT listed here: it ships as a committed empty template
+    # (its live content is regenerated locally and pinned via git skip-worktree),
+    # so references to it resolve against the tracked file.
     ".ai/.todos.lock",
     ".ai/dashboard/.todos-parser.log",
 })
