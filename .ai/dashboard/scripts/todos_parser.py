@@ -681,6 +681,26 @@ def _markdown_from_rows(rows: list[dict], now: str) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _ensure_skip_worktree(repo_root) -> None:
+    """Mark .ai/TODO.md as skip-worktree so locally regenerated content never
+    shows up as a git change.
+
+    The repo ships .ai/TODO.md as an empty template (committed once); this keeps
+    each developer's live export from polluting `git status` or getting committed
+    accidentally. skip-worktree is a per-clone flag and doesn't travel with the
+    repo, so we (re)apply it here on every export — the first regen after a fresh
+    clone or install sets it automatically. No-op when the file is untracked
+    (e.g. a target project that .gitignores it) or git isn't available.
+    """
+    try:
+        tracked = _run_git(repo_root, ["ls-files", "--error-unmatch", ".ai/TODO.md"])
+        if tracked.returncode != 0:
+            return  # untracked, or not a git repo — nothing to pin
+        _run_git(repo_root, ["update-index", "--skip-worktree", ".ai/TODO.md"])
+    except OSError:
+        pass  # git not installed — silent no-op
+
+
 def regen_markdown(repo_root) -> dict:
     root = Path(repo_root)
     lock = _lock_path(root)
@@ -695,6 +715,7 @@ def regen_markdown(repo_root) -> dict:
         now = _utc_now()
         markdown = _markdown_from_rows(_load_jsonl(_todos_path(root)), now)
         _write_text_lf(_todo_md_path(root), markdown)
+        _ensure_skip_worktree(root)
         return {"ok": True, "banner": None}
     finally:
         try:
