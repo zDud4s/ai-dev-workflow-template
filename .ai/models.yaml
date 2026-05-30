@@ -60,3 +60,7 @@ run_pipeline:
   maintenance:
     tool: claude
     model: claude-sonnet-4-6
+  codex_dispatch:
+    model: gpt-5.5
+    reasoning_effort: medium
+    timeout_seconds: 1800

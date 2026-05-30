@@ -1,12 +1,12 @@
 ---
 name: run-pipeline
 description: Execute a saved pipeline YAML from .ai/pipelines/<name>.yaml by dispatching its agents in-session via the Task tool.
-tools: Read, Glob, Grep, Bash, Task
+tools: Read, Glob, Grep, Bash, Task, Write
 ---
 
 You are the pipeline executor. You load a user-authored pipeline from `.ai/pipelines/<name>.yaml`, resolve every node against the live agent catalog, topo-dispatch the DAG with the Task tool, and apply the pipeline's declared output mode.
 
-**Codex runtime guard.** This skill dispatches its DAG via the Claude `Task` tool, which has no Codex equivalent — there is no in-session subagent mechanism on the Codex side. If you are running as Codex, STOP immediately on entry with: `run-pipeline requires the Claude Task tool; re-invoke this skill from a Claude session to execute the pipeline. The pipeline file at .ai/pipelines/<name>.yaml is still readable from here for inspection.` Do not attempt any of the phases below.
+**Runtime branch.** Detect the runtime before dispatch. Claude sessions dispatch ready DAG layers through the `Task` tool (Phase 2A below). Codex sessions dispatch ready DAG layers through `codex exec` subprocesses orchestrated by `.ai/dashboard/scripts/pipeline_fanout.py` (Phase 2B below). Both paths reuse the same DAG resolution, output modes, and Wrap-up steps.
 
 **Read `.ai/workflow/dispatch.md` once before starting.** It defines the dispatch contract used for the `synthesize` phase. Do not duplicate those rules here.
 
@@ -25,7 +25,7 @@ STOP on any failure:
 - `.ai/pipelines/<name>.yaml` exists.
 - Slug matches `^[a-z0-9-]+$`.
 - YAML parses (`yaml.safe_load`).
-- Schema validation passes — reuse the dashboard validator (`from pipeline_schema import validate` in `.ai/dashboard/scripts/pipeline_schema.py`); surface every returned error verbatim.
+- Schema validation passes — reuse the dashboard validator (`from pipeline_schema import validate` in `.ai/dashboard/pipeline_schema.py`); surface every returned error verbatim.
 - Only when pipeline `output.mode = synthesize`: `.ai/models.yaml` has `run_pipeline.synthesize` configured AND the `synthesizer` skill body exists in the discovery path. Other modes skip both checks.
 
 ## Phase 1 - Load + catalog
@@ -46,7 +46,7 @@ Compute `subagent_type` per scope:
 
 Resolve each pipeline `node.agent` string against the catalog's `subagent_type` values. STOP with `agent '<x>' not found in any scope at runtime` if any node is unresolvable.
 
-## Phase 2 - Dispatch
+## Phase 2A - Dispatch (Claude / Task fan-out)
 
 Topo-sort the DAG. For each ready layer (every `depends_on` is `completed`), dispatch independent subtasks in a SINGLE assistant message with multiple Task calls (parallel). Dependent subtasks await their ancestors.
 
@@ -83,6 +83,83 @@ Failure handling — three distinct node statuses:
 
 Independent branches (no shared failed ancestor) continue normally. The pipeline halts only when no further progress is possible (every remaining node is `skipped`).
 
+## Phase 2B - Dispatch (Codex / subprocess fan-out)
+
+### Pre-flight (Codex-specific)
+
+STOP with an explicit message naming the missing piece if any check fails:
+
+- The `codex` binary is on PATH (`shutil.which("codex") is not None`).
+- `.ai/models.yaml` has a top-level `run_pipeline.codex_dispatch` block with at least `model`, `reasoning_effort`, and `timeout_seconds`.
+- Catalog source is restricted to project scope only: `<repo>/.claude/agents/*.md`. User-scope and plugin scopes are Claude-only and are NOT scanned in Codex sessions. Agent files are read as system-prompt prefixes for the dispatched subprocess.
+- For each catalog agent, the effective Codex model is `<agent>.codex_model` from frontmatter when present, else `run_pipeline.codex_dispatch.model` from `.ai/models.yaml`.
+
+### Dispatch
+
+Topo-sort the DAG with the same readiness rules as Phase 2A. For each ready layer, build a JSON spec for `.ai/dashboard/scripts/pipeline_fanout.py` with one `node` per ready DAG node:
+
+```
+{
+  "nodes": [
+    {
+      "id": "<node.id>",
+      "cmd": [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "-m",
+        "<resolved_model>",
+        "--config",
+        "model_reasoning_effort=<resolved_effort>",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-C",
+        "<project_root>"
+      ],
+      "stdin": "<assembled_prompt_with_agent_body_+_ancestors>",
+      "timeout": "<run_pipeline.codex_dispatch.timeout_seconds>"
+    }
+  ]
+}
+```
+
+Invoke the helper synchronously:
+
+```
+subprocess.run(
+    [sys.executable, ".ai/dashboard/scripts/pipeline_fanout.py"],
+    input=json.dumps(spec),
+    capture_output=True,
+    text=True,
+)
+```
+
+Block until the helper exits. If it exits non-zero, STOP and report stderr. Otherwise parse stdout as JSON and map each per-node result:
+
+| Helper result | DAG node status |
+| --- | --- |
+| `status=ok` | `completed` |
+| `status=error` | `failed` |
+| `status=timeout` | `failed` |
+
+Descendants of failed nodes become `skipped`, using the same rule as Phase 2A. Independent branches continue normally.
+
+### Metrics row spec (Codex dispatch)
+
+For each dispatched node, append one compact JSON row to `.ai/ledgers/metrics.jsonl` with exactly six fields:
+
+```
+{
+  "tool": "codex",
+  "model": "<resolved Codex model>",
+  "exit_code": "<helper result exit_code>",
+  "agent": "<node.agent catalog name>",
+  "node_id": "<node.id>",
+  "duration_s": "<helper result duration_s>"
+}
+```
+
+This Codex dispatch row intentionally differs from the existing Claude-side row, which uses `tool=<agent_name>`.
+
 ## Phase 3 - Output handling
 
 Apply `output.mode`:
@@ -117,6 +194,9 @@ Report to the user: final output (per mode), per-node statuses, failed and skipp
 | Node `agent` unresolvable in catalog | STOP `agent '<x>' not found in any scope at runtime`. |
 | Agent Task call failure / empty output | Mark node `failed`; mark dependents `skipped`; continue independent branches; surface in output. |
 | All remaining nodes are `skipped` | Halt Phase 2; still run Phase 3 over whatever completed and persist the run. |
+| `codex` binary not on PATH when running Codex Phase 2B | STOP with an explicit message naming the missing `codex` binary. |
+| `.ai/models.yaml` missing `run_pipeline.codex_dispatch` block when running Codex Phase 2B | STOP `run_pipeline.codex_dispatch not configured`. |
+| Helper subprocess crashes or exits non-zero during Codex Phase 2B | STOP and report stderr from `.ai/dashboard/scripts/pipeline_fanout.py`. |
 
 ## Notes
 

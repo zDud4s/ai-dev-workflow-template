@@ -1,0 +1,68 @@
+"""Tests for the pipeline fanout subprocess helper."""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+
+HELPER_PATH = (
+    Path(__file__).resolve().parent.parent
+    / ".ai"
+    / "dashboard"
+    / "scripts"
+    / "pipeline_fanout.py"
+)
+
+
+def _invoke_helper(spec: dict) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(HELPER_PATH)],
+        input=json.dumps(spec),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_fanout_runs_all_and_blocks() -> None:
+    spec = {
+        "max_parallel": 3,
+        "nodes": [
+            {"id": "one", "cmd": [sys.executable, "-c", "print('hello-1')"]},
+            {"id": "two", "cmd": [sys.executable, "-c", "print('hello-2')"]},
+            {"id": "three", "cmd": [sys.executable, "-c", "print('hello-3')"]},
+        ],
+    }
+
+    completed = _invoke_helper(spec)
+
+    assert completed.returncode == 0, completed.stderr
+    results = json.loads(completed.stdout)
+    assert len(results) == 3
+    assert [result["id"] for result in results] == ["one", "two", "three"]
+    assert all(result["status"] == "ok" for result in results)
+    assert all(result["stdout"] for result in results)
+
+
+def test_fanout_isolates_node_failure() -> None:
+    spec = {
+        "max_parallel": 3,
+        "nodes": [
+            {"id": "first", "cmd": [sys.executable, "-c", "print('ok')"]},
+            {"id": "bad", "cmd": [sys.executable, "-c", "import sys; sys.exit(2)"]},
+            {"id": "last", "cmd": [sys.executable, "-c", "print('done')"]},
+        ],
+    }
+
+    completed = _invoke_helper(spec)
+
+    assert completed.returncode == 0, completed.stderr
+    results = json.loads(completed.stdout)
+    assert len(results) == 3
+    by_id = {result["id"]: result for result in results}
+    assert by_id["first"]["status"] == "ok"
+    assert by_id["last"]["status"] == "ok"
+    assert by_id["bad"]["status"] == "error"
+    assert by_id["bad"]["exit_code"] == 2

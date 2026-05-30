@@ -1,10 +1,13 @@
 """Static-lint over .claude/skills/run-pipeline/SKILL.md frontmatter + body."""
 from __future__ import annotations
+from pathlib import Path
 import pathlib
 import re
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-SKILL = REPO_ROOT / ".claude" / "skills" / "run-pipeline" / "SKILL.md"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CANONICAL = REPO_ROOT / ".claude" / "skills" / "run-pipeline" / "SKILL.md"
+MIRROR = REPO_ROOT / ".agents" / "skills" / "run-pipeline" / "SKILL.md"
+SKILL = CANONICAL
 
 
 def _frontmatter(path: pathlib.Path) -> dict[str, str]:
@@ -70,3 +73,35 @@ def test_body_references_dispatch_md_once() -> None:
     text = SKILL.read_text(encoding="utf-8")
     assert ".ai/workflow/dispatch.md" in text
     assert text.count(".ai/workflow/dispatch.md") <= 2
+
+
+def test_canonical_body_no_hard_fail_codex_guard() -> None:
+    text = CANONICAL.read_text(encoding="utf-8")
+    assert "Codex runtime guard" not in text
+    assert "STOP immediately on entry" not in text
+
+
+def test_canonical_body_documents_both_dispatch_paths() -> None:
+    text = CANONICAL.read_text(encoding="utf-8")
+    assert "Phase 2A" in text
+    assert "Phase 2B" in text
+    assert ("Task tool" in text) or ("`Task` tool" in text)
+    assert "pipeline_fanout" in text
+
+
+def test_canonical_body_documents_codex_preflight() -> None:
+    text = CANONICAL.read_text(encoding="utf-8")
+    assert "codex" in text
+    assert "PATH" in text
+    assert "run_pipeline.codex_dispatch" in text
+    assert ("project scope" in text) or (".claude/agents" in text)
+
+
+def test_canonical_body_documents_metrics_row_schema() -> None:
+    text = CANONICAL.read_text(encoding="utf-8")
+    for field in ("tool", "model", "exit_code", "agent", "node_id", "duration_s"):
+        assert field in text
+
+
+def test_mirror_byte_identical_to_canonical() -> None:
+    assert CANONICAL.read_bytes() == MIRROR.read_bytes()

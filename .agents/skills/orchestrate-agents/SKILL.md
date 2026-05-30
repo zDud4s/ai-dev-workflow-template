@@ -43,8 +43,6 @@ STOP on any failure:
    - **Save only** — write the file; exit without executing.
    - **Discard** — exit without writing.
 
-   **Codex runtime note:** `run-pipeline` dispatches its DAG via the Claude `Task` tool, which has no Codex equivalent. When this skill runs in a Codex session, **Save & run** is unavailable — drop that option from the prompt (offer only **Save only** / **Discard**) and tell the user to invoke `run-pipeline` from a Claude session to execute the saved pipeline.
-
 6. **Slug collision**: if the user picks a save option and `<slug>.yaml` already exists in `.ai/pipelines/`, suggest `<slug>-2`, `<slug>-3`, ... until unique. Never overwrite.
 
 7. **Metrics**: append a single `pipeline_draft` row to `.ai/ledgers/metrics.jsonl` (`tool=<session.tool>`, `model=<session.model>`, `exit_code=0` if saved (either save option), `exit_code=2` if discarded). Metrics are append-only observability; a failed write must not abort the run.
