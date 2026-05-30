@@ -2958,7 +2958,9 @@
         theme: {
           background: "#0b0f14",
           foreground: "#d8dee9",
-          cursor: "#88c0d0",
+          // Dashboard cyan (--accent ≈ #4fcdcd) so the xterm caret speaks the
+          // same signal color as the rest of the "Targeting HUD" cursor set.
+          cursor: "#4fcdcd",
           selectionBackground: "#3b4252",
           black: "#3b4252",
           red:   "#bf616a",
