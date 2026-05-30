@@ -2,19 +2,39 @@
 
 # AI Dev Workflow Template
 
-**A disciplined multi-agent coding workflow that routes `plan → execute → review → rescue` across Claude and Codex — without losing context, scope, or evidence.**
+**A disciplined, self-improving multi-agent coding workflow that routes `plan → execute → review → rescue` across Claude and Codex — without losing context, scope, or evidence.**
+
+<sub>Drop it into any repo. It plans, builds, reviews, and remembers — and it gets a little better every task it runs.</sub>
 
 [![Workflow](https://img.shields.io/badge/workflow-multi--agent-1f6feb?style=for-the-badge)](#how-it-works)
+[![Self-improving](https://img.shields.io/badge/self--improving-yes-8957e5?style=for-the-badge)](#gets-better-over-time)
 [![Claude Code](https://img.shields.io/badge/Claude-Code-da7756?style=for-the-badge)](https://claude.com/claude-code)
 [![Codex CLI](https://img.shields.io/badge/OpenAI-Codex-000000?style=for-the-badge)](https://github.com/openai/codex)
 [![Install](https://img.shields.io/badge/install-bash-4eaa25?style=for-the-badge)](#quick-start)
-[![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](#license)
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Configuration](#configuration) · [Running tasks](#running-tasks) · [Dashboard](#dashboard) · [Skills](#skills)
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Gets better over time](#gets-better-over-time) · [Configuration](#configuration) · [Running tasks](#running-tasks) · [Dashboard](#dashboard) · [Skills](#skills)
+
+<br />
+
+<img src=".github/assets/screenshots/dashboard-overview.png" alt="The workflow dashboard overview — project stack, dispatch mode, token usage, and recent pipeline activity" width="900" />
+
+<sub><i>The bundled local dashboard. Screenshots use a sample project with placeholder data.</i></sub>
 
 </div>
 
 ---
+
+## What it helps with
+
+Point it at a repo and hand it a task in plain English. It:
+
+- **Breaks the work down** — triages size, writes a plan (and a spec for big changes), and keeps scope narrow.
+- **Builds it** — executes against a tight packet, runs your validation commands, and proves the result with exit codes and output.
+- **Reviews itself** — a separate model checks the work before it ships; a `rescue` pass recovers failed attempts.
+- **Remembers** — operational facts land in `memory.md`, architectural calls in `decisions.md`, so the next task starts smarter than the last.
+- **Picks the right model for the job** — each phase runs in the tool and model you assigned (Claude or Codex), never whatever happened to be loaded.
+
+It's a template, not a framework: plain Markdown contracts and Bash installers, no runtime to adopt or lock-in to fight.
 
 ## Why this exists
 
@@ -31,6 +51,7 @@ This template enforces a contract: **every phase runs in the model you configure
 - **Phase-pinned dispatch.** `plan`, `execute`, `review`, `rescue`, `maintenance` each run in the tool and model assigned in `.ai/models.yaml`. The controller never substitutes its own model.
 - **Size-gated pipeline.** Trivial tasks skip ceremony; medium and large tasks get full `plan → execute → review`.
 - **Auto model selection.** Optional planner-driven `(size, risk, budget) → (tool, model, reasoning_effort)` lookup table.
+- **Self-improving.** Every phase logs a metrics row; the model lookup table is tuned from measured outcomes, skills and agents get audited and rewritten via `proposals/`, and memory consolidates as it grows. The workflow you run next month isn't the one you installed.
 - **Cache-stable prompt layout.** Sequential phases of one task share a byte-identical prefix to hit Anthropic's prompt cache (5-min TTL).
 - **Structured escalation.** Dispatched subprocesses emit `## Escalation` blocks instead of hanging or crashing silently.
 - **Handoff with evidence.** Executor must paste exit code + output tail for each validation command. No self-reported success.
@@ -43,13 +64,26 @@ This template enforces a contract: **every phase runs in the model you configure
 
 <p align="center">
   <a href=".github/assets/diagrams/pipeline.png">
-    <img src=".github/assets/diagrams/pipeline.png" alt="Pipeline: User → orchestrate controller → planner (Claude Opus) → executor (Codex GPT-5.5) → reviewer (Claude Opus) → maintenance (Claude Sonnet). Reviewer falls back to rescue (Claude Opus) on rejection." width="900" />
+    <img src=".github/assets/diagrams/pipeline.png" alt="Pipeline: User → orchestrate controller → planner (Claude) → executor (Codex) → reviewer (Claude) → maintenance (Claude). Reviewer falls back to rescue (Claude) on rejection. Each phase's tool and model is configured in models.yaml." width="900" />
   </a>
 </p>
 
 Each arrow is a dispatched call — a fresh subprocess (or in-process subagent) with the configured model, the relevant skill body, the packet schema, and the task context piped in via stdin. The controller blocks on each one, captures exit status, then routes the next phase.
 
 The full routing contract — `auto` vs `manual` dispatch, `inline | agent | dispatcher` modes, the resume rule, the dispatch error table — lives in [`.ai/workflow/dispatch.md`](.ai/workflow/dispatch.md).
+
+## Gets better over time
+
+The workflow isn't static. It watches itself run and feeds what it learns back into the next task — four loops, each writing to a different layer of state.
+
+| Loop | What it observes | What it regenerates |
+| ---- | ---------------- | ------------------- |
+| **Adaptive model selection** | Every dispatched phase appends a row to `.ai/ledgers/metrics.jsonl` (tool, model, effort, outcome, duration). | The `(size, risk, budget) → model` lookup table in [`auto-models.md`](.ai/workflow/auto-models.md) — tuned from measured outcomes, not guesses. |
+| **Skill & agent auto-improver** | Skill and agent quality scores (`skill_metrics.jsonl`, `improvements.jsonl`). | Rewritten skills and agents, staged as reviewable old/new diffs under [`.ai/dashboard/proposals/`](.ai/dashboard/proposals/) before anything is applied. |
+| **Accumulating memory** | Operational facts and architectural decisions surfaced while working. | `memory.md` and `decisions.md` grow per task; `maintenance` consolidates them once they cross the `memory_tuning` thresholds in [`project.yaml`](.ai/project.yaml). |
+| **Regenerating mirror** | Canonical skills in `.claude/skills/`. | `.agents/skills/` is re-synced so Codex always sees the same contract Claude does — no manual copy-paste, no drift. |
+
+Nothing rewrites itself silently: improvements land as **proposals you review**, metrics inform but don't override your `models.yaml`, and the immutable workflow core stays read-only. The system gets sharper while you stay in control.
 
 ## Quick start
 
@@ -89,44 +123,41 @@ The starter session becomes a controller. It triages the size, plans, executes v
 
 ## Configuration
 
-Model assignments live in [`.ai/models.yaml`](.ai/models.yaml). Each phase declares a `tool` and a `model`, plus optional `mode`, `timeout_seconds`, and `reasoning_effort`.
+**You decide which tool and which model runs each task.** Every phase's assignment lives in [`.ai/models.yaml`](.ai/models.yaml) — each phase declares a `tool` (`claude` or `codex`) and a `model`, plus optional `mode`, `timeout_seconds`, and `reasoning_effort`.
 
 ```yaml
 dispatch_mode: auto    # auto | manual
 
 session:
   tool: claude
-  model: claude-sonnet-4-6
+  model: <your-claude-model>     # the starter session / controller
 
 plan:
   tool: claude
-  model: claude-opus-4-7
+  model: <your-claude-model>     # use your strongest reasoning model here
 
 execute:
   tool: codex
-  model: gpt-5.5
+  model: <your-codex-model>      # or claude — your call
+
+review:
+  tool: claude
+  model: <your-claude-model>
 ```
 
-### Default phase assignments
+Each phase below can run on whatever tool/model you point it at — swap any line and that phase obeys it. Pick the exact model names from whatever Claude / Codex versions you currently have access to; the workflow never hard-codes them.
 
-| Phase         | Tool   | Model                | Typical use                                          |
-| ------------- | ------ | -------------------- | ---------------------------------------------------- |
-| `session`     | claude | `claude-sonnet-4-6`  | Starter session (the controller)                     |
-| `plan`        | claude | `claude-opus-4-7`    | Triage, scope, packet authoring                      |
-| `execute`     | codex  | `gpt-5.5`            | Code edits, command runs, validation                 |
-| `review`      | claude | `claude-opus-4-7`    | Reads the Handoff, files findings                    |
-| `rescue`      | claude | `claude-opus-4-6`    | Recovery after a failed execute                      |
-| `maintenance` | claude | `claude-sonnet-4-6`  | Updates `memory.md` and `decisions.md`               |
-| `bootstrap`   | claude | `claude-sonnet-4-6`  | One-time repo adaptation                             |
+| Phase         | Default tool | Typical use                              |
+| ------------- | ------------ | ---------------------------------------- |
+| `session`     | claude       | Starter session (the controller)         |
+| `plan`        | claude       | Triage, scope, packet authoring          |
+| `execute`     | codex        | Code edits, command runs, validation     |
+| `review`      | claude       | Reads the Handoff, files findings        |
+| `rescue`      | claude       | Recovery after a failed execute          |
+| `maintenance` | claude       | Updates `memory.md` and `decisions.md`   |
+| `bootstrap`   | claude       | One-time repo adaptation                 |
 
-### Available models
-
-| Vendor  | Models                                                                              |
-| ------- | ----------------------------------------------------------------------------------- |
-| Claude  | `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`        |
-| Codex   | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`                                |
-
-Edit any field to swap. `install.sh` treats `models.yaml` as `copy_if_missing`, so customisations survive re-runs.
+Edit any field to swap. `install.sh` treats `models.yaml` as `copy_if_missing`, so your customisations survive re-runs.
 
 ### Auto model selection
 
@@ -184,6 +215,29 @@ What failed: <evidence>
 
 Manual runs **don't** emit a `.ai/ledgers/metrics.jsonl` row, so the adaptive selector can't score them. The orchestrator surfaces them as `source=manual` when replayed through the pipeline.
 
+## Agent pipelines
+
+The `plan → execute → review` pipeline is built for **code changes**. For everything else — research, writing, multi-step analysis, anything you'd hand to a specialist — there's a second track that orchestrates **your own agent catalog** (project, user, and installed plugin agents) instead of fixed phases.
+
+Two skills drive it:
+
+- **`orchestrate-agents`** — describe a task and it drafts a pipeline: it scans every agent you have, picks the ones whose specialties fit each subtask, wires them into a dependency graph, and offers **Save & run**, **Save only**, or **Discard**. Drafts are saved as plain YAML in `.ai/pipelines/<name>.yaml`.
+- **`run-pipeline`** — executes a saved pipeline. It resolves each node against the live catalog, runs independent agents in parallel and dependent ones in order, and combines the results one of three ways:
+
+  | Output mode    | Result                                                              |
+  | -------------- | ------------------------------------------------------------------- |
+  | `passthrough`  | Returns the output of a single chosen node.                         |
+  | `synthesize`   | A configured model fuses every node's output into one answer.       |
+  | `per-agent`    | Returns each agent's result separately, keyed by node.              |
+
+If one agent fails, only the nodes that depend on it are skipped — independent branches keep going. Every run is persisted to `.ai/agent-runs/<date>-<slug>.md` and logs metrics rows to the same ledger as the code pipeline, so agent runs feed the **gets-better-over-time** loops too.
+
+```text
+Use the orchestrate-agents skill. Task: <what you want done>
+```
+
+> **Claude only (for now).** This track dispatches through the Claude `Task` tool; from a Codex session the pipeline file is still readable for inspection, but execution must run from Claude.
+
 ## Dashboard
 
 A local web dashboard ships under [`.ai/dashboard/`](.ai/dashboard/).
@@ -204,6 +258,22 @@ It serves the repo as read-only static files plus a small JSON / SSE / WebSocket
 
 Events and per-job logs (`.ai/ledgers/events.jsonl`, `.ai/dashboard/jobs/`) are gitignored.
 
+<table>
+  <tr>
+    <td width="50%"><img src=".github/assets/screenshots/dashboard-models.png" alt="Models & dispatch — per-phase tool/model routing table and dispatch mode" /><br /><sub><b>Models &amp; dispatch</b> — pin a tool and model to every phase.</sub></td>
+    <td width="50%"><img src=".github/assets/screenshots/dashboard-timeline.png" alt="Timeline — pipeline phases plotted over time, grouped by session" /><br /><sub><b>Timeline</b> — every dispatched phase, grouped by run.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src=".github/assets/screenshots/dashboard-skills.png" alt="Skills — installed skills with pending auto-improver proposals" /><br /><sub><b>Skills</b> — with pending auto-improver proposals to review.</sub></td>
+    <td width="50%"><img src=".github/assets/screenshots/dashboard-memory.png" alt="Memory — accumulated operational facts, dated and tagged by topic" /><br /><sub><b>Memory</b> — the operational facts that accrue per task.</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src=".github/assets/screenshots/dashboard-events.png" alt="Events — live stream of phase_dispatch events with phase, tool, model, and exit code" /><br /><sub><b>Events</b> — a live feed of dispatches with tool, model, and exit code.</sub></td>
+  </tr>
+</table>
+
+<sub><i>All screenshots are from a throwaway sample project ("Pebble") populated with placeholder data — not real project state.</i></sub>
+
 ## Skills
 
 Skills are the unit of executable contract. Each one lives in `.claude/skills/<name>/SKILL.md` (canonical) and is mirrored to `.agents/skills/<name>/SKILL.md` for Codex.
@@ -220,6 +290,9 @@ Skills are the unit of executable contract. Each one lives in `.claude/skills/<n
 | `claude`         | Codex-side: how to call Claude from within a Codex session        |
 | `agent-creator`  | Scaffolds new `.claude/agents/<name>.md` files                    |
 | `agent-improver` | Audits + improves existing agent files against a quality rubric   |
+| `orchestrate-agents` | Drafts an agent pipeline from your catalog; Save & run / Save only / Discard |
+| `run-pipeline`   | Executes a saved `.ai/pipelines/<name>.yaml` agent pipeline        |
+| `synthesizer`    | Fuses multi-agent pipeline outputs into one answer (`synthesize` mode) |
 
 Edit upstream in `.claude/skills/`, then run `update-workflow.sh` to re-mirror.
 
@@ -254,6 +327,8 @@ Filled packets flow via stdin / temp files. Editing `.ai/packets/*.md` during a 
 │   ├── ledgers/                    # Append-only JSONL streams (events, metrics, jobs, todos) — gitignored
 │   ├── plans/                      # Persistent filled plans for medium/large tasks
 │   ├── specs/                      # Persistent spec documents
+│   ├── pipelines/                  # Saved agent-pipeline YAML drafts
+│   ├── agent-runs/                 # Persisted agent-pipeline run records
 │   ├── packets/
 │   │   ├── plan.md                 # Planning packet schema
 │   │   ├── execute.md              # Execution packet (Steps + Handoff)
