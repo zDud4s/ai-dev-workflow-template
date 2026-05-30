@@ -96,7 +96,9 @@ STOP with an explicit message naming the missing piece if any check fails:
 
 ### Dispatch
 
-Topo-sort the DAG with the same readiness rules as Phase 2A. For each ready layer, build a JSON spec for `.ai/dashboard/scripts/pipeline_fanout.py` with one `node` per ready DAG node:
+Topo-sort the DAG with the same readiness rules as Phase 2A. For each ready layer, build a JSON spec for `.ai/dashboard/scripts/pipeline_fanout.py` with one `node` per ready DAG node.
+
+**Platform note (Windows):** `cmd[0]` must be the absolute path returned by `shutil.which("codex")` (e.g. `C:\Users\…\AppData\Roaming\npm\codex.CMD`). Python's `subprocess.run` does not consult `PATHEXT` when the first arg is a bare name, so the literal `"codex"` fails with `FileNotFoundError [WinError 2]` on Windows. Resolve once at pre-flight and reuse for every node. On POSIX, `shutil.which("codex")` returns the same string the shell would resolve, so the same pattern is portable.
 
 ```
 {
@@ -104,7 +106,7 @@ Topo-sort the DAG with the same readiness rules as Phase 2A. For each ready laye
     {
       "id": "<node.id>",
       "cmd": [
-        "codex",
+        "<shutil.which(\"codex\")>",
         "exec",
         "--skip-git-repo-check",
         "-m",
@@ -122,7 +124,7 @@ Topo-sort the DAG with the same readiness rules as Phase 2A. For each ready laye
 }
 ```
 
-Invoke the helper synchronously:
+Invoke the helper synchronously. The helper itself already pins UTF-8 encoding when piping stdin to each node (Codex rejects non-UTF-8 input); callers do not need to set `encoding=` on this outer call.
 
 ```
 subprocess.run(
@@ -130,6 +132,7 @@ subprocess.run(
     input=json.dumps(spec),
     capture_output=True,
     text=True,
+    encoding="utf-8",
 )
 ```
 

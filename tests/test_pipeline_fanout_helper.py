@@ -66,3 +66,37 @@ def test_fanout_isolates_node_failure() -> None:
     assert by_id["last"]["status"] == "ok"
     assert by_id["bad"]["status"] == "error"
     assert by_id["bad"]["exit_code"] == 2
+
+
+def test_fanout_passes_stdin_as_utf8() -> None:
+    """Regression: `subprocess.run(text=True)` on Windows defaults stdin encoding
+    to the locale codepage (cp1252), which silently breaks non-ASCII prompts
+    that Codex expects in strict UTF-8 — the helper must pin encoding='utf-8'.
+
+    The test child reads/writes raw bytes via sys.stdin.buffer/sys.stdout.buffer
+    so the encoding boundary under test is exactly the one in the helper.
+    """
+    payload = "Verdict: REJECT — emoji \U0001F600 czesc żół"
+    spec = {
+        "nodes": [
+            {
+                "id": "echo",
+                "cmd": [
+                    sys.executable,
+                    "-c",
+                    "import sys; data = sys.stdin.buffer.read(); sys.stdout.buffer.write(data); sys.stdout.buffer.flush()",
+                ],
+                "stdin": payload,
+            }
+        ]
+    }
+
+    completed = _invoke_helper(spec)
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)[0]
+    assert result["status"] == "ok", result
+    assert result["exit_code"] == 0
+    assert result["stdout"] == payload, (
+        f"UTF-8 payload corrupted in stdin round-trip: {result['stdout']!r} != {payload!r}"
+    )

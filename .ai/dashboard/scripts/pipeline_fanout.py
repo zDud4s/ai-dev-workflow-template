@@ -71,6 +71,8 @@ def _run_node(node: dict[str, Any]) -> dict[str, Any]:
             input=node.get("stdin"),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=node.get("timeout", DEFAULT_TIMEOUT),
         )
         status = "ok" if completed.returncode == 0 else "error"
