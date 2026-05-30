@@ -1,32 +1,17 @@
+# ─────────────────────────────────────────────────────────────
 # OS files
+# ─────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Local notes or temporary outputs
-.ai/local/
-.ai/events.jsonl
-.ai/metrics.jsonl
-.ai/dashboard/jobs/
-.ai/dashboard/jobs.jsonl
-.ai/dashboard/improvements.jsonl
-.ai/dashboard/skill_metrics.jsonl
-.ai/dashboard/skill_proposals/
-.ai/dashboard/.server-*.log
-.ai/dashboard/.server-*.err
-
-
-# Track .ai/plans, .ai/specs, and .ai/dashboard/agent_proposals as empty
-# folders; ignore their generated contents.
-.ai/plans/*
-.ai/specs/*
-.ai/dashboard/agent_proposals/*
-!.ai/plans/.gitkeep
-!.ai/specs/.gitkeep
-!.ai/dashboard/agent_proposals/.gitkeep
-
-# Python cache / pytest cache (but keep pytest.ini tracked)
-.pytest_cache/
+# ─────────────────────────────────────────────────────────────
+# Python / test tooling
+# ─────────────────────────────────────────────────────────────
 __pycache__/
+.pytest_cache/
+# pytest.ini is a local-only test config for this template repo
+# (target projects ship their own).
+pytest.ini
 
 # Inside tests/: track only files whose name starts with "test_".
 tests/*
@@ -34,12 +19,53 @@ tests/*
 !tests/conftest.py
 !tests/_diff_render_runner.js
 
-# Workflow script testbed (install.sh / update-workflow.sh integration tests)
-/test-env/
+# ─────────────────────────────────────────────────────────────
+# AI workflow — generated content
+# Track these directories as empty folders (via .gitkeep);
+# ignore everything generated inside them.
+# ─────────────────────────────────────────────────────────────
+.ai/plans/*
+.ai/specs/*
+.ai/ledgers/*
+.ai/agent-runs/*
+.ai/dashboard/jobs/*
+.ai/dashboard/proposals/agents/*
+.ai/dashboard/proposals/skills/*
+.ai/dashboard/proposals/skill_backups/*
+!.ai/plans/.gitkeep
+!.ai/specs/.gitkeep
+!.ai/ledgers/.gitkeep
+!.ai/agent-runs/.gitkeep
+!.ai/dashboard/jobs/.gitkeep
+!.ai/dashboard/proposals/agents/.gitkeep
+!.ai/dashboard/proposals/skills/.gitkeep
+!.ai/dashboard/proposals/skill_backups/.gitkeep
 
+# Pipeline definitions are personal workflows (per-developer);
+# .gitkeep preserves the directory.
+.ai/pipelines/*
+!.ai/pipelines/.gitkeep
+
+# ─────────────────────────────────────────────────────────────
+# AI workflow — local / per-developer files
+# ─────────────────────────────────────────────────────────────
+.ai/local/
+.ai/dashboard/.server-*.log
+.ai/dashboard/.server-*.err
+
+# ─────────────────────────────────────────────────────────────
+# Local-only repo extras (not shipped via install.sh, not pushed)
+# ─────────────────────────────────────────────────────────────
 # Local reference docs (design-system / superpowers mirror + ad-hoc notes)
 /docs/
-
-# Scratch directory
+# Scratch directories
 /tmp/
 /assets/
+# Workflow script testbed (install.sh / update-workflow.sh integration tests)
+/test-env/
+/.githooks/
+.github/*
+!.github/assets/
+.github/assets/*
+!.github/assets/diagrams/
+!.github/assets/diagrams/**
