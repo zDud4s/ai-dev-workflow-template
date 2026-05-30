@@ -231,6 +231,9 @@ EVENTS_FILE = ROOT / ".ai" / "ledgers" / "events.jsonl"
 # dispatched phase. Powers the /api/auto-select ranking. See the orchestrate
 # skill "## Metrics logging" section for the schema.
 METRICS_FILE = ROOT / ".ai" / "ledgers" / "metrics.jsonl"
+# Filled agent-dispatch packets produced by the agent orchestrator.
+AGENT_RUNS_DIR = ROOT / ".ai" / "agent-runs"
+PIPELINES_DIR = ROOT / ".ai" / "pipelines"
 # Append-only ledger of per-(skill, job) invocations. The auto skill-improver
 # (Phase 2+) reads this to decide which skills need adapting. One line per
 # unique skill invoked in a job; the entry-skill of orchestrate/plan jobs is
@@ -316,6 +319,12 @@ _IMPROVER_DEFAULTS = {
 # any legitimate payload the dashboard sends (the largest is the chat
 # composer with inlined files, which is capped client-side at ~256 KB).
 MAX_JSON_BODY = 1024 * 1024  # 1 MiB
+
+# Per-PUT cap for /api/pipelines/<slug>. Pipeline YAMLs are tiny —
+# a few nodes, kilobytes at most. Capping at 256 KB keeps the
+# generic 1 MiB ceiling for other endpoints while making it cheap
+# to reject obviously-malformed PUTs to this specific route.
+MAX_PIPELINE_PUT_BYTES = 256 * 1024  # 256KB hard cap on PUT body
 
 # Cap on a single inbound WebSocket frame payload. The WS framing format
 # allows a 64-bit extended length, so without an explicit cap a client
@@ -437,6 +446,366 @@ def _load_jsonl_cached(path: Path) -> list[dict]:
     rows = list(rows_dq)
     with _JSONL_CACHE_LOCK:
         _JSONL_CACHE[key] = (st.st_mtime_ns, rows)
+    return rows
+
+
+def _is_under_trusted_dir(path, trusted_dir) -> bool:
+    """Return True when ``path`` resolves inside ``trusted_dir``."""
+    try:
+        path_real = os.path.normcase(os.path.realpath(str(path)))
+        trusted_real = os.path.normcase(os.path.realpath(str(trusted_dir)))
+        return os.path.commonpath([path_real, trusted_real]) == trusted_real
+    except (OSError, ValueError):
+        return False
+
+
+def _agent_run_slug_date(path: Path) -> tuple[str, str | None]:
+    stem = path.stem
+    match = re.fullmatch(r"(?P<date>\d{4}-\d{2}-\d{2})-(?P<slug>.+)", stem)
+    if match:
+        slug = match.group("slug")
+        date = match.group("date")
+    else:
+        slug = stem
+        date = None
+    slug = re.sub(r"-\d+$", "", slug)
+    return slug or stem, date
+
+
+def _markdown_section(text: str, heading: str) -> str:
+    pattern = re.compile(rf"(?im)^##\s+{re.escape(heading)}\s*$")
+    match = pattern.search(text)
+    if not match:
+        return ""
+    next_match = re.search(r"(?m)^##\s+", text[match.end():])
+    end = match.end() + next_match.start() if next_match else len(text)
+    return text[match.end():end].strip()
+
+
+def _first_section_value(section: str) -> str | None:
+    for line in section.splitlines():
+        value = line.strip()
+        if not value or value.startswith("<!--"):
+            continue
+        if value.startswith("- "):
+            value = value[2:].strip()
+        return value or None
+    return None
+
+
+def _line_value(text: str, label: str) -> str | None:
+    pattern = re.compile(rf"(?im)^\s*{re.escape(label)}\s*:\s*(.*?)\s*$")
+    match = pattern.search(text)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if not value or value.startswith("<!--"):
+        return None
+    return value
+
+
+def _normalise_agent_run_key(key: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+
+
+def _strip_agent_run_value(value: str) -> str:
+    value = value.strip().strip(",")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return value.strip()
+
+
+def _parse_agent_run_depends_on(value: str | None) -> list[str]:
+    if not value:
+        return []
+    raw = _strip_agent_run_value(value)
+    if not raw or raw.lower() in {"none", "null", "n/a", "na", "-", "[]"}:
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1].strip()
+    parts = re.split(r"\s*,\s*|\s+", raw)
+    out: list[str] = []
+    for part in parts:
+        item = _strip_agent_run_value(part.strip().strip("[]"))
+        if item and item.lower() not in {"none", "null", "n/a", "na", "-"}:
+            out.append(item)
+    return out
+
+
+def _agent_run_node(fields: dict[str, str]) -> dict:
+    def pick(*keys: str) -> str | None:
+        for key in keys:
+            value = fields.get(key)
+            if value:
+                return value
+        return None
+
+    status = pick("status") or "pending"
+    return {
+        "id": pick("id", "task_id", "subtask_id"),
+        "agent": pick("agent", "subagent", "subagent_type"),
+        "status": status,
+        "expected_output": pick("expected_output", "expected", "output"),
+        "depends_on": _parse_agent_run_depends_on(pick("depends_on", "depends")),
+    }
+
+
+def _split_markdown_table_row(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    cells = _split_markdown_table_row(line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
+
+
+def _parse_agent_run_dag_table(section: str) -> list[dict]:
+    lines = [line for line in section.splitlines() if line.strip()]
+    for idx, line in enumerate(lines[:-1]):
+        if "|" not in line or not _is_markdown_table_separator(lines[idx + 1]):
+            continue
+        headers = [_normalise_agent_run_key(cell) for cell in _split_markdown_table_row(line)]
+        nodes: list[dict] = []
+        for row in lines[idx + 2:]:
+            if "|" not in row:
+                break
+            cells = _split_markdown_table_row(row)
+            if len(cells) < len(headers):
+                cells.extend([""] * (len(headers) - len(cells)))
+            fields = {
+                key: _strip_agent_run_value(value)
+                for key, value in zip(headers, cells)
+                if key
+            }
+            if not any(fields.values()):
+                continue
+            nodes.append(_agent_run_node(fields))
+        if nodes:
+            return nodes
+    return []
+
+
+def _parse_agent_run_inline_fields(value: str) -> dict[str, str]:
+    raw = value.strip()
+    if raw.startswith("{") and raw.endswith("}"):
+        raw = raw[1:-1]
+    fields: dict[str, str] = {}
+    for item in re.split(r",\s*(?=[A-Za-z_][A-Za-z0-9 _-]*\s*:)", raw):
+        if ":" not in item:
+            continue
+        key, val = item.split(":", 1)
+        fields[_normalise_agent_run_key(key)] = _strip_agent_run_value(val)
+    return fields
+
+
+def _parse_agent_run_dag_yamlish(section: str) -> list[dict]:
+    nodes: list[dict] = []
+    current: dict[str, str] | None = None
+    last_key: str | None = None
+
+    def flush() -> None:
+        nonlocal current, last_key
+        if current and any(current.values()):
+            nodes.append(_agent_run_node(current))
+        current = None
+        last_key = None
+
+    for line in section.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("<!--"):
+            continue
+        if stripped.startswith("- "):
+            rest = stripped[2:].strip()
+            if current is not None and last_key and ":" not in rest:
+                existing = current.get(last_key, "")
+                current[last_key] = f"{existing}, {rest}" if existing else rest
+                continue
+            flush()
+            current = {}
+            if rest:
+                current.update(_parse_agent_run_inline_fields(rest))
+                last_key = next(reversed(current), None) if current else None
+            continue
+        if current is None or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        last_key = _normalise_agent_run_key(key)
+        current[last_key] = _strip_agent_run_value(value)
+    flush()
+    return nodes
+
+
+def _parse_agent_run_dag(section: str, path: Path) -> list[dict]:
+    dag = _parse_agent_run_dag_table(section)
+    if dag:
+        return dag
+    dag = _parse_agent_run_dag_yamlish(section)
+    if dag:
+        return dag
+    meaningful = [
+        line.strip() for line in section.splitlines()
+        if line.strip() and not line.strip().startswith("<!--")
+    ]
+    if meaningful:
+        print(f"[serve] agent-run DAG parse failed for {path}", flush=True)
+    return []
+
+
+def _extract_handoff_synthesis_ts(handoff: str) -> str | None:
+    timestamp = r"\d{4}-\d{2}-\d{2}[T ][0-9:.]+(?:Z|[+-]\d{2}:\d{2})?"
+    pattern = re.compile(
+        rf"(?im)^\s*(?:synthesis[_ -]?ts|synthesis timestamp|"
+        rf"synthesis completed(?: at)?|completed_at)\s*:\s*({timestamp})\s*$"
+    )
+    match = pattern.search(handoff)
+    return match.group(1) if match else None
+
+
+def _extract_handoff_field(handoff: str, label: str) -> str | None:
+    labels = (
+        "Synthesis output",
+        "Per-subtask results",
+        "Failed subtasks",
+        "Memory updates",
+        "Phase execution log",
+    )
+    next_label = "|".join(re.escape(item) for item in labels if item != label)
+    pattern = re.compile(
+        rf"(?ims)^\s*{re.escape(label)}\s*:\s*(.*?)"
+        rf"(?=^\s*(?:{next_label})\s*:|^##\s+|\Z)"
+    )
+    match = pattern.search(handoff)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _extract_agent_run_success(handoff: str) -> bool | None:
+    explicit = re.search(r"(?im)^\s*(?:success|succeeded)\s*:\s*(true|false|yes|no|1|0)\s*$", handoff)
+    if explicit:
+        return explicit.group(1).lower() in {"true", "yes", "1"}
+    status = re.search(r"(?im)^\s*status\s*:\s*(success|succeeded|done|failed|error)\s*$", handoff)
+    if status:
+        return status.group(1).lower() in {"success", "succeeded", "done"}
+    failed = _extract_handoff_field(handoff, "Failed subtasks")
+    if failed is None:
+        return None
+    cleaned = re.sub(r"(?m)^\s*[-*]\s*", "", failed).strip().lower()
+    if cleaned in {"none", "n/a", "na", "null", "[]", "-"}:
+        return True
+    if cleaned:
+        return False
+    return None
+
+
+def _parse_agent_run(path: Path) -> dict:
+    task_slug, date = _agent_run_slug_date(path)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        print(f"[serve] agent-run read failed for {path}: {e}", flush=True)
+        return {
+            "task_slug": task_slug,
+            "date": date,
+            "objective": None,
+            "output_hint": None,
+            "dag": [],
+            "handoff": "",
+        }
+    objective = _first_section_value(_markdown_section(text, "Objective")) or _line_value(text, "Objective")
+    output_hint = _first_section_value(_markdown_section(text, "Output hint")) or _line_value(text, "Output hint")
+    dag_section = _markdown_section(text, "Subtask DAG")
+    handoff = _markdown_section(text, "Handoff")
+    return {
+        "task_slug": task_slug,
+        "date": date,
+        "objective": objective,
+        "output_hint": output_hint,
+        "dag": _parse_agent_run_dag(dag_section, path) if dag_section else [],
+        "handoff": handoff,
+    }
+
+
+def _agent_run_metrics_by_slug() -> dict[str, list[dict]]:
+    by_slug: dict[str, list[dict]] = {}
+    for row in _load_jsonl_cached(METRICS_FILE):
+        if not isinstance(row, dict):
+            continue
+        slug = row.get("task_slug")
+        if isinstance(slug, str) and slug:
+            by_slug.setdefault(slug, []).append(row)
+    return by_slug
+
+
+def _list_agent_runs() -> list[dict]:
+    if not AGENT_RUNS_DIR.is_dir():
+        return []
+    metrics_by_slug = _agent_run_metrics_by_slug()
+    trusted_root = os.path.realpath(str(AGENT_RUNS_DIR))
+    runs: list[dict] = []
+    for path in AGENT_RUNS_DIR.glob("*.md"):
+        if path.name == ".gitkeep":
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+            if not _is_under_trusted_dir(resolved, trusted_root):
+                print(f"[serve] agent-run outside trusted dir skipped: {path}", flush=True)
+                continue
+            st = path.stat()
+        except OSError as e:
+            print(f"[serve] agent-run stat failed for {path}: {e}", flush=True)
+            continue
+        parsed = _parse_agent_run(path)
+        slug = parsed.get("task_slug")
+        handoff = parsed.get("handoff") or ""
+        plan_ts = _dt.datetime.fromtimestamp(st.st_mtime, _dt.timezone.utc).isoformat(timespec="seconds")
+        try:
+            rel_path = str(path.relative_to(ROOT)).replace("\\", "/")
+        except ValueError:
+            rel_path = str(path)
+        runs.append({
+            "task_slug": slug,
+            "date": parsed.get("date"),
+            "plan_ts": plan_ts.replace("+00:00", "Z"),
+            "dispatch_count": len(parsed.get("dag") or []),
+            "synthesis_ts": _extract_handoff_synthesis_ts(handoff),
+            "success": _extract_agent_run_success(handoff),
+            "path": rel_path,
+            "metrics": metrics_by_slug.get(slug, []) if isinstance(slug, str) else [],
+        })
+    runs.sort(key=lambda row: row.get("plan_ts") or "", reverse=True)
+    return runs
+
+
+def _list_pipelines() -> list[dict]:
+    """List pipeline files for the dashboard. Excludes .gitkeep. Newest mtime first."""
+    import yaml  # local import — PyYAML is only needed by this helper
+    if not PIPELINES_DIR.is_dir():
+        return []
+    rows: list[dict] = []
+    for p in PIPELINES_DIR.glob("*.yaml"):
+        try:
+            text = p.read_text(encoding="utf-8")
+            parsed = yaml.safe_load(text) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        nodes = parsed.get("nodes") or []
+        out = parsed.get("output") or {}
+        shape = "DAG" if any("depends_on" in n for n in nodes if isinstance(n, dict)) else "linear"
+        try:
+            rel_path = str(p.relative_to(ROOT)).replace("\\", "/")
+        except ValueError:
+            rel_path = str(p).replace("\\", "/")
+        rows.append({
+            "slug": p.stem,
+            "path": rel_path,
+            "description": parsed.get("description") or "",
+            "node_count": len(nodes),
+            "output_mode": out.get("mode") or "",
+            "shape": shape,
+            "mtime": p.stat().st_mtime,
+        })
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
     return rows
 
 
@@ -1733,6 +2102,55 @@ def _last_improver_run_ts(skill_id: str) -> float:
     return last
 
 
+def _has_audit_signal(skill_id: str,
+                      recent_outcomes: list[dict] | None) -> tuple[bool, str]:
+    """Decide whether a structural audit is worth invoking the LLM for.
+
+    Returns ``(should_audit, reason)``. The periodic sweep uses this to
+    skip skills with no concrete failure signal — without it, the LLM is
+    rubric-bound to find SOMETHING in every healthy skill (the 7 criteria
+    are broad enough that no skill satisfies all of them perfectly), so
+    every audit pollutes the proposal queue with low-signal suggestions.
+
+    Triggers (any one is enough):
+    1. First-time audit (never visited before) — sanity sweep.
+    2. ≥1 failure in ``recent_outcomes`` — concrete pain signal.
+
+    The manual "Improve now" button bypasses this gate (caller passes
+    ``force=True`` to ``_run_improver_for_skill``) because the user's
+    click is itself the signal."""
+    if _last_improver_run_ts(skill_id) == 0:
+        return True, "first-time audit"
+    if recent_outcomes:
+        failed = sum(
+            1 for r in recent_outcomes
+            if isinstance(r, dict)
+            and str(r.get("outcome") or "").lower() in {"failed", "error"}
+        )
+        if failed >= 1:
+            return True, f"{failed} recent failure(s)"
+    return False, "no failure signal (skipped to avoid speculative proposals)"
+
+
+def _recent_rejected_proposals(skill_id: str, limit: int = 10) -> list[str]:
+    """Reasons from recent ``rejected`` ledger rows for this skill, newest
+    first, capped at ``limit``. Fed into the improver prompt so the LLM
+    doesn't re-propose the same fix the operator already turned down."""
+    rejected: list[tuple[float, str]] = []
+    for o in _load_jsonl_cached(IMPROVEMENTS_LEDGER):
+        if not isinstance(o, dict) or o.get("skill") != skill_id:
+            continue
+        if o.get("status") != "rejected":
+            continue
+        reason = (o.get("reason") or "").strip()
+        if not reason:
+            continue
+        ts = _iso_to_epoch(o.get("ts") or "")
+        rejected.append((ts, reason[:200]))
+    rejected.sort(reverse=True)
+    return [r for _, r in rejected[:limit]]
+
+
 def _project_skill_index() -> dict[str, Path]:
     """Map canonical skill name -> SKILL.md path for every project skill
     under ``.claude/skills/``. The improver only edits skills in this map."""
@@ -1753,7 +2171,8 @@ def _build_improver_prompt(skill_id: str, skill_content: str,
                            metrics: dict, job_id: str | None,
                            log_excerpt: str, *,
                            manual: bool = False,
-                           recent_outcomes: list[dict] | None = None) -> str:
+                           recent_outcomes: list[dict] | None = None,
+                           rejected_history: list[str] | None = None) -> str:
     """Craft the one-shot prompt sent to the model.
 
     The schema and ``no change`` example are intentionally front-loaded so
@@ -1842,7 +2261,15 @@ def _build_improver_prompt(skill_id: str, skill_content: str,
         f"TELEMETRY: {summary}\n"
         f"RECENT_OUTCOMES (last 20, newest first): {recent_line}\n"
         f"JOB: {job_id or '(manual structural review — no specific job)'}\n"
-        f"MODE: {'manual structural audit' if manual else 'post-job review'}\n\n"
+        f"MODE: {'manual structural audit' if manual else 'post-job review'}\n"
+        + (
+            "PRIOR REJECTED PROPOSALS for this skill (DO NOT re-propose these fixes — "
+            "the operator already turned them down):\n  - "
+            + "\n  - ".join(rejected_history)
+            + "\n"
+            if rejected_history else ""
+        )
+        + "\n"
         "=== Current SKILL.md (between markers) ===\n"
         f"<<<SKILL\n{skill_content}\nSKILL>>>\n\n"
         "=== Job log excerpt (between markers, may be empty) ===\n"
@@ -2043,7 +2470,59 @@ def _write_proposal(skill_id: str, skill_path: Path, old: str, new: str,
         # record the failure in the audit ledger.
         print(f"[serve] _write_proposal {pid} failed: {e}", flush=True)
         raise
+    merged_in = _supersede_prior_pending(skill_id, pid, "improve")
+    if merged_in:
+        payload["merged_from"] = merged_in
+        try:
+            (SKILL_PROPOSALS_DIR / f"{pid}.json").write_text(
+                json.dumps(payload, indent=2), encoding="utf-8")
+        except OSError as e:
+            # Non-fatal: the new proposal is already on disk and usable;
+            # the merged_from annotation is best-effort metadata.
+            print(f"[serve] _write_proposal {pid} merged_from update failed: {e}", flush=True)
     return payload
+
+
+def _supersede_prior_pending(skill_id: str, new_pid: str, new_kind: str) -> list[str]:
+    """Mark every prior pending proposal targeting the same skill+kind as
+    ``superseded`` so only the newest pending one survives in the dashboard.
+
+    Each older proposal stays on disk (history is preserved) but flips out
+    of the pending list. The new proposal absorbs them: we return their ids
+    so the caller can record a ``merged_from`` field.
+
+    Returns the list of superseded proposal ids (may be empty)."""
+    if not skill_id or not SKILL_PROPOSALS_DIR.is_dir():
+        return []
+    superseded: list[str] = []
+    now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    for pj in SKILL_PROPOSALS_DIR.glob("*.json"):
+        try:
+            obj = json.loads(pj.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if obj.get("id") == new_pid:
+            continue
+        if obj.get("skill") != skill_id:
+            continue
+        if (obj.get("kind") or "improve") != new_kind:
+            continue
+        if obj.get("status") not in (None, "pending"):
+            continue
+        obj["status"] = "superseded"
+        obj["applied_at"] = now_iso
+        obj["applied_via"] = "merged-into-newer"
+        obj["superseded_by"] = new_pid
+        try:
+            pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+        except OSError as e:
+            # Best-effort: a failed mark leaves the older proposal in the
+            # pending list, which the list endpoint will dedupe again on
+            # the next call. Log so the operator notices repeated failures.
+            print(f"[serve] supersede {pj.name} failed: {e}", flush=True)
+            continue
+        superseded.append(obj.get("id") or pj.stem)
+    return superseded
 
 
 # Cross-tool skill mirror. The repo keeps two parallel trees:
@@ -2566,7 +3045,8 @@ def _periodic_transcript_purge_loop(interval_seconds: int = 86400, *, run_once: 
 
 def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
                             job_id: str | None, log_path: str | None,
-                            cfg: dict, *, manual: bool = False) -> dict:
+                            cfg: dict, *, manual: bool = False,
+                            force: bool = False) -> dict:
     """End-to-end: read skill -> call LLM -> parse JSON -> persist proposal
     -> auto-apply if small. Best-effort: any failure is audited and the
     function returns a status dict (never raises). When the tool is
@@ -2578,6 +3058,11 @@ def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
     endpoint and the periodic batch sweep) selects the structural-audit
     variant of the prompt and audits with ``source="manual"`` so the
     proposal is distinguishable from job-triggered runs.
+
+    ``force=True`` bypasses the telemetry gate that normally skips
+    structural audits on healthy skills with no failure signal. The
+    "Improve now" button passes this because the operator's click is
+    itself the signal; the periodic sweep does not.
 
     Returns a dict with at minimum ``{"status": <audit_status>}`` plus a
     ``proposal_id`` when one was created. Callers that don't care can
@@ -2591,10 +3076,18 @@ def _run_improver_for_skill(skill_id: str, skill_md_path: Path,
         return {"status": "failed", "reason": f"read error: {e}"}
     metrics = _aggregate_skill_metrics().get(skill_id) or {}
     recent_outcomes = metrics.get("recent") or []
+    if manual and not force:
+        should, reason = _has_audit_signal(skill_id, recent_outcomes)
+        if not should:
+            _audit_improvement(skill_id, "no_change", reason, None, None, 0,
+                               source=source)
+            return {"status": "no_change", "reason": reason}
     log_excerpt = _read_log_excerpt(log_path)
+    rejected_history = _recent_rejected_proposals(skill_id)
     prompt = _build_improver_prompt(skill_id, skill_content, metrics, job_id,
                                     log_excerpt, manual=manual,
-                                    recent_outcomes=recent_outcomes)
+                                    recent_outcomes=recent_outcomes,
+                                    rejected_history=rejected_history)
 
     # IMPORTANT (Windows): pass the prompt via stdin, not argv. Long prompts
     # on argv silently fail (claude emits only a "status:ready" stub and never
@@ -4818,13 +5311,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/agents/all":
             self._handle_agents_all()
             return
+        if parsed.path == "/api/agent-orchestrations":
+            self._handle_agent_orchestrations_list()
+            return
+        if parsed.path.startswith("/api/agent-orchestrations/"):
+            slug = urllib.parse.unquote(parsed.path[len("/api/agent-orchestrations/"):])
+            self._handle_agent_orchestration_get(slug)
+            return
+        if parsed.path == "/api/pipelines":
+            self._handle_pipelines_list()
+            return
+        if parsed.path.startswith("/api/pipelines/"):
+            slug = urllib.parse.unquote(parsed.path[len("/api/pipelines/"):])
+            self._handle_pipeline_get(slug)
+            return
         if parsed.path == "/api/agents/content":
             self._handle_agent_content(urllib.parse.parse_qs(parsed.query))
             return
         if parsed.path == "/api/agents/proposals":
             self._handle_agent_proposals_list()
             return
-        m = re.fullmatch(r"/api/agents/proposals/([A-Za-z0-9_\-]+)", parsed.path)
+        m = _RE_AGENT_PROPOSAL_GET.fullmatch(parsed.path)
         if m:
             self._handle_agent_proposal_get(m.group(1))
             return
@@ -4957,6 +5464,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._handle_agent_proposal_decision(m.group(1), m.group(2))
                 return
             self._json(404, {"error": "unknown endpoint", "path": parsed.path})
+
+    def do_PUT(self):  # noqa: N802
+        parsed = urllib.parse.urlparse(self.path)
+        # CSRF guard is invoked inside each handler so the handler can also
+        # apply its own size/body policy before reading the request stream.
+        if parsed.path.startswith("/api/pipelines/"):
+            slug = urllib.parse.unquote(parsed.path[len("/api/pipelines/"):])
+            self._handle_pipeline_put(slug)
+            return
+        self._json(404, {"error": "unknown endpoint", "path": parsed.path})
+
+    def do_DELETE(self):  # noqa: N802
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/api/pipelines/"):
+            slug = urllib.parse.unquote(parsed.path[len("/api/pipelines/"):])
+            self._handle_pipeline_delete(slug)
+            return
+        self._json(404, {"error": "unknown endpoint", "path": parsed.path})
 
     # ----- helpers -----
     def end_headers(self) -> None:  # noqa: N802 (stdlib signature)
@@ -5122,12 +5647,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {"error": "title must be 1-280 characters"})
             return
 
+        # Optional free-form detail. Collapse trailing whitespace but preserve
+        # internal newlines so multi-line notes survive the round trip; the
+        # frontend renders it as plain text (textContent), so no markup escaping
+        # is needed here.
+        description = str(body.get("description") or "").strip()
+        if len(description) > 2000:
+            self._json(400, {"error": "description must be 2000 characters or fewer"})
+            return
+
         now = _todos_parser._utc_now()
         latest = self._todos_latest()
         source_ref = " ".join(str(body.get("source_ref") or "manual").split()) or "manual"
         todo = {
             "id": _todos_parser._allocate_id(latest, now),
             "title": title,
+            "description": description,
             "tags": self._clean_todo_tags(body.get("tags") or []),
             "source": source_ref,
             "source_ref": source_ref,
@@ -5521,6 +6056,189 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         grouped per session_id. Powers the Timeline view."""
         self._json(200, {"runs": _load_timeline_runs()})
 
+    def _agent_orchestrations_origin_guard(self) -> bool:
+        if _browser_cross_origin_blocked(self.headers):
+            self._json(403, {"error": "origin not allowed"})
+            return False
+        return True
+
+    def _pipelines_origin_guard(self) -> bool:
+        if _browser_cross_origin_blocked(self.headers):
+            self._json(403, {"error": "origin not allowed"})
+            return False
+        return True
+
+    def _handle_pipelines_list(self) -> None:
+        if not self._pipelines_origin_guard():
+            return
+        self._json(200, {"pipelines": _list_pipelines()})
+
+    def _handle_pipeline_get(self, slug: str) -> None:
+        if not self._pipelines_origin_guard():
+            return
+        if not re.fullmatch(r"[a-z0-9-]+", slug or ""):
+            self._json(400, {"error": "invalid slug"})
+            return
+        candidate = PIPELINES_DIR / f"{slug}.yaml"
+        if not candidate.is_file():
+            self._json(404, {"error": "pipeline not found", "slug": slug})
+            return
+        try:
+            resolved_realpath = os.path.realpath(str(candidate.resolve(strict=True)))
+        except OSError:
+            self._json(404, {"error": "pipeline not found", "slug": slug})
+            return
+        dir_realpath = os.path.realpath(str(PIPELINES_DIR))
+        if not _is_under_trusted_dir(resolved_realpath, dir_realpath):
+            self._json(400, {"error": "path outside trusted dir"})
+            return
+        try:
+            import yaml as _yaml_mod  # local import — keeps top-level free of PyYAML
+            parsed = _yaml_mod.safe_load(candidate.read_text(encoding="utf-8")) or {}
+        except Exception as e:
+            self._json(400, {"error": f"yaml parse error: {e}"})
+            return
+        payload = {"slug": slug, **parsed}
+        self._json(200, payload)
+
+    def _handle_pipeline_put(self, slug: str) -> None:
+        # PUT is state-changing: CSRF-guarded (which also enforces origin).
+        if not self._csrf_guard():
+            return
+        if not re.fullmatch(r"[a-z0-9-]+", slug or ""):
+            self._json(400, {"error": "invalid slug"})
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > MAX_PIPELINE_PUT_BYTES:
+            # DoS guard: declared Content-Length already disqualifies this
+            # request, so we never decode or validate the payload. Drain the
+            # inbound bytes (bounded by the cap + a small margin) in 8 KiB
+            # chunks before responding so Windows doesn't reset the TCP
+            # connection mid-receive (visible to the client as a
+            # ConnectionAbortedError instead of the expected 400). Close the
+            # connection after the response so we don't keep state for what
+            # is — by declaration — an abusive request.
+            if length > 0:
+                drain_cap = MAX_PIPELINE_PUT_BYTES + 8 * 1024
+                remaining = min(length, drain_cap)
+                try:
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(8192, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                except OSError:
+                    pass
+            self.close_connection = True
+            self._json(400, {"error": "missing or oversized body"})
+            return
+        raw = self.rfile.read(length)
+        try:
+            request = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            self._json(400, {"error": "invalid json body"})
+            return
+        yaml_text = request.get("yaml") if isinstance(request, dict) else None
+        if not isinstance(yaml_text, str):
+            self._json(400, {"error": "missing 'yaml' field"})
+            return
+        import yaml as _yaml_mod
+        try:
+            parsed = _yaml_mod.safe_load(yaml_text)
+        except _yaml_mod.YAMLError as e:
+            self._json(400, {"error": f"yaml parse error: {e}"})
+            return
+        if not isinstance(parsed, dict):
+            self._json(400, {"error": "yaml root must be a mapping"})
+            return
+        # Validator lives next to serve.py in .ai/dashboard/. Local import so
+        # serve.py doesn't pay the import cost on every other handler.
+        from pipeline_schema import validate as _validate_pipeline_yaml
+        ok, errors = _validate_pipeline_yaml(parsed)
+        if not ok:
+            self._json(400, {"errors": [{"message": e} for e in errors]})
+            return
+        target = PIPELINES_DIR / f"{slug}.yaml"
+        target_realpath = os.path.realpath(str(target))
+        dir_realpath = os.path.realpath(str(PIPELINES_DIR))
+        if not _is_under_trusted_dir(target_realpath, dir_realpath):
+            self._json(400, {"error": "path outside trusted dir"})
+            return
+        PIPELINES_DIR.mkdir(parents=True, exist_ok=True)
+        canonical = _yaml_mod.safe_dump(parsed, sort_keys=False, default_flow_style=False)
+        target.write_text(canonical, encoding="utf-8")
+        # Best-effort repo-relative path for client display. Falls back to
+        # the absolute path if PIPELINES_DIR has been monkey-patched outside
+        # ROOT (the unit tests do this with tmp_path).
+        try:
+            rel = str(target.relative_to(ROOT)).replace("\\", "/")
+        except ValueError:
+            rel = str(target).replace("\\", "/")
+        self._json(200, {"slug": slug, "path": rel})
+
+    def _handle_pipeline_delete(self, slug: str) -> None:
+        if not self._csrf_guard():
+            return
+        if not re.fullmatch(r"[a-z0-9-]+", slug or ""):
+            self._json(400, {"error": "invalid slug"})
+            return
+        target = PIPELINES_DIR / f"{slug}.yaml"
+        if not target.is_file():
+            self._json(404, {"error": "pipeline not found", "slug": slug})
+            return
+        try:
+            target_realpath = os.path.realpath(str(target.resolve(strict=True)))
+        except OSError:
+            self._json(404, {"error": "pipeline not found", "slug": slug})
+            return
+        dir_realpath = os.path.realpath(str(PIPELINES_DIR))
+        if not _is_under_trusted_dir(target_realpath, dir_realpath):
+            self._json(400, {"error": "path outside trusted dir"})
+            return
+        target.unlink()
+        self._json(200, {"slug": slug, "deleted": True})
+
+    def _handle_agent_orchestrations_list(self) -> None:
+        if not self._agent_orchestrations_origin_guard():
+            return
+        self._json(200, {"runs": _list_agent_runs()})
+
+    def _handle_agent_orchestration_get(self, slug: str) -> None:
+        if not self._agent_orchestrations_origin_guard():
+            return
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", slug or ""):
+            self._json(400, {"error": "invalid task slug"})
+            return
+        match = None
+        for run in _list_agent_runs():
+            if run.get("task_slug") == slug:
+                match = run
+                break
+        if match is None:
+            self._json(404, {"error": "agent orchestration not found", "task_slug": slug})
+            return
+        try:
+            candidate = ROOT / str(match.get("path") or "")
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            self._json(404, {"error": "agent orchestration file not found", "task_slug": slug})
+            return
+        resolved_realpath = os.path.realpath(str(resolved))
+        runs_realpath = os.path.realpath(str(AGENT_RUNS_DIR))
+        if not _is_under_trusted_dir(resolved_realpath, runs_realpath):
+            self._json(400, {"error": "agent orchestration path is outside trusted dir"})
+            return
+        parsed = _parse_agent_run(candidate)
+        self._json(200, {
+            "task_slug": parsed.get("task_slug"),
+            "date": parsed.get("date"),
+            "objective": parsed.get("objective"),
+            "output_hint": parsed.get("output_hint"),
+            "dag": parsed.get("dag") or [],
+            "handoff": parsed.get("handoff") or "",
+            "metrics": match.get("metrics") or _agent_run_metrics_by_slug().get(slug, []),
+        })
+
     def _handle_auto_select(self, parsed) -> None:
         """Auto-select scorer ranking — aggregated from .ai/ledgers/metrics.jsonl.
         Powers the Auto-select view. Accepts `?min_samples=N` (clamp 1..50,
@@ -5647,22 +6365,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     line = line.strip()
                     if not line:
                         continue
-        # Optional free-form detail. Collapse trailing whitespace but preserve
-        # internal newlines so multi-line notes survive the round trip; the
-        # frontend renders it as plain text (textContent), so no markup escaping
-        # is needed here.
-        description = str(body.get("description") or "").strip()
-        if len(description) > 2000:
-            self._json(400, {"error": "description must be 2000 characters or fewer"})
-            return
-
                     parts = line.split(" ", 1)
                     commits.append({
                         "sha": parts[0],
                         "subject": parts[1] if len(parts) > 1 else "",
                     })
 
-            "description": description,
             current_sha = self._read_workflow_version()
             is_template = self._is_template_repo()
             # Treat the template checkout as always up-to-date: serving the
@@ -6233,16 +6941,71 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         })
 
     def _handle_proposals_list(self) -> None:
-        """List every proposal under ``SKILL_PROPOSALS_DIR`` with status."""
+        """List every proposal under ``SKILL_PROPOSALS_DIR`` with status.
+
+        Defensive merge pass: legacy duplicates (multiple pending proposals
+        for the same skill+kind) are collapsed here too — the newest wins,
+        the rest are marked ``superseded`` on disk so the next call sees a
+        clean state. New writes already supersede prior pending via
+        ``_supersede_prior_pending`` at creation time."""
         items: list[dict] = []
         if SKILL_PROPOSALS_DIR.is_dir():
+            loaded: list[tuple[Path, dict]] = []
             for p in sorted(SKILL_PROPOSALS_DIR.glob("*.json"),
                             key=lambda x: x.stat().st_mtime, reverse=True):
                 try:
                     obj = json.loads(p.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     continue
-                # Compact summary; full body is fetched via the detail endpoint.
+                loaded.append((p, obj))
+            # First pass: collapse legacy same-skill+kind pending duplicates.
+            # `loaded` is mtime-desc, so the FIRST occurrence per (kind, skill)
+            # is the newest and survives; the rest get superseded.
+            seen_pending: dict[tuple[str, str], dict] = {}
+            now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+            for p, obj in loaded:
+                status = obj.get("status") or "pending"
+                if status != "pending":
+                    continue
+                skill = obj.get("skill") or ""
+                kind = obj.get("kind") or "improve"
+                key = (kind, skill)
+                if not skill:
+                    continue
+                winner = seen_pending.get(key)
+                if winner is None:
+                    seen_pending[key] = obj
+                    continue
+                # `obj` is older than `winner` — mark it superseded.
+                obj["status"] = "superseded"
+                obj["applied_at"] = now_iso
+                obj["applied_via"] = "merged-into-newer"
+                obj["superseded_by"] = winner.get("id")
+                try:
+                    p.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+                except OSError as e:
+                    print(f"[serve] list-time supersede {p.name} failed: {e}",
+                          flush=True)
+                # Bump the winner's merged_from list so the UI can show
+                # how many proposals collapsed into this one.
+                merged_from = list(winner.get("merged_from") or [])
+                older_id = obj.get("id")
+                if older_id and older_id not in merged_from:
+                    merged_from.append(older_id)
+                    winner["merged_from"] = merged_from
+                    # Find the winner's path to persist the bump.
+                    for wp, wobj in loaded:
+                        if wobj is winner:
+                            try:
+                                wp.write_text(json.dumps(winner, indent=2),
+                                              encoding="utf-8")
+                            except OSError as e:
+                                print(f"[serve] list-time merged_from update "
+                                      f"{wp.name} failed: {e}", flush=True)
+                            break
+            # Second pass: build the response summary.
+            for _, obj in loaded:
+                merged_from = obj.get("merged_from") or []
                 items.append({
                     "id": obj.get("id"),
                     "skill": obj.get("skill"),
@@ -6255,6 +7018,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "applied_at": obj.get("applied_at"),
                     "applied_via": obj.get("applied_via"),
                     "job_id": obj.get("job_id"),
+                    "merged_count": len(merged_from) + 1 if merged_from else 1,
                 })
         self._json(200, {"proposals": items})
 
@@ -6467,7 +7231,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             result = _run_improver_for_skill(
                 canonical, path, job_id=None, log_path=None,
-                cfg=cfg_capped, manual=True,
+                cfg=cfg_capped, manual=True, force=True,
             )
         except Exception as e:  # noqa: BLE001 — never 500 silently
             print(f"[serve] manual improve crashed for {canonical}: {e}", flush=True)
@@ -6606,6 +7370,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 print(f"[serve] persist draft proposal {pid} failed: {e}", flush=True)
                 self._json(500, {"error": "could not persist draft proposal", "detail": str(e)})
                 return
+            merged_in = _supersede_prior_pending(slug, pid, "draft")
+            if merged_in:
+                payload["merged_from"] = merged_in
+                try:
+                    (SKILL_PROPOSALS_DIR / f"{pid}.json").write_text(
+                        json.dumps(payload, indent=2), encoding="utf-8")
+                except OSError as e:
+                    # Same best-effort policy as _write_proposal: the new
+                    # draft is already on disk; merged_from is metadata.
+                    print(f"[serve] draft {pid} merged_from update failed: {e}", flush=True)
             _audit_improvement(slug, "pending",
                                f"draft from cluster {cluster_id}",
                                pid, None, payload["diff_lines"], source="manual")

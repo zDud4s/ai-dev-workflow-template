@@ -67,6 +67,8 @@
         if (btn.dataset.view === "run" || btn.dataset.view === "terminals") loadJobs();
         if (btn.dataset.view === "terminals") termRefreshTranscriptPicker();
         if (btn.dataset.view === "timeline") loadTimeline();
+        if (btn.dataset.view === "agent-orchestrations") window.loadAgentOrchestrations?.();
+        if (btn.dataset.view === "pipelines") window.loadPipelines?.();
         // Auto-select rankings now live under Models & dispatch (alongside
         // the auto-select config and phase-tuning table they explain).
         if (btn.dataset.view === "models" && typeof loadAutoSelect === "function") loadAutoSelect();

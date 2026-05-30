@@ -8,6 +8,8 @@
 4. **Review**: reviewer checks Handoff output (runs when Risk is `elevated` or Size is `medium`/`large` — see Rule 6)
 5. **Maintain**: update `.ai/memory.md` and `.ai/decisions.md` with discoveries
 
+For non-code task orchestration through the user's agent catalog, use the sibling entry point at `.claude/skills/orchestrate-agents/`.
+
 ## Roles
 
 Role assignments live in `.ai/models.yaml`. The orchestrator is a controller only — it dispatches each phase through the configured tool/model and never substitutes its own model for a configured phase.

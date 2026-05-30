@@ -74,7 +74,9 @@
     <button id="tab-plans" data-view="plans" role="tab" aria-controls="view-plans" aria-selected="false">Plans <span class="count" id="count-plans">·</span></button>
     <button id="tab-specs" data-view="specs" role="tab" aria-controls="view-specs" aria-selected="false">Specs <span class="count" id="count-specs">·</span></button>
     <button id="tab-packets" data-view="packets" role="tab" aria-controls="view-packets" aria-selected="false">Packet templates</button>
+    <button id="tab-pipelines" data-view="pipelines" role="tab" aria-controls="view-pipelines" aria-selected="false">Pipelines <span class="count" id="count-pipelines">·</span></button>
     <div class="section-label" role="presentation">runtime</div>
+    <button id="tab-agent-orchestrations" data-view="agent-orchestrations" role="tab" aria-controls="view-agent-orchestrations" aria-selected="false">Agent runs <span class="count" id="count-agent-orchestrations">·</span></button>
     <button id="tab-events" data-view="events" role="tab" aria-controls="view-events" aria-selected="false">Events <span class="count" id="count-events">·</span></button>
     <button id="tab-run" data-view="run" role="tab" aria-controls="view-run" aria-selected="false">Run <span class="count" id="count-jobs">·</span></button>
     <button id="tab-terminals" data-view="terminals" role="tab" aria-controls="view-terminals" aria-selected="false">Terminals <span class="count" id="count-terminals">·</span></button>
@@ -529,6 +531,104 @@
 
     </section>
 
+    <section class="view" id="view-pipelines" hidden>
+      <section class="block">
+        <h2>Pipelines</h2>
+        <div class="pipelines-summary meta meta-dim"></div>
+        <div class="pipelines-controls">
+          <button id="btn-new-pipeline" class="btn" type="button">+ New pipeline</button>
+        </div>
+        <div class="pipelines-grid" id="pipelines-grid"></div>
+        <div class="pipelines-empty" hidden>
+          <span class="pipelines-empty-glyph" aria-hidden="true">∅</span>
+          <p class="pipelines-empty-title">No pipelines yet</p>
+          <p class="pipelines-empty-hint">
+            Click <strong>+ New pipeline</strong> to build one, or invoke
+            <code>Use the orchestrate-agents skill. Task: …</code> to draft one with the planner.
+          </p>
+        </div>
+      </section>
+
+      <div id="pipeline-editor-modal" class="modal proposal-modal" hidden role="dialog" aria-modal="true" aria-labelledby="pipeline-editor-title">
+        <div class="proposal-modal-pane pipeline-editor-pane" tabindex="-1">
+          <header>
+            <h3 id="pipeline-editor-title">New pipeline</h3>
+            <button class="refresh modal-close" type="button" aria-label="Close editor">close</button>
+          </header>
+          <div class="pipeline-editor-body">
+            <div class="pipeline-editor">
+              <div class="pipeline-catalog">
+                <div class="pipeline-catalog-head">
+                  <span class="pipeline-catalog-title">Agents</span>
+                  <span class="pipeline-catalog-hint">drag onto canvas</span>
+                </div>
+                <input id="pipeline-catalog-search" type="search" class="pipeline-catalog-search" placeholder="Search agents…" aria-label="Search agents" />
+                <div class="pipeline-catalog-list"></div>
+              </div>
+              <div class="pipeline-canvas-area">
+                <label class="pipeline-field">
+                  <span class="pipeline-field-label">Description</span>
+                  <input type="text" class="pipeline-description" placeholder="What does this pipeline do?" />
+                </label>
+                <div class="pipeline-canvas-wrap">
+                  <div class="pipeline-canvas">
+                    <svg class="dag-svg" xmlns="http://www.w3.org/2000/svg" aria-label="Pipeline DAG"></svg>
+                  </div>
+                  <div class="pipeline-canvas-zoom" role="group" aria-label="Canvas zoom">
+                    <button type="button" class="pipeline-canvas-zoom-out" aria-label="Zoom out">−</button>
+                    <button type="button" class="pipeline-canvas-zoom-reset" aria-label="Reset zoom"><span class="pipeline-canvas-zoom-level">100%</span></button>
+                    <button type="button" class="pipeline-canvas-zoom-in" aria-label="Zoom in">+</button>
+                  </div>
+                </div>
+                <div class="pipeline-output">
+                  <label class="pipeline-field pipeline-field-inline">
+                    <span class="pipeline-field-label">Output mode</span>
+                    <select class="pipeline-output-mode">
+                      <option value="synthesize">synthesize</option>
+                      <option value="passthrough">passthrough</option>
+                      <option value="per-agent">per-agent</option>
+                    </select>
+                  </label>
+                  <label class="pipeline-field pipeline-field-inline pipeline-output-node" hidden>
+                    <span class="pipeline-field-label">Output node</span>
+                    <select class="pipeline-output-node-select"></select>
+                  </label>
+                </div>
+                <div class="pipeline-errors" hidden></div>
+              </div>
+            </div>
+          </div>
+          <footer class="pipeline-editor-actions">
+            <span class="pipeline-editor-msg meta meta-dim"></span>
+            <span class="pipeline-editor-spacer"></span>
+            <button class="btn secondary pipeline-editor-cancel" type="button">Cancel</button>
+            <button class="btn pipeline-editor-save" type="button" disabled>Save</button>
+          </footer>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-agent-orchestrations" role="tabpanel" aria-labelledby="tab-agent-orchestrations" hidden>
+      <section class="block">
+        <h2>Agent runs</h2>
+        <div class="agent-runs-summary"></div>
+        <div class="agent-runs-grid" id="agent-runs-grid"></div>
+        <div class="agent-runs-empty" hidden>No agent runs yet. Invoke <code>Use the orchestrate-agents skill. Task: ...</code> to populate this view.</div>
+      </section>
+
+      <div id="agent-run-modal" class="modal proposal-modal" hidden role="dialog" aria-modal="true" aria-labelledby="agent-run-modal-title">
+        <div class="proposal-modal-pane" tabindex="-1">
+          <header>
+            <h3 id="agent-run-modal-title">Agent run</h3>
+            <button class="refresh" id="agent-run-modal-close" aria-label="Close agent run modal">close</button>
+          </header>
+          <div class="proposal-modal-meta" id="agent-run-modal-meta"></div>
+          <div class="skill-detail-body" id="agent-run-modal-body"></div>
+        </div>
+      </div>
+
+    </section>
+
     <section class="view" id="view-plans" role="tabpanel" aria-labelledby="tab-plans">
       <div class="split">
         <div class="list" id="plans-list" data-skeletoned="1">
@@ -891,6 +991,8 @@
   <script defer src="app/todos.js"></script>
   <script defer src="app/skills.js"></script>
   <script defer src="app/agents.js"></script>
+  <script defer src="app/agent-orchestrations.js"></script>
+  <script defer src="app/pipelines.js"></script>
   <script defer src="app/jobs.js"></script>
   <script defer src="app/terminals.js"></script>
   <!-- Top-center toast stack. All setMsg() calls render here so transient

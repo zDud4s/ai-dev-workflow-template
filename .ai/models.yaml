@@ -1,9 +1,10 @@
 # AI workflow model configuration
 # tool: claude | codex
 # Available models (refreshed May 2026):
-#   Claude: claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5
+#   Claude: claude-opus-4-8 (flagship), claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
+#           legacy: claude-opus-4-6, claude-sonnet-4-5, claude-opus-4-5
 #           docs: https://platform.claude.com/docs/en/about-claude/models/overview
-#   Codex:  gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex
+#   Codex:  gpt-5.5 (recommended), gpt-5.4, gpt-5.4-mini, gpt-5.3-codex
 #           docs: https://developers.openai.com/codex/models
 #
 # Optional per-phase fields:
@@ -27,7 +28,7 @@ session:
 
 plan:
   tool: claude
-  model: claude-opus-4-7
+  model: claude-opus-4-8
 
 execute:
   tool: codex
@@ -35,11 +36,11 @@ execute:
 
 review:
   tool: claude
-  model: claude-opus-4-7
+  model: claude-opus-4-8
 
 rescue:
   tool: claude
-  model: claude-opus-4-6
+  model: claude-opus-4-7
 
 maintenance:
   tool: claude
@@ -48,3 +49,14 @@ maintenance:
 bootstrap:
   tool: claude
   model: claude-sonnet-4-6
+
+run_pipeline:
+  synthesize:
+    tool: claude
+    model: claude-sonnet-4-6
+    skill: synthesizer
+    reasoning_effort: medium
+    timeout_seconds: 600
+  maintenance:
+    tool: claude
+    model: claude-sonnet-4-6

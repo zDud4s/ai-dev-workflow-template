@@ -272,6 +272,14 @@
     async function openAgentDetail(path, name, source) {
       const modal = $("#agent-detail-modal");
       if (!modal) return;  // partial-DOM bail
+      // The modal lives inside <section id="view-agents">. When opened from a
+      // different active view (e.g. the pipeline editor's catalog tooltip),
+      // that section has hidden=true → display:none cascades and the modal
+      // never paints. Promote it to <body> once on first open so it works
+      // cross-view; idempotent because parentElement is checked.
+      if (modal.parentElement !== document.body) {
+        document.body.appendChild(modal);
+      }
       const myEpoch = ++_agentDetailEpoch;
       modal.hidden = false;
       if (typeof window.trapFocusInModal === "function") {
@@ -329,6 +337,13 @@
         window.releaseFocusTrap();
       }
     }
+
+    // Expose for cross-view use (e.g. pipeline editor's catalog tooltip
+    // "see details" link). Other views can call window.openAgentDetail(path,
+    // name, source) without duplicating the modal logic. _agentsState.all may
+    // be empty if the Agents tab was never opened — the modal still loads the
+    // file content from the server, only the metadata pre-fill skips.
+    window.openAgentDetail = openAgentDetail;
 
     // ----- Agent suggestions (POST /api/agents/suggest -> proposals) -----
     // Backend mirrors the skill-improver flow but for agents: one click runs
