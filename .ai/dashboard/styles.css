@@ -5566,11 +5566,43 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
 #pipeline-editor-modal .dag-port-in:hover {
   fill: var(--violet);
 }
+/* Wire-drag drop-target highlight — pointer capture suppresses :hover, so we
+   apply these classes from JS while the cursor sits over an IN port. */
+#pipeline-editor-modal .dag-port-wire-target {
+  fill: var(--good);
+  stroke: var(--good);
+  stroke-width: 3;
+  r: 8;
+  filter: drop-shadow(0 0 4px var(--good));
+}
+#pipeline-editor-modal .dag-port-wire-invalid {
+  fill: var(--bad);
+  stroke: var(--bad);
+  stroke-width: 3;
+  filter: drop-shadow(0 0 3px var(--bad));
+}
 #pipeline-editor-modal .dag-edge {
   fill: none;
   stroke: var(--accent-soft);
   stroke-width: 1.75;
   opacity: 0.85;
+  pointer-events: none; /* clicks go to .dag-edge-hit overlay instead */
+  transition: stroke 100ms var(--easing), stroke-width 100ms var(--easing);
+}
+/* Wide invisible hit overlay so clicking near the edge counts as clicking IT.
+   Sits just before the visible .dag-edge in DOM order so the adjacent-sibling
+   selector below can recolor the visible line on hover. */
+#pipeline-editor-modal .dag-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 16;
+  pointer-events: stroke;
+  cursor: var(--cur-pointer);
+}
+#pipeline-editor-modal .dag-edge-hit:hover + .dag-edge {
+  stroke: var(--bad);
+  stroke-width: 2.5;
+  opacity: 1;
 }
 #pipeline-editor-modal .dag-edge-draft {
   fill: none;
@@ -5578,6 +5610,14 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
   stroke-width: 2;
   stroke-dasharray: 6 5;
   opacity: 0.95;
+}
+#pipeline-editor-modal .dag-edge-draft.dag-edge-draft-valid {
+  stroke: var(--good);
+  stroke-width: 2.5;
+}
+#pipeline-editor-modal .dag-edge-draft.dag-edge-draft-invalid {
+  stroke: var(--bad);
+  stroke-dasharray: 3 4;
 }
 #pipeline-editor-modal .dag-empty {
   fill: var(--text-dim);

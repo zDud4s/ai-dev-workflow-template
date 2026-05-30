@@ -470,6 +470,15 @@
   // ----- SVG DAG editor -----------------------------------------------------
   var SVG_NS = "http://www.w3.org/2000/svg";
   var NODE_W = 210, NODE_H = 64, LAYER_GAP = 70, PAD = 24, V_GAP = 24;
+  // Snap radius (screen px) for the wire-drag drop target. The cursor doesn't
+  // have to land exactly on the IN port circle — anywhere within this radius
+  // of a port counts. Cursor inside any node group also snaps to that node's
+  // IN port (bypasses the radius — see findSnappedInPort).
+  var WIRE_SNAP_RADIUS = 60;
+  // Hover-OUT delay (ms): when the cursor leaves a hover target, wait this
+  // long before clearing the highlight. Prevents flicker when the cursor
+  // crosses tiny gaps between snap-eligible elements (e.g. node body to port).
+  var WIRE_HOVER_UNSET_DELAY = 80;
   var CANVAS_MIN_W = 820, CANVAS_MIN_H = 360;
   var PORT_R = 6;
   // Zoom bounds + step. Wheel uses ZOOM_WHEEL_STEP; buttons use ZOOM_BTN_STEP.
@@ -642,6 +651,8 @@
       svg.addEventListener("pointermove", onCanvasPointerMove);
       svg.addEventListener("pointerup", onCanvasPointerUp);
       svg.addEventListener("pointercancel", onCanvasPointerUp);
+      // Click on an edge's invisible hit overlay removes the connection.
+      svg.addEventListener("click", onCanvasClick);
       svg.dataset.wired = "1";
     }
     _canvasSvgRef = svg; _canvasPos = null;
@@ -690,15 +701,21 @@
     width = Math.max(width, CANVAS_MIN_W);
     height = Math.max(height, CANVAS_MIN_H);
     applyZoom(svg, width, height);
-    // Edges first so nodes paint on top.
+    // Edges first so nodes paint on top. Each edge is two paths: a wide
+    // transparent hit overlay (captures clicks) and a thin visible line. The
+    // hit path's stroke-width is ~16 screen px so the edge is comfortable to
+    // click without changing its visual weight.
     nodes.forEach(function (n) {
       var end = pos[n.id];
       n.depends_on.forEach(function (p) {
         var start = pos[p]; if (!start || !end) return;
+        var d = edgePath(start.x + NODE_W, start.y + NODE_H / 2,
+          end.x, end.y + NODE_H / 2);
         svg.appendChild(svgEl("path", {
-          class: "dag-edge", "data-from": p, "data-to": n.id,
-          d: edgePath(start.x + NODE_W, start.y + NODE_H / 2,
-            end.x, end.y + NODE_H / 2),
+          class: "dag-edge-hit", "data-from": p, "data-to": n.id, d: d,
+        }));
+        svg.appendChild(svgEl("path", {
+          class: "dag-edge", "data-from": p, "data-to": n.id, d: d,
         }));
       });
     });
@@ -937,6 +954,24 @@
         _canvasEdgeDraft.line.setAttribute("d",
           edgePath(src.x + NODE_W, src.y + NODE_H / 2, p.x, p.y));
       }
+      // Hit-test for the IN port under (or near) the cursor and apply a
+      // "will-connect" (or "would-be-invalid") highlight. Pointer capture
+      // suppresses CSS :hover so we mirror it manually. Direct hit on an IN
+      // port wins; otherwise findSnappedInPort handles whole-node-body hits
+      // and proximity to nearby IN ports within WIRE_SNAP_RADIUS.
+      var hit = (typeof document.elementFromPoint === "function")
+        ? document.elementFromPoint(e.clientX, e.clientY) : null;
+      var hitEl = null;
+      if (hit && hit.classList && hit.classList.contains("dag-port")
+          && hit.getAttribute("data-kind") === "in") {
+        hitEl = hit;
+      } else {
+        hitEl = findSnappedInPort(e.clientX, e.clientY, _canvasEdgeDraft.fromId, hit);
+      }
+      var verdict = hitEl
+        ? wireTargetVerdict(_canvasEdgeDraft.fromId, hitEl.getAttribute("data-id"))
+        : null;
+      updateWireHighlight(_canvasEdgeDraft, hitEl, verdict);
       return;
     }
     if (_canvasDrag) {
@@ -954,13 +989,25 @@
     document.body.classList.remove("pipeline-drag-active", "pipeline-wire-active");
     if (_canvasEdgeDraft) {
       var draft = _canvasEdgeDraft; _canvasEdgeDraft = null;
+      clearWireHighlight(draft);
       if (draft.line && draft.line.parentNode) draft.line.parentNode.removeChild(draft.line);
+      // Same hit-test logic as pointermove: direct hit wins, else findSnappedInPort
+      // handles node-body hits and proximity.
       var t = (typeof document.elementFromPoint === "function")
         ? document.elementFromPoint(e.clientX, e.clientY) : null;
+      var targetPort = null;
       if (t && t.classList && t.classList.contains("dag-port")
-        && t.getAttribute("data-kind") === "in") {
-        var targetId = t.getAttribute("data-id");
-        if (targetId && targetId !== draft.fromId) commitCanvasEdge(draft.fromId, targetId);
+          && t.getAttribute("data-kind") === "in") {
+        targetPort = t;
+      } else {
+        targetPort = findSnappedInPort(e.clientX, e.clientY, draft.fromId, t);
+      }
+      if (targetPort) {
+        var targetId = targetPort.getAttribute("data-id");
+        if (targetId && targetId !== draft.fromId
+            && wireTargetVerdict(draft.fromId, targetId) === "valid") {
+          commitCanvasEdge(draft.fromId, targetId);
+        }
       }
       return;
     }
@@ -977,6 +1024,174 @@
     if (target.depends_on.indexOf(fromId) >= 0) return;
     target.depends_on.push(fromId);
     renderNodes(); validateEditor();
+  }
+
+  function disconnectCanvasEdge(fromId, toId) {
+    var target = _editorState.nodes.filter(function (n) { return n && n.id === toId; })[0];
+    if (!target || !Array.isArray(target.depends_on)) return;
+    var idx = target.depends_on.indexOf(fromId);
+    if (idx < 0) return;
+    target.depends_on.splice(idx, 1);
+    renderNodes(); validateEditor();
+  }
+
+  function onCanvasClick(e) {
+    var t = e.target;
+    if (!t || !t.classList) return;
+    // Hit-area overlay catches the click; visible .dag-edge has pointer-events:none.
+    var hit = t.classList.contains("dag-edge-hit")
+      ? t
+      : (t.closest && t.closest(".dag-edge-hit"));
+    if (!hit) return;
+    var fromId = hit.getAttribute("data-from");
+    var toId = hit.getAttribute("data-to");
+    if (!fromId || !toId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    disconnectCanvasEdge(fromId, toId);
+  }
+
+  // Resolve the IN port that the user is "aiming at" right now. Two strategies:
+  //   1. If `elementFromPoint` already hit any descendant of a node group
+  //      (body, label, port, delete button — anything in the .dag-node tree),
+  //      use that node's IN port. This makes the entire node a drop target,
+  //      not just the tiny 12px port circle.
+  //   2. Otherwise, find the closest IN port whose center is within
+  //      WIRE_SNAP_RADIUS in screen px.
+  // Excludes the source's own IN port. Returns null if nothing in range.
+  function findSnappedInPort(clientX, clientY, fromId, directHit) {
+    var svg = _canvasSvgRef || document.querySelector(".pipeline-canvas svg.dag-svg");
+    if (!svg) return null;
+    // Strategy 1: cursor is over a node group (body, label, port, etc.).
+    var owningNode = directHit && directHit.closest
+      ? directHit.closest(".pipeline-canvas svg .dag-node")
+      : null;
+    if (owningNode) {
+      var owningId = owningNode.getAttribute("data-id");
+      if (owningId && owningId !== fromId) {
+        var ownPort = owningNode.querySelector('.dag-port[data-kind="in"]');
+        if (ownPort) return ownPort;
+      }
+    }
+    // Strategy 2: proximity to any IN port within WIRE_SNAP_RADIUS.
+    var ports = svg.querySelectorAll('.dag-port[data-kind="in"]');
+    var best = null, bestDist = WIRE_SNAP_RADIUS;
+    for (var i = 0; i < ports.length; i++) {
+      var port = ports[i];
+      if (port.getAttribute("data-id") === fromId) continue;
+      var r = port.getBoundingClientRect();
+      var cx = r.left + r.width / 2;
+      var cy = r.top + r.height / 2;
+      var dx = clientX - cx, dy = clientY - cy;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist <= bestDist) { best = port; bestDist = dist; }
+    }
+    return best;
+  }
+
+  // Returns "valid" | "self" | "duplicate" | "cycle" — used during the wire
+  // drag so the IN port hovered under the cursor gets a strong "will-connect"
+  // (green) or "would-be-invalid" (red) hint instead of just sitting silent.
+  function wireTargetVerdict(fromId, toId) {
+    if (!fromId || !toId) return "self";
+    if (fromId === toId) return "self";
+    var target = _editorState.nodes.filter(function (n) { return n && n.id === toId; })[0];
+    if (!target) return "self";
+    if (Array.isArray(target.depends_on) && target.depends_on.indexOf(fromId) >= 0) {
+      return "duplicate";
+    }
+    // Cycle iff fromId already depends (transitively) on toId.
+    var nodes = _editorState.nodes || [];
+    var depMap = Object.create(null);
+    nodes.forEach(function (n) {
+      if (n && typeof n.id === "string") {
+        depMap[n.id] = Array.isArray(n.depends_on) ? n.depends_on.slice() : [];
+      }
+    });
+    var stack = [fromId], seen = Object.create(null);
+    while (stack.length) {
+      var cur = stack.pop();
+      if (cur === toId) return "cycle";
+      if (seen[cur]) continue;
+      seen[cur] = true;
+      var deps = depMap[cur] || [];
+      for (var i = 0; i < deps.length; i++) stack.push(deps[i]);
+    }
+    return "valid";
+  }
+
+  function applyWireHighlightClasses(el, verdict) {
+    if (!el) return;
+    if (verdict === "valid") {
+      el.classList.add("dag-port-wire-target");
+      el.classList.remove("dag-port-wire-invalid");
+    } else {
+      el.classList.add("dag-port-wire-invalid");
+      el.classList.remove("dag-port-wire-target");
+    }
+  }
+
+  function removeWireHighlightClasses(el) {
+    if (!el) return;
+    el.classList.remove("dag-port-wire-target", "dag-port-wire-invalid");
+  }
+
+  function updateWireHighlight(draft, hitEl, verdict) {
+    // Switched to a new (or same) hit element: cancel any pending clear and
+    // apply immediately. Lets the user move directly between adjacent targets
+    // without a perceived gap.
+    if (hitEl) {
+      if (draft._unhoverTimer) {
+        clearTimeout(draft._unhoverTimer);
+        draft._unhoverTimer = null;
+      }
+      if (draft.hoverEl && draft.hoverEl !== hitEl) {
+        removeWireHighlightClasses(draft.hoverEl);
+      }
+      applyWireHighlightClasses(hitEl, verdict);
+      draft.hoverEl = hitEl;
+      draft.lastVerdict = verdict;
+      if (draft.line) {
+        draft.line.classList.toggle("dag-edge-draft-valid", verdict === "valid");
+        draft.line.classList.toggle("dag-edge-draft-invalid",
+          !!verdict && verdict !== "valid");
+      }
+      return;
+    }
+    // Lost the target. Don't clear immediately — the cursor often briefly
+    // exits the snap area while still aiming at a node (gap between port and
+    // body, the dashed draft line itself overlapping a port, etc.). Wait
+    // WIRE_HOVER_UNSET_DELAY before un-highlighting; a new hit within that
+    // window will cancel the timer above.
+    if (!draft.hoverEl) return; // nothing to clear
+    if (draft._unhoverTimer) return; // already pending
+    var staleEl = draft.hoverEl;
+    var staleLine = draft.line;
+    draft._unhoverTimer = setTimeout(function () {
+      draft._unhoverTimer = null;
+      if (draft.hoverEl !== staleEl) return; // user moved to a new target meanwhile
+      removeWireHighlightClasses(staleEl);
+      draft.hoverEl = null;
+      draft.lastVerdict = null;
+      if (staleLine) {
+        staleLine.classList.remove("dag-edge-draft-valid", "dag-edge-draft-invalid");
+      }
+    }, WIRE_HOVER_UNSET_DELAY);
+  }
+
+  function clearWireHighlight(draft) {
+    if (!draft) return;
+    if (draft._unhoverTimer) {
+      clearTimeout(draft._unhoverTimer);
+      draft._unhoverTimer = null;
+    }
+    if (draft.hoverEl) {
+      removeWireHighlightClasses(draft.hoverEl);
+      draft.hoverEl = null;
+    }
+    if (draft.line) {
+      draft.line.classList.remove("dag-edge-draft-valid", "dag-edge-draft-invalid");
+    }
   }
 
   // ----- Editor: validation (mirrors pipeline_schema.py) -------------------
