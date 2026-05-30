@@ -236,8 +236,6 @@ If one agent fails, only the nodes that depend on it are skipped — independent
 Use the orchestrate-agents skill. Task: <what you want done>
 ```
 
-> **Claude only (for now).** This track dispatches through the Claude `Task` tool; from a Codex session the pipeline file is still readable for inspection, but execution must run from Claude.
-
 ## Dashboard
 
 A local web dashboard ships under [`.ai/dashboard/`](.ai/dashboard/).
