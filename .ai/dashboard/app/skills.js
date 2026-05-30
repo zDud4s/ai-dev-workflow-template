@@ -577,8 +577,11 @@
       // Accepted drafts are NOT dimmed — they're a stuck state (file not
       // yet on disk) and the user needs to re-Accept to actually install.
       const dimmed = (p.status === "applied" || p.status === "installed") ? "style=\"opacity:0.6\"" : "";
+      const mergedPill = (p.merged_count && p.merged_count > 1)
+        ? `<span class="metric-pill" title="${p.merged_count - 1} earlier proposal${p.merged_count > 2 ? "s" : ""} merged into this one">merged ${p.merged_count}</span>`
+        : "";
       return `<div class="card skill-card proposal-card" ${dimmed}>
-        <h3>${escape(p.skill || p.id)} <span class="metric-pill ${statusCls}">${escape(p.status)}</span> ${isDraft ? '<span class="metric-pill">draft</span>' : ''}</h3>
+        <h3>${escape(p.skill || p.id)} <span class="metric-pill ${statusCls}">${escape(p.status)}</span> ${isDraft ? '<span class="metric-pill">draft</span>' : ''} ${mergedPill}</h3>
         <div class="change-summary ${summaryCls}">${escape(summary)}</div>
         <div class="metrics-row">
           <span class="metric-pill">${p.diff_lines ?? "?"} lines</span>
