@@ -29,3 +29,16 @@ def test_todos_js_purifies_title():
         line_no = src.count("\n", 0, match.start())
         context = "\n".join(lines[max(0, line_no - 3):line_no + 1])
         assert "DOMPurify.sanitize" in context
+
+
+def test_todos_js_can_launch_session_from_a_todo():
+    # A TODO row exposes run actions that dispatch an interactive session by
+    # driving the shared Run form + global submitJob() (defined in jobs.js).
+    src = TODOS_JS.read_text(encoding="utf-8")
+    assert '"run-claude"' in src
+    assert '"run-codex"' in src
+    # Codex maps to the chat-codex job kind; default run maps to chat.
+    assert '"chat-codex"' in src
+    # The launcher reuses the global submitJob rather than re-implementing
+    # job dispatch.
+    assert "window.submitJob" in src

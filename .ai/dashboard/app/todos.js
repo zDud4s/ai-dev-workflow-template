@@ -135,7 +135,7 @@
         return false;
       }
       if (query) {
-        var hay = (todoTitle(todo) + " " + todoSource(todo)).toLowerCase();
+        var hay = (todoTitle(todo) + " " + todoSource(todo) + " " + todoText(todo.description || "")).toLowerCase();
         if (!hay.includes(query)) return false;
       }
       return true;
@@ -145,6 +145,18 @@
   function buildRowActions(status) {
     var actions = document.createElement("div");
     actions.className = "todo-row-actions";
+
+    // Launch actions — spin up an interactive chat seeded with this TODO.
+    // The actual job dispatch is delegated to the global submitJob() (jobs.js).
+    [["run-claude", "▶ Claude"], ["run-codex", "▶ Codex"]].forEach(function (pair) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "todo-action todo-run";
+      b.dataset.action = pair[0];
+      b.textContent = pair[1];
+      actions.appendChild(b);
+    });
+
     var pairs = [];
     if (status === "open") {
       pairs = [["done", "Done"], ["archive", "Archive"]];
@@ -164,9 +176,38 @@
     return actions;
   }
 
+  // Launch an interactive chat (Claude or Codex) seeded with the TODO. Drives
+  // the existing Run form + global submitJob() so we reuse all of its logic:
+  // POST /api/jobs, switch to the Terminals tab, and open the live pane.
+  function launchTodoJob(todo, kind) {
+    if (!todo) return;
+    var taskEl = document.getElementById("run-task");
+    var kindEl = document.getElementById("run-kind");
+    if (!taskEl || !kindEl || typeof window.submitJob !== "function") {
+      showTodosBanner("Cannot launch a session — the Run view is unavailable.");
+      return;
+    }
+    var parts = [todoTitle(todo)];
+    var description = todoText(todo.description || "").trim();
+    if (description) parts.push(description);
+    var source = todoSource(todo);
+    parts.push("(from TODO " + todoId(todo) + (source ? " · " + source : "") + ")");
+    taskEl.value = parts.join("\n\n");
+    kindEl.value = kind;
+    window.submitJob();
+  }
+
+  function findTodoById(id) {
+    for (var i = 0; i < _todosCache.length; i++) {
+      if (todoId(_todosCache[i]) === id) return _todosCache[i];
+    }
+    return null;
+  }
+
   function renderTodoRow(row, todo, index) {
     var status = todoStatus(todo);
     row.className = "todo-row" + (status === "resolved-suggested" ? " suggested" : "");
+    row.dataset.status = status;
     row.dataset.id = todoId(todo, index);
     row.replaceChildren();
 
@@ -176,8 +217,19 @@
     title.className = "todo-title";
     renderTitle(title, todoTitle(todo));
     head.appendChild(title);
-    head.appendChild(makeTextEl("span", "pill", status || "open"));
+    var pillCls = status === "resolved" ? "pill done"
+      : status === "resolved-suggested" ? "pill warn"
+      : status === "archived" ? "pill cancelled"
+      : "pill";
+    head.appendChild(makeTextEl("span", pillCls, status || "open"));
     row.appendChild(head);
+
+    var description = todoText(todo.description || "").trim();
+    if (description) {
+      // Plain text (textContent via makeTextEl) — keeps the DOMPurify-only
+      // innerHTML invariant intact. CSS handles newline rendering.
+      row.appendChild(makeTextEl("div", "todo-desc", description));
+    }
 
     var metaParts = [];
     var source = todoSource(todo);
@@ -287,6 +339,7 @@
     var addModal = $todo("#todos-add-modal");
     var addForm = $todo("#todos-add-form");
     var addTitle = $todo("#todos-add-title");
+    var addDesc = $todo("#todos-add-desc");
     var addTags = $todo("#todos-add-tags");
     var addMsg = $todo("#todos-add-msg");
     var previewModal = $todo("#todos-preview-modal");
@@ -310,6 +363,7 @@
 
     function openAddModal() {
       if (addTitle) addTitle.value = "";
+      if (addDesc) addDesc.value = "";
       if (addTags) addTags.value = "";
       if (addMsg) addMsg.textContent = "";
       openModal(addModal, addTitle);
@@ -323,8 +377,9 @@
         return;
       }
       var tags = (addTags && addTags.value || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean);
+      var description = (addDesc && addDesc.value || "").trim();
       closeModal(addModal);
-      postTodos("/api/todos", { title: title, tags: tags }, "#todos-banner");
+      postTodos("/api/todos", { title: title, tags: tags, description: description }, "#todos-banner");
     }
 
     function openPreviewModal() {
@@ -418,9 +473,14 @@
         if (!row || !row.dataset.id) return;
         e.preventDefault();
         e.stopPropagation();
+        var action = btn.dataset.action;
+        if (action === "run-claude" || action === "run-codex") {
+          launchTodoJob(findTodoById(row.dataset.id), action === "run-codex" ? "chat-codex" : "chat");
+          return;
+        }
         postTodos(
           "/api/todos/" + encodeURIComponent(row.dataset.id) + "/status",
-          { action: btn.dataset.action },
+          { action: action },
           "#todos-banner"
         );
       });

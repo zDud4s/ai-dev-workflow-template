@@ -133,6 +133,41 @@ def test_post_todo_validates_title_length(running_server):
     assert "title" in body["error"]
 
 
+def test_post_todo_persists_description(running_server):
+    base, _repo_root = running_server
+    status, body = _post(
+        base,
+        "/api/todos",
+        {"title": "Wire up export", "description": "First line.\nSecond line with detail."},
+    )
+    assert status == 201
+    assert body["todo"]["description"] == "First line.\nSecond line with detail."
+
+    # The created description survives the round trip through the list endpoint.
+    status, listing = _get(base, "/api/todos")
+    assert status == 200
+    created = next(t for t in listing["todos"] if t["id"] == body["id"])
+    assert created["description"] == "First line.\nSecond line with detail."
+
+
+def test_post_todo_omitted_description_defaults_to_empty(running_server):
+    base, _repo_root = running_server
+    status, body = _post(base, "/api/todos", {"title": "No detail needed"})
+    assert status == 201
+    assert body["todo"]["description"] == ""
+
+
+def test_post_todo_validates_description_length(running_server):
+    base, _repo_root = running_server
+    status, body = _post(
+        base,
+        "/api/todos",
+        {"title": "Has overlong detail", "description": "y" * 2001},
+    )
+    assert status == 400
+    assert "description" in body["error"]
+
+
 def test_status_transitions_enforce_enum(running_server):
     base, repo_root = running_server
     todo_id = "td_2026-05-26_001"

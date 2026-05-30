@@ -5647,12 +5647,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     line = line.strip()
                     if not line:
                         continue
+        # Optional free-form detail. Collapse trailing whitespace but preserve
+        # internal newlines so multi-line notes survive the round trip; the
+        # frontend renders it as plain text (textContent), so no markup escaping
+        # is needed here.
+        description = str(body.get("description") or "").strip()
+        if len(description) > 2000:
+            self._json(400, {"error": "description must be 2000 characters or fewer"})
+            return
+
                     parts = line.split(" ", 1)
                     commits.append({
                         "sha": parts[0],
                         "subject": parts[1] if len(parts) > 1 else "",
                     })
 
+            "description": description,
             current_sha = self._read_workflow_version()
             is_template = self._is_template_repo()
             # Treat the template checkout as always up-to-date: serving the

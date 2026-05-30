@@ -4686,16 +4686,44 @@
       font-size: var(--fs-2);
     }
     .todos-filters input { min-width: min(320px, 100%); }
-    #todos-list .todo-row {
-      display: block;
-      padding: 12px 0;
-      border-bottom: 1px solid var(--border-soft);
+    /* Each TODO is a HUD specimen surface — the same status-row language as the
+       terminal panes: a solid panel keyed by a left state rail, with a hover
+       lift consistent with .card / .list-item. Replaces the old flat
+       bottom-border list, which read as plain text against the cyber chrome. */
+    #todos-list {
+      display: flex;
+      flex-direction: column;
+      gap: var(--s-2);
     }
-    #todos-list .todo-row:last-child { border-bottom: 0; }
+    #todos-list .todo-row {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: var(--s-3) var(--s-4);
+      background: var(--surf-2);
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid var(--border-strong);
+      transition:
+        background 140ms var(--easing),
+        border-color 140ms var(--easing),
+        transform 160ms var(--easing);
+    }
+    #todos-list .todo-row:hover {
+      background: var(--surf-3);
+      border-left-color: var(--accent);
+      transform: translateX(2px);
+    }
+    /* Left rail encodes status — the same state-color vocabulary as the pills
+       and the terminal-pane activity rails. */
+    .todo-row[data-status="open"]               { border-left-color: var(--accent); }
+    .todo-row[data-status="resolved-suggested"] { border-left-color: var(--warn); }
+    .todo-row[data-status="resolved"]           { border-left-color: var(--good); }
+    .todo-row[data-status="archived"]           { border-left-color: var(--text-faint); }
+    .todo-row[data-status="resolved"],
+    .todo-row[data-status="archived"] { opacity: 0.78; }
     .todo-row.suggested {
-      background: linear-gradient(90deg, var(--warn-bg), transparent 70%);
-      border-left: 2px solid var(--warn);
-      padding-left: var(--s-2);
+      background: linear-gradient(90deg, var(--warn-bg), var(--surf-2) 65%);
     }
     .todo-row-head {
       display: flex;
@@ -4707,21 +4735,49 @@
       min-width: 0;
       color: var(--text);
       font-weight: 600;
+      line-height: 1.4;
     }
     .todo-title p {
       margin: 0;
-      line-height: 1.35;
+      line-height: 1.4;
+    }
+    /* Free-form detail under the title. Body font (not mono) and a softer tone
+       so it reads as prose beneath the title without competing with it.
+       pre-wrap preserves the newlines the operator typed in the add form. */
+    .todo-desc {
+      color: var(--text-2);
+      font-size: var(--fs-2);
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
     .todo-row .sub {
-      margin-top: 4px;
       color: var(--text-dim);
       font-family: var(--ff-mono);
       font-size: var(--fs-1);
+      letter-spacing: 0.03em;
+      word-break: break-word;
     }
     .todo-row-actions {
       display: flex;
+      flex-wrap: wrap;
       gap: var(--s-2);
-      margin-top: 8px;
+      margin-top: 2px;
+    }
+    /* Affirmative vs destructive actions take the app's good/bad hover colors.
+       Higher specificity (extra [data-action]) than the base .todo-action:hover
+       below, so these win regardless of source order. */
+    .todo-row-actions .todo-action[data-action="done"]:hover,
+    .todo-row-actions .todo-action[data-action="accept-suggest"]:hover {
+      color: var(--good);
+      border-color: var(--good);
+      background: var(--panel-inset);
+    }
+    .todo-row-actions .todo-action[data-action="archive"]:hover,
+    .todo-row-actions .todo-action[data-action="reject-suggest"]:hover {
+      color: var(--bad);
+      border-color: var(--bad);
+      background: var(--panel-inset);
     }
     .todo-row-actions .todo-action {
       display: inline-flex;
@@ -4814,7 +4870,8 @@
       text-transform: none;
       letter-spacing: 0;
     }
-    #todos-add-modal .todos-add-form input[type="text"] {
+    #todos-add-modal .todos-add-form input[type="text"],
+    #todos-add-modal .todos-add-form textarea {
       min-height: 34px;
       padding: 8px 10px;
       background: var(--bg-inset);
@@ -4823,7 +4880,12 @@
       font-family: var(--ff-mono);
       font-size: var(--fs-2);
     }
-    #todos-add-modal .todos-add-form input[type="text"]:focus {
+    #todos-add-modal .todos-add-form textarea {
+      resize: vertical;
+      line-height: 1.5;
+    }
+    #todos-add-modal .todos-add-form input[type="text"]:focus,
+    #todos-add-modal .todos-add-form textarea:focus {
       outline: none;
       border-color: var(--accent);
     }
