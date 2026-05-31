@@ -19,6 +19,9 @@ mkdir -p "$TARGET_DIR/.claude/skills/maintenance"
 mkdir -p "$TARGET_DIR/.claude/skills/rescue"
 mkdir -p "$TARGET_DIR/.claude/skills/codex"
 mkdir -p "$TARGET_DIR/.claude/skills/orchestrate"
+mkdir -p "$TARGET_DIR/.claude/skills/orchestrate-agents"
+mkdir -p "$TARGET_DIR/.claude/skills/run-pipeline"
+mkdir -p "$TARGET_DIR/.claude/skills/synthesizer"
 mkdir -p "$TARGET_DIR/.claude/skills/agent-improver/references"
 mkdir -p "$TARGET_DIR/.claude/skills/agent-creator/references"
 mkdir -p "$TARGET_DIR/.claude/agents"
@@ -28,6 +31,9 @@ mkdir -p "$TARGET_DIR/.agents/skills/reviewer"
 mkdir -p "$TARGET_DIR/.agents/skills/maintenance"
 mkdir -p "$TARGET_DIR/.agents/skills/rescue"
 mkdir -p "$TARGET_DIR/.agents/skills/orchestrate"
+mkdir -p "$TARGET_DIR/.agents/skills/orchestrate-agents"
+mkdir -p "$TARGET_DIR/.agents/skills/run-pipeline"
+mkdir -p "$TARGET_DIR/.agents/skills/synthesizer"
 mkdir -p "$TARGET_DIR/.agents/skills/claude"
 
 copy_if_missing() {
@@ -74,6 +80,14 @@ copy_if_missing "$SCRIPT_DIR/.claude/skills/rescue/SKILL.md" "$TARGET_DIR/.claud
 copy_if_missing "$SCRIPT_DIR/.claude/skills/codex/SKILL.md" "$TARGET_DIR/.claude/skills/codex/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/orchestrate/SKILL.md" "$TARGET_DIR/.claude/skills/orchestrate/SKILL.md"
 
+# Agent-orchestration skills: orchestrate-agents drafts a pipeline YAML (workflow.md
+# links to it as the non-code entry point), run-pipeline executes a saved pipeline,
+# synthesizer folds agent outputs into a Handoff. Like the phase skills these are
+# mirrored into .agents/skills/ (project + global) below for Codex discovery.
+copy_if_missing "$SCRIPT_DIR/.claude/skills/orchestrate-agents/SKILL.md" "$TARGET_DIR/.claude/skills/orchestrate-agents/SKILL.md"
+copy_if_missing "$SCRIPT_DIR/.claude/skills/run-pipeline/SKILL.md" "$TARGET_DIR/.claude/skills/run-pipeline/SKILL.md"
+copy_if_missing "$SCRIPT_DIR/.claude/skills/synthesizer/SKILL.md" "$TARGET_DIR/.claude/skills/synthesizer/SKILL.md"
+
 # Claude-only `agent-improver` skill (audits .claude/agents/*.md; no Codex counterpart).
 # Has bundled reference files alongside SKILL.md.
 copy_if_missing "$SCRIPT_DIR/.claude/skills/agent-improver/SKILL.md" "$TARGET_DIR/.claude/skills/agent-improver/SKILL.md"
@@ -96,7 +110,7 @@ copy_if_missing "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agent
 # `codex` is NOT mirrored: codex is the runner, it never invokes a "codex skill"
 # to call itself. `claude` is excluded for the symmetric reason and because it
 # has no .claude/skills/ counterpart (see copy_if_missing above).
-for skill in bootstrap planner reviewer maintenance rescue orchestrate; do
+for skill in bootstrap planner reviewer maintenance rescue orchestrate orchestrate-agents run-pipeline synthesizer; do
   copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
 done
 
@@ -104,6 +118,9 @@ done
 copy_if_different "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
 copy_if_different "$SCRIPT_DIR/.ai/workflow/workflow.md" "$TARGET_DIR/.ai/workflow/workflow.md"
 copy_if_different "$SCRIPT_DIR/.ai/workflow/dispatch.md" "$TARGET_DIR/.ai/workflow/dispatch.md"
+# Auto-select decision table — the planner requires it whenever models.yaml has
+# auto_select.enabled: true, and README documents it as part of .ai/workflow/*.
+copy_if_different "$SCRIPT_DIR/.ai/workflow/auto-models.md" "$TARGET_DIR/.ai/workflow/auto-models.md"
 
 # Pre-rename leftover from older installs (claude-workflow.md -> workflow.md).
 if [ -f "$TARGET_DIR/.ai/workflow/claude-workflow.md" ]; then
@@ -470,7 +487,7 @@ mirror_skill_to_home() {
   copy_if_different "$src" "$dst_dir/SKILL.md"
 }
 
-for skill in bootstrap planner reviewer maintenance rescue orchestrate claude; do
+for skill in bootstrap planner reviewer maintenance rescue orchestrate orchestrate-agents run-pipeline synthesizer claude; do
   src="$TARGET_DIR/.agents/skills/$skill/SKILL.md"
   [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
   mirror_skill_to_home "$src" "$skill"
