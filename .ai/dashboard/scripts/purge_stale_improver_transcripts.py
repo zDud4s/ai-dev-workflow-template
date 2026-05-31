@@ -18,7 +18,8 @@ def _default_project_dir() -> Path | None:
         sys.path.insert(0, str(dashboard_dir))
     try:
         import serve  # type: ignore
-    except Exception:
+    except (ImportError, AttributeError) as e:
+        print(f"could not import serve helper: {e}", file=sys.stderr)
         return None
     return serve._transcripts_dir_for_cwd(Path.cwd())
 
