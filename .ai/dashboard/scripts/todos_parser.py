@@ -141,6 +141,11 @@ def _dedup_hash(source: str, title: str) -> str:
     return hashlib.sha1(payload).hexdigest()
 
 
+def _dedup_source_key(source: str) -> str:
+    key = re.sub(r"#L\d+\b", "", source)
+    return re.sub(r":\d+$", "", key)
+
+
 def _allocate_id(existing, now: str | None = None) -> str:
     date = (now or _utc_now())[:10]
     prefix = f"td_{date}_"
@@ -378,7 +383,7 @@ def _new_todo(capture: dict, existing: list[dict], now: str, captured_by: str) -
         "created_at": now,
         "updated_at": now,
         "captured_by": captured_by,
-        "dedup_hash": _dedup_hash(source, title),
+        "dedup_hash": _dedup_hash(_dedup_source_key(source), title),
         "resolution": None,
         "rejected_hashes": [],
     }
@@ -417,10 +422,12 @@ def scan_and_append(repo_root, last_sha=None, captured_by: str = "maintenance") 
         source = capture.get("source", "").strip()
         if not title or not source:
             continue
-        dedup = _dedup_hash(source, title)
+        dedup = _dedup_hash(_dedup_source_key(source), title)
         current = by_hash.get(dedup)
         if current:
             row = dict(current)
+            row["source"] = source
+            row["source_ref"] = capture.get("source_ref", source)
             row["updated_at"] = now
             row["dedup_hash"] = dedup
             to_append.append(row)
