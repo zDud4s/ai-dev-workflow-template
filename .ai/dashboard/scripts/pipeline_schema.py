@@ -56,9 +56,16 @@ def validate(pipeline: dict[str, Any]) -> tuple[bool, list[str]]:
         seen.add(node_id)
 
     # depends_on resolution
-    ids = {n.get("id") for n in nodes if isinstance(n, dict)}
+    ids = {
+        n.get("id")
+        for n in nodes
+        if isinstance(n, dict) and isinstance(n.get("id"), str) and n.get("id")
+    }
     for node in nodes:
         if not isinstance(node, dict):
+            continue
+        node_id = node.get("id")
+        if not isinstance(node_id, str) or not node_id:
             continue
         deps = node.get("depends_on")
         if deps is None:

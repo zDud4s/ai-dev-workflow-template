@@ -31,6 +31,7 @@ def _require_spec(spec: Any) -> tuple[list[dict[str, Any]], int]:
     if not isinstance(max_parallel, int) or max_parallel < 1:
         raise ValueError("'max_parallel' must be a positive integer")
 
+    seen: set[str] = set()
     for index, node in enumerate(nodes):
         if not isinstance(node, dict):
             raise ValueError(f"node #{index} must be an object")
@@ -40,6 +41,9 @@ def _require_spec(spec: Any) -> tuple[list[dict[str, Any]], int]:
             raise ValueError(f"node #{index} missing key 'cmd'")
         if not isinstance(node["id"], str):
             raise ValueError(f"node #{index} id must be a string")
+        if node["id"] in seen:
+            raise ValueError(f"node #{index} duplicate id '{node['id']}'")
+        seen.add(node["id"])
         if not isinstance(node["cmd"], list) or not all(
             isinstance(part, str) for part in node["cmd"]
         ):
