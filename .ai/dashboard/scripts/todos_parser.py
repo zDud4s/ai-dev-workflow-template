@@ -178,6 +178,43 @@ def _acquire_lock(path, timeout: float = 5.0):
             return None
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """Best-effort liveness check for a PID; defensive about platform gaps."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but we may not signal it.
+        return True
+    except (OSError, AttributeError):
+        # os.kill missing/unreliable (e.g. some Windows cases): treat as alive
+        # so the caller falls back to the mtime threshold instead.
+        return True
+    return True
+
+
+def _lock_is_orphaned(path, stale_after: float = 30.0) -> bool:
+    """A lock is orphaned when its mtime is older than ``stale_after`` seconds
+    OR its recorded PID is dead. An unparseable/missing PID counts as orphaned;
+    a missing lock file does not (nothing to reclaim)."""
+    lock_path = Path(path)
+    try:
+        st_mtime = lock_path.stat().st_mtime
+    except OSError:
+        return False
+    if time.time() - st_mtime > stale_after:
+        return True
+    try:
+        raw = lock_path.read_text(encoding="ascii", errors="replace").strip()
+        pid = int(raw)
+    except (OSError, ValueError):
+        return True
+    return not _pid_is_alive(pid)
+
+
 def _fold_latest(rows: list[dict]) -> dict:
     latest = {}
     for row in rows:
@@ -256,7 +293,11 @@ def _capture_handoff_followups(repo_root) -> list[dict]:
     if not candidates:
         return []
     path = candidates[-1]
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        # Plan file vanished between the glob and the read (TOCTOU).
+        return []
     handoff_idx = None
     for idx, line in enumerate(lines):
         if re.match(r"^## Handoff\b", line):
@@ -712,6 +753,15 @@ def regen_markdown(repo_root) -> dict:
     root = Path(repo_root)
     lock = _lock_path(root)
     fd = _acquire_lock(lock)
+    if fd is None:
+        # Lock held: if it looks orphaned (dead PID or stale mtime), reclaim it
+        # once and retry. Otherwise leave the live holder alone.
+        if _lock_is_orphaned(lock):
+            try:
+                os.unlink(str(lock))
+            except OSError:
+                pass
+            fd = _acquire_lock(lock)
     if fd is None:
         return {"ok": False, "banner": "TODO.md export stale"}
     try:
