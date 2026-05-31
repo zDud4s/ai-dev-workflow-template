@@ -11,11 +11,15 @@ import codecs
 import logging
 import os
 import pathlib
+import re
 import sys
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"))
 import pty_session as _pty_session
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+LOG_EVENT_PATH = ROOT / ".ai" / "dashboard" / "scripts" / "log_event.py"
 
 
 def _fake_posix_pty():
@@ -140,3 +144,21 @@ def test_read_eof_reaps_proactively():
     assert p._closed is True, "EOF read must flip _closed"
     assert wp_mock.call_count >= 1, \
         "EOF read must proactively call waitpid (no zombie)"
+
+
+def test_log_event_binary_append_fixed_offset_lock():
+    text = LOG_EVENT_PATH.read_text(encoding="utf-8")
+
+    assert 'EVENTS_FILE.open("ab")' in text
+    assert re.search(
+        r"def _msvcrt_lock_at_start\(f, msvcrt, mode\).*?"
+        r"f\.seek\(0\).*?msvcrt\.locking\(f\.fileno\(\), mode, 1\)",
+        text,
+        flags=re.DOTALL,
+    )
+    assert "_msvcrt_lock_at_start(f, msvcrt, msvcrt.LK_LOCK)" in text
+    assert "_msvcrt_lock_at_start(f, msvcrt, msvcrt.LK_UNLCK)" in text
+
+    lock_pos = text.index("msvcrt.LK_LOCK")
+    unlock_pos = text.index("msvcrt.LK_UNLCK")
+    assert "seek(0)" not in text[lock_pos:unlock_pos]

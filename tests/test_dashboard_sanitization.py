@@ -35,3 +35,13 @@ def test_all_marked_parse_calls_are_sanitized():
                 assert "DOMPurify.sanitize(marked.parse(" in line, (
                     f"{path.relative_to(ROOT)}:{line_no} has unsanitized marked.parse"
                 )
+
+
+def test_terminals_image_chip_no_innerHTML_interpolation():
+    text = (ROOT / ".ai/dashboard/app/terminals.js").read_text(encoding="utf-8")
+
+    assert not re.search(r"chip\.innerHTML\s*=\s*`<img\s+src=\"\$\{", text)
+    assert "image\\/(png|jpeg|gif|webp)" in text
+    attach_render = text[text.index("function termRenderAttachments"):]
+    attach_render = attach_render[: attach_render.index("var _IMAGE_PASTE_MAX_BYTES")]
+    assert 'document.createElement("img")' in attach_render

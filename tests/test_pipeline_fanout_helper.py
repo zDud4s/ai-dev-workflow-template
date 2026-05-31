@@ -100,3 +100,17 @@ def test_fanout_passes_stdin_as_utf8() -> None:
     assert result["stdout"] == payload, (
         f"UTF-8 payload corrupted in stdin round-trip: {result['stdout']!r} != {payload!r}"
     )
+
+
+def test_duplicate_node_id_rejected() -> None:
+    spec = {
+        "nodes": [
+            {"id": "a", "cmd": [sys.executable, "-c", "print('1')"]},
+            {"id": "a", "cmd": [sys.executable, "-c", "print('2')"]},
+        ],
+    }
+
+    completed = _invoke_helper(spec)
+
+    assert completed.returncode == 1
+    assert "duplicate id" in completed.stderr

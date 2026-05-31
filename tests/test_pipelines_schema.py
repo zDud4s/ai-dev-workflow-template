@@ -174,3 +174,16 @@ def test_node_missing_agent_invalid() -> None:
     }
     ok, errors = validate(pipeline)
     assert not ok
+
+
+def test_node_missing_id_no_derived_depends_error() -> None:
+    pipeline = {
+        "output": {"mode": "synthesize"},
+        "nodes": [{"agent": "x", "depends_on": ["a"]}],
+    }
+    ok, errors = validate(pipeline)
+    assert not ok
+    assert any("missing id or agent" in e for e in errors)
+    assert not any("depends on unknown" in e for e in errors)
+    assert not any("for 'None'" in e for e in errors)
+    assert not any("'None'" in e for e in errors)

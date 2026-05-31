@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 
 import todos_parser
@@ -119,6 +121,33 @@ def test_dedup_hash_is_idempotent(tmp_path):
     )
 
 
+def test_dedup_hash_stable_across_line_shift(tmp_path):
+    repo = _init_repo(tmp_path)
+    _run(repo, ["git", "commit", "--allow-empty", "-m", "base"])
+    base = _run(repo, ["git", "rev-parse", "HEAD"]).stdout.strip()
+    _write(repo / "src" / "app.py", "# TODO: x\n")
+    _commit_all(repo, "add marker")
+
+    first = todos_parser.scan_and_append(repo, last_sha=base)
+    first_row = next(iter(_latest(repo).values()))
+    first_hash = first_row["dedup_hash"]
+    first_id = first_row["id"]
+
+    _write(repo / "src" / "app.py", "\n\n# TODO: x\n")
+    _commit_all(repo, "shift marker")
+
+    second = todos_parser.scan_and_append(repo, last_sha=base)
+    latest = _latest(repo)
+    surviving = latest[first_id]
+
+    assert first["added"] == 1
+    assert second["added"] == 0
+    assert second["updated"] == 1
+    assert set(latest) == {first_id}
+    assert surviving["source_ref"] == "src/app.py:3"
+    assert surviving["dedup_hash"] == first_hash
+
+
 def test_one_source_failure_does_not_abort_others(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path)
     _write(repo / ".ai" / "memory.md", "- 2026-05-26 [followup] Should be skipped by failure\n")
@@ -142,3 +171,60 @@ def test_one_source_failure_does_not_abort_others(tmp_path, monkeypatch):
     assert "memory exploded" in (repo / ".ai" / "dashboard" / ".todos-parser.log").read_text(
         encoding="utf-8"
     )
+
+
+def _dead_pid() -> int:
+    """Return a PID that is almost certainly not alive."""
+    pid = os.getpid()
+    while todos_parser._pid_is_alive(pid):
+        pid += 7919
+        if pid > 4_000_000:
+            return 999_999_999
+    return pid
+
+
+def test_regen_markdown_reclaims_orphan_lock(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write(repo / ".ai" / "ledgers" / "todos.jsonl", "")
+    lock = todos_parser._lock_path(repo)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    # Orphan lock: dead PID and a far-past mtime.
+    lock.write_text(str(_dead_pid()), encoding="ascii")
+    old = time.time() - 600
+    os.utime(lock, (old, old))
+
+    result = todos_parser.regen_markdown(repo)
+
+    assert result["ok"] is True
+    assert todos_parser._todo_md_path(repo).exists()
+
+
+def test_regen_markdown_respects_live_lock(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write(repo / ".ai" / "ledgers" / "todos.jsonl", "")
+    lock = todos_parser._lock_path(repo)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    # Live lock: this process' PID and a fresh mtime.
+    lock.write_text(str(os.getpid()), encoding="ascii")
+
+    result = todos_parser.regen_markdown(repo)
+
+    assert result["ok"] is False
+    assert result["banner"] == "TODO.md export stale"
+    # The live lock must not be reclaimed.
+    assert lock.exists()
+
+
+def test_capture_handoff_followups_missing_file_returns_empty(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _write(
+        repo / ".ai" / "plans" / "2026-05-26-new.md",
+        "## Handoff\n\n## Follow-ups\n- [tests] Add coverage\n",
+    )
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("vanished")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+
+    assert todos_parser._capture_handoff_followups(repo) == []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import datetime as dt
 import importlib.util
 import json
@@ -160,3 +161,32 @@ def test_periodic_sweep_uses_shared_predicate(serve_module, tmp_path, monkeypatc
 
     assert calls == [(transcript, [])]
     assert transcript.exists()
+
+
+def test_default_project_dir_logs_on_import_error(monkeypatch, capsys):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "serve":
+            raise ImportError("boom")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    result = purge_script._default_project_dir()
+    assert result is None
+    err = capsys.readouterr().err
+    assert "could not import serve helper" in err
+    assert "boom" in err
+
+
+def test_default_project_dir_propagates_non_import_error(monkeypatch):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "serve":
+            raise RuntimeError("not swallowed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(RuntimeError, match="not swallowed"):
+        purge_script._default_project_dir()
