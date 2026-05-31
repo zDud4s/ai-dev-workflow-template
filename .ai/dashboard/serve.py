@@ -267,6 +267,11 @@ _COST_EXTRACT_CACHE: dict[str, tuple[int, dict | None]] = {}
 _COST_EXTRACT_LOCK = threading.Lock()
 _TRANSCRIPT_PREVIEW_CACHE: dict[str, tuple[int, str | None, str | None]] = {}
 _TRANSCRIPT_PREVIEW_LOCK = threading.Lock()
+# mtime-keyed cache of parsed agent-run .md files: (str(path), st.st_mtime_ns) -> parsed dict.
+_AGENT_RUN_PARSE_CACHE: dict[str, tuple[int, dict]] = {}
+_AGENT_RUN_PARSE_LOCK = threading.Lock()
+# Per-cwd memo of resolved ~/.claude/projects/<slug> dir (None included).
+_TRANSCRIPTS_DIR_CACHE: dict[str, "Path | None"] = {}
 # Caps concurrent /api/suggestions/<id>/draft + /api/agents/suggest requests.
 # Both endpoints spawn long-running `claude -p` / `codex` subprocesses
 # (timeout_seconds, default 120s) on the request thread; without a cap a
@@ -755,7 +760,15 @@ def _list_agent_runs() -> list[dict]:
         except OSError as e:
             print(f"[serve] agent-run stat failed for {path}: {e}", flush=True)
             continue
-        parsed = _parse_agent_run(path)
+        parse_key = str(path)
+        mtime_ns = st.st_mtime_ns
+        with _AGENT_RUN_PARSE_LOCK:
+            cached = _AGENT_RUN_PARSE_CACHE.get(parse_key)
+            if cached is not None and cached[0] == mtime_ns:
+                parsed = cached[1]
+            else:
+                parsed = _parse_agent_run(path)
+                _AGENT_RUN_PARSE_CACHE[parse_key] = (mtime_ns, parsed)
         slug = parsed.get("task_slug")
         handoff = parsed.get("handoff") or ""
         plan_ts = _dt.datetime.fromtimestamp(st.st_mtime, _dt.timezone.utc).isoformat(timespec="seconds")
@@ -1103,8 +1116,12 @@ def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
     Claude Code's slug rule (observed): replace ``:``, ``/``, ``\\`` and
     spaces with ``-``. We try a few common variants because case-folding
     of the drive letter has been seen both ways across machines."""
+    key = str(cwd)
+    if key in _TRANSCRIPTS_DIR_CACHE:
+        return _TRANSCRIPTS_DIR_CACHE[key]
     root = _claude_projects_root()
     if root is None:
+        _TRANSCRIPTS_DIR_CACHE[key] = None
         return None
     s = str(cwd)
     slug_lower = (s[0].lower() + s[1:]).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
@@ -1112,6 +1129,7 @@ def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
     for slug in (slug_lower, slug_upper, slug_lower.lower()):
         p = root / slug
         if p.is_dir():
+            _TRANSCRIPTS_DIR_CACHE[key] = p
             return p
     # Last-ditch: scan all subdirs and check if any transcript records this cwd.
     target = str(cwd).lower()
@@ -1131,10 +1149,12 @@ def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
                         except (json.JSONDecodeError, ValueError):
                             continue
                         if str(obj.get("cwd") or "").lower() == target:
+                            _TRANSCRIPTS_DIR_CACHE[key] = sub
                             return sub
                         break  # only peek first record per file
             except OSError:
                 continue
+    _TRANSCRIPTS_DIR_CACHE[key] = None
     return None
 
 
