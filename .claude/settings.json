@@ -1,4 +1,10 @@
 {
+
+  "sandbox": {
+  "allowUnsandboxedCommands": true,
+  "excludedCommands": ["codex"]
+  },
+
   "permissions": {
     "allow": [
       "Bash(python .ai/dashboard/serve.py)",
