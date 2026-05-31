@@ -149,6 +149,10 @@ copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/log_event.py" "$TARGET_DIR/
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/pty_session.py" "$TARGET_DIR/.ai/dashboard/scripts/pty_session.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/todos_parser.py" "$TARGET_DIR/.ai/dashboard/scripts/todos_parser.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/demo.py" "$TARGET_DIR/.ai/dashboard/scripts/demo.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/_improver_transcript_policy.py" "$TARGET_DIR/.ai/dashboard/scripts/_improver_transcript_policy.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/pipeline_schema.py" "$TARGET_DIR/.ai/dashboard/scripts/pipeline_schema.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/pipeline_fanout.py" "$TARGET_DIR/.ai/dashboard/scripts/pipeline_fanout.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/purge_stale_improver_transcripts.py" "$TARGET_DIR/.ai/dashboard/scripts/purge_stale_improver_transcripts.py"
 # Clean up old top-level locations from pre-scripts/ layouts so old + new
 # don't co-exist in upgraded projects.
 rm -f "$TARGET_DIR/.ai/dashboard/log_event.py" \
