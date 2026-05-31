@@ -1713,7 +1713,14 @@
         const chip = document.createElement("span");
         chip.className = "attach-chip";
         const src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
-        chip.innerHTML = `<img src="${src}" style="height:18px;vertical-align:middle;border-radius:2px;margin-right:6px"/>image  ×`;
+        const thumb = document.createElement("img");
+        thumb.src = src;
+        thumb.style.height = "18px";
+        thumb.style.verticalAlign = "middle";
+        thumb.style.borderRadius = "2px";
+        thumb.style.marginRight = "6px";
+        chip.appendChild(thumb);
+        chip.appendChild(document.createTextNode("image  ×"));
         wireChipKeyboard(chip, () => { a.images.splice(i, 1); termRenderAttachments(t); });
         tray.appendChild(chip);
       });
@@ -1736,7 +1743,8 @@
         const comma = r.indexOf(",");
         if (comma < 0) return;
         const data = r.slice(comma + 1);
-        const mt = (r.slice(5, comma).split(";")[0]) || "image/png";
+        const rawMt = (r.slice(5, comma).split(";")[0]) || "image/png";
+        const mt = /^image\/(png|jpeg|gif|webp)$/.test(rawMt) ? rawMt : "image/png";
         t.attached = t.attached || { images: [], files: [] };
         t.attached.images.push({ data, media_type: mt });
         termRenderAttachments(t);

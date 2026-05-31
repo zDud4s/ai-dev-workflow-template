@@ -35,6 +35,11 @@ RE_PHASE_PATH = re.compile(r"/tmp/phase-(\w+)-prompt\.md")
 RE_PHASE_INLINE = re.compile(r"Execute the attached\s+(\w+)\s+phase", re.I)
 
 
+def _msvcrt_lock_at_start(f, msvcrt, mode) -> None:
+    f.seek(0)
+    msvcrt.locking(f.fileno(), mode, 1)
+
+
 def detect(command: str) -> dict | None:
     if not command:
         return None
@@ -86,19 +91,18 @@ def main() -> None:
         # processes writing simultaneously won't interleave bytes mid-line.
         # Windows has no equivalent guarantee — use msvcrt.locking around
         # the write so concurrent dispatches can't shred each other's JSON.
-        with EVENTS_FILE.open("a", encoding="utf-8") as f:
-            line = json.dumps(event, ensure_ascii=False) + "\n"
+        with EVENTS_FILE.open("ab") as f:
+            line = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
             if sys.platform == "win32":
                 try:
                     import msvcrt
-                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    _msvcrt_lock_at_start(f, msvcrt, msvcrt.LK_LOCK)
                     try:
                         f.write(line)
                         f.flush()
                     finally:
                         try:
-                            f.seek(0)
-                            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                            _msvcrt_lock_at_start(f, msvcrt, msvcrt.LK_UNLCK)
                         except OSError:
                             pass
                 except (ImportError, OSError):
@@ -111,6 +115,7 @@ def main() -> None:
                     fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     try:
                         f.write(line)
+                        f.flush()
                     finally:
                         fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 except (ImportError, OSError):
