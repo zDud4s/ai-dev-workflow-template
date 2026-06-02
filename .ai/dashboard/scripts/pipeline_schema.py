@@ -1,33 +1,30 @@
 """Pure-Python validator for pipeline YAML.
 
 Used by:
-- run-pipeline skill (Pre-flight load-time validation)
+- run-pipeline skill (pre-flight load-time validation)
 - dashboard PUT /api/pipelines/<slug> endpoint
 
-The function accepts an already-parsed Python dict (the caller is responsible
-for yaml.safe_load); returns (ok: bool, errors: list[str]). All errors share
-the prefix `pipeline invalid:` for consistent surfacing.
+A pipeline is a DAG of nodes. Each node is either an AGENT node (`agent:
+<subagent_type>`) or a FLOW node (`kind:`). There is exactly one `kind: input`
+source node and exactly one sink node (`kind` in synthesize/collect/passthrough);
+the sink's kind decides how the final result is produced and its `depends_on`
+edges decide what feeds it.
+
+The function accepts an already-parsed Python dict (the caller runs
+yaml.safe_load); returns (ok: bool, errors: list[str]). All errors share the
+prefix `pipeline invalid:`.
 """
 from __future__ import annotations
 from typing import Any
 
-VALID_OUTPUT_MODES = ("synthesize", "passthrough", "per-agent")
-
-
-def is_linear(pipeline: dict[str, Any]) -> bool:
-    """A pipeline with no `depends_on` field on any node is linear; the
-    orchestrator interprets the node order as the dependency chain."""
-    nodes = pipeline.get("nodes") or []
-    return all("depends_on" not in n for n in nodes)
+SINK_KINDS = ("synthesize", "collect", "passthrough")
+FLOW_KINDS = ("input",) + SINK_KINDS
 
 
 def validate(pipeline: dict[str, Any]) -> tuple[bool, list[str]]:
     """Validate the parsed-YAML shape of a pipeline against the schema."""
     errs: list[str] = []
 
-    # Required top-level keys
-    if "output" not in pipeline:
-        errs.append("pipeline invalid: missing key 'output'")
     if "nodes" not in pipeline:
         errs.append("pipeline invalid: missing key 'nodes'")
 
@@ -38,81 +35,142 @@ def validate(pipeline: dict[str, Any]) -> tuple[bool, list[str]]:
     elif nodes is None:
         nodes = []
 
-    # Per-node shape + uniqueness
+    # Per-node shape: id + exactly one of agent/kind; valid kind value.
     seen: set[str] = set()
     for i, node in enumerate(nodes):
         if not isinstance(node, dict):
             errs.append(f"pipeline invalid: node #{i} must be a mapping")
             continue
         node_id = node.get("id")
-        node_agent = node.get("agent")
         if not isinstance(node_id, str) or not node_id:
-            errs.append(f"pipeline invalid: node #{i} missing id or agent")
+            errs.append(f"pipeline invalid: node #{i} missing id")
             continue
-        if not isinstance(node_agent, str) or not node_agent:
-            errs.append(f"pipeline invalid: node #{i} missing id or agent")
         if node_id in seen:
             errs.append(f"pipeline invalid: duplicate id '{node_id}'")
         seen.add(node_id)
 
-    # depends_on resolution
-    ids = {
-        n.get("id")
-        for n in nodes
+        has_agent = isinstance(node.get("agent"), str) and bool(node.get("agent"))
+        has_kind = "kind" in node
+        if has_agent == has_kind:  # both or neither
+            errs.append(
+                f"pipeline invalid: node '{node_id}' must have either "
+                "'agent' or 'kind', not both"
+            )
+        if has_kind and node.get("kind") not in FLOW_KINDS:
+            errs.append(
+                f"pipeline invalid: node '{node_id}' has unknown kind "
+                f"'{node.get('kind')}'"
+            )
+
+    # Well-formed nodes only, for the structural passes below.
+    valid = [
+        n for n in nodes
         if isinstance(n, dict) and isinstance(n.get("id"), str) and n.get("id")
-    }
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        node_id = node.get("id")
-        if not isinstance(node_id, str) or not node_id:
-            continue
+    ]
+    ids = {n["id"] for n in valid}
+
+    # depends_on resolution.
+    for node in valid:
         deps = node.get("depends_on")
         if deps is None:
             continue
         if not isinstance(deps, list):
-            errs.append(f"pipeline invalid: depends_on for '{node.get('id')}' must be a list")
+            errs.append(
+                f"pipeline invalid: depends_on for '{node['id']}' must be a list"
+            )
             continue
         for d in deps:
             if d not in ids:
                 errs.append(
-                    f"pipeline invalid: '{node.get('id')}' depends on unknown '{d}'"
+                    f"pipeline invalid: '{node['id']}' depends on unknown '{d}'"
                 )
 
-    # Cycle check via Kahn's algorithm
-    if not errs:
-        in_deg = {n["id"]: len(n.get("depends_on") or []) for n in nodes}
-        # If pipeline is linear (no depends_on anywhere), no cycle possible.
-        if any("depends_on" in n for n in nodes):
-            children: dict[str, list[str]] = {n["id"]: [] for n in nodes}
-            for n in nodes:
-                for d in n.get("depends_on") or []:
-                    children[d].append(n["id"])
-            ready = [nid for nid, deg in in_deg.items() if deg == 0]
-            visited = 0
-            while ready:
-                nid = ready.pop()
-                visited += 1
-                for child in children[nid]:
-                    in_deg[child] -= 1
-                    if in_deg[child] == 0:
-                        ready.append(child)
-            if visited != len(nodes):
-                errs.append("pipeline invalid: cycle detected")
+    # Dependents map (parent id -> list of child ids).
+    dependents: dict[str, list[str]] = {n["id"]: [] for n in valid}
+    for n in valid:
+        for d in (n.get("depends_on") or []):
+            if d in dependents:
+                dependents[d].append(n["id"])
 
-    # output mode + passthrough node coherence
-    out = pipeline.get("output") or {}
-    if isinstance(out, dict):
-        mode = out.get("mode")
-        if mode not in VALID_OUTPUT_MODES:
+    input_nodes = [n for n in valid if n.get("kind") == "input"]
+    sink_nodes = [n for n in valid if n.get("kind") in SINK_KINDS]
+
+    if len(input_nodes) != 1:
+        errs.append(
+            f"pipeline invalid: pipeline must have exactly one input node "
+            f"(found {len(input_nodes)})"
+        )
+    if len(sink_nodes) != 1:
+        errs.append(
+            f"pipeline invalid: pipeline must have exactly one sink node "
+            f"(found {len(sink_nodes)})"
+        )
+
+    for n in input_nodes:
+        if n.get("depends_on"):
             errs.append(
-                "pipeline invalid: output.mode must be synthesize/passthrough/per-agent"
+                f"pipeline invalid: input node '{n['id']}' must not depend on anything"
             )
-        elif mode == "passthrough":
-            target = out.get("node")
-            if not target or target not in ids:
-                errs.append(
-                    f"pipeline invalid: passthrough node '{target}' not in nodes"
-                )
+        if not dependents.get(n["id"]):
+            errs.append(
+                f"pipeline invalid: input node '{n['id']}' has no downstream nodes"
+            )
+
+    for n in sink_nodes:
+        deps = n.get("depends_on") or []
+        if not deps:
+            errs.append(f"pipeline invalid: sink node '{n['id']}' has no inputs")
+        if dependents.get(n["id"]):
+            errs.append(f"pipeline invalid: sink node '{n['id']}' must be terminal")
+        if n.get("kind") == "passthrough" and len(deps) != 1:
+            errs.append(
+                f"pipeline invalid: passthrough sink '{n['id']}' must have "
+                "exactly one input"
+            )
+
+    # Cycle + orphan checks only when the graph is otherwise well-formed.
+    if not errs:
+        children = {n["id"]: list(dependents[n["id"]]) for n in valid}
+        in_deg = {n["id"]: len(n.get("depends_on") or []) for n in valid}
+        ready = [nid for nid, deg in in_deg.items() if deg == 0]
+        stack = list(ready)
+        visited = 0
+        while stack:
+            nid = stack.pop()
+            visited += 1
+            for child in children[nid]:
+                in_deg[child] -= 1
+                if in_deg[child] == 0:
+                    stack.append(child)
+        if visited != len(valid):
+            errs.append("pipeline invalid: cycle detected")
+        elif len(input_nodes) == 1 and len(sink_nodes) == 1:
+            inp, snk = input_nodes[0]["id"], sink_nodes[0]["id"]
+            parents = {n["id"]: list(n.get("depends_on") or []) for n in valid}
+            from_input = _reach(inp, children)
+            to_sink = _reach(snk, parents)
+            for n in valid:
+                if n.get("kind"):  # only agent nodes must be on a path
+                    continue
+                nid = n["id"]
+                if nid not in from_input or nid not in to_sink:
+                    errs.append(
+                        f"pipeline invalid: node '{nid}' is not connected "
+                        "between input and sink"
+                    )
 
     return (not errs, errs)
+
+
+def _reach(start: str, adj: dict[str, list[str]]) -> set[str]:
+    """All nodes reachable from `start` following adjacency `adj` (inclusive)."""
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        x = stack.pop()
+        if x in seen:
+            continue
+        seen.add(x)
+        for nxt in adj.get(x, []):
+            stack.append(nxt)
+    return seen
