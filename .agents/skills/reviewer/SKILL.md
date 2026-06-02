@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Critically review a plan, diff, or implementation for scope creep, regressions, broken contracts, and missing validation. Use when implementation is complete and needs pre-merge assessment.
+description: Validate task execution by checking the Handoff section's evidence trails, test coverage, and scope boundaries. Use when implementation is complete and awaiting approval.
 tools: Read, Glob, Grep, Bash
 ---
 
