@@ -807,8 +807,15 @@ def _list_pipelines() -> list[dict]:
         except (OSError, yaml.YAMLError):
             continue
         nodes = parsed.get("nodes") or []
-        out = parsed.get("output") or {}
-        shape = "DAG" if any("depends_on" in n for n in nodes if isinstance(n, dict)) else "linear"
+        sink_kinds = ("synthesize", "collect", "passthrough")
+        sink_kind = next(
+            (n.get("kind") for n in nodes
+             if isinstance(n, dict) and n.get("kind") in sink_kinds),
+            "",
+        )
+        agent_count = sum(
+            1 for n in nodes if isinstance(n, dict) and n.get("agent")
+        )
         try:
             rel_path = str(p.relative_to(ROOT)).replace("\\", "/")
         except ValueError:
@@ -817,9 +824,8 @@ def _list_pipelines() -> list[dict]:
             "slug": p.stem,
             "path": rel_path,
             "description": parsed.get("description") or "",
-            "node_count": len(nodes),
-            "output_mode": out.get("mode") or "",
-            "shape": shape,
+            "node_count": agent_count,
+            "output_mode": sink_kind,
             "mtime": p.stat().st_mtime,
         })
     rows.sort(key=lambda r: r["mtime"], reverse=True)
