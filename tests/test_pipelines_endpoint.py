@@ -27,14 +27,18 @@ def _write_pipeline(d: pathlib.Path, slug: str, yaml_body: str) -> pathlib.Path:
 
 
 VALID_YAML = """description: Quick chain
-output:
-  mode: passthrough
-  node: review
 nodes:
+  - id: input
+    kind: input
   - id: explore
     agent: code-explorer
+    depends_on: [input]
   - id: review
     agent: code-architect
+    depends_on: [explore]
+  - id: out
+    kind: passthrough
+    depends_on: [review]
 """
 
 
@@ -54,9 +58,9 @@ def test_list_pipelines_one_file(tmp_path, monkeypatch) -> None:
     assert len(rows) == 1
     row = rows[0]
     assert row["slug"] == "demo"
-    assert row["node_count"] == 2
-    assert row["output_mode"] == "passthrough"
-    assert row["shape"] == "linear"
+    assert row["node_count"] == 2          # agent nodes only (explore, review)
+    assert row["output_mode"] == "passthrough"  # from the sink node's kind
+    assert "shape" not in row              # shape badge removed
 
 
 def test_list_pipelines_excludes_gitkeep(tmp_path, monkeypatch) -> None:
@@ -140,8 +144,10 @@ def test_get_pipeline_detail(tmp_path, monkeypatch) -> None:
         assert status == 200
         assert body["slug"] == "demo"
         assert body["description"] == "Quick chain"
-        assert body["output"]["mode"] == "passthrough"
-        assert len(body["nodes"]) == 2
+        # output is now structural - the sink node carries the kind
+        sink = next(n for n in body["nodes"] if n.get("kind") in ("synthesize", "collect", "passthrough"))
+        assert sink["kind"] == "passthrough"
+        assert len(body["nodes"]) == 4
 
 
 def test_get_pipeline_invalid_slug(tmp_path, monkeypatch) -> None:
@@ -224,7 +230,7 @@ def test_put_invalid_yaml_400(tmp_path, monkeypatch) -> None:
 
 
 def test_put_schema_violation_400(tmp_path, monkeypatch) -> None:
-    bad = "nodes:\n  - id: a\n    agent: x\n# missing output key\n"
+    bad = "nodes:\n  - id: a\n    agent: x\n# missing input/sink nodes\n"
     with _live_server(tmp_path, monkeypatch) as port:
         status, body = _put(port, "/api/pipelines/demo", {"yaml": bad})
         assert status == 400
