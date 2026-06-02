@@ -5493,6 +5493,24 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
   filter: drop-shadow(0 10px 20px rgba(0, 0, 0, 0.45));
   transition: stroke 140ms var(--easing), filter 140ms var(--easing);
 }
+/* Flow nodes (input source + sink) read as structural, not as agents. */
+#pipeline-editor-modal .dag-node-flow .dag-node-rect {
+  fill: var(--surf-3, var(--surf-2));
+  stroke: var(--accent);
+  stroke-dasharray: 4 3;
+}
+#pipeline-editor-modal .dag-node-fixed-label {
+  font-family: var(--ff-mono);
+  font-size: var(--fs-1);
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+#pipeline-editor-modal .dag-sink-kind {
+  width: 100%;
+  font-family: var(--ff-mono);
+  font-size: var(--fs-1);
+}
 #pipeline-editor-modal .dag-node:hover .dag-node-rect {
   stroke: var(--accent);
   filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.5))
