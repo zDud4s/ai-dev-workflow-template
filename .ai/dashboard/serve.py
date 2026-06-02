@@ -239,6 +239,10 @@ PIPELINES_DIR = ROOT / ".ai" / "pipelines"
 # unique skill invoked in a job; the entry-skill of orchestrate/plan jobs is
 # always credited even when the log isn't stream-json.
 SKILL_METRICS_FILE = ROOT / ".ai" / "ledgers" / "skill_metrics.jsonl"
+# Todos ledger. `scripts/todos_parser.py` owns the canonical read path for the
+# Todos tab; the analytics aggregation reads the same file by this constant so
+# all six analytics ledgers are uniform and monkeypatchable by name in tests.
+TODOS_FILE = ROOT / ".ai" / "ledgers" / "todos.jsonl"
 # Auto-improver storage. Proposals are dropped here as JSON + .old.md + .new.md
 # triples so the dashboard can render a diff and the user can Accept / Reject.
 # Backups of overwritten SKILL.md content go to SKILL_BACKUPS_DIR; every
@@ -3671,6 +3675,306 @@ def _record_skill_metrics(job_id: str) -> int:
     return len(rows)
 
 
+# ---------------------------------------------------------------------------
+# Analytics page aggregation (see .ai/specs/2026-06-02-analytics-page-design.md).
+# Pure, ``now``-injected so it is unit-testable; reads the six ledgers via the
+# mtime-keyed _load_jsonl_cached. Never raises on null/missing/malformed rows.
+# ---------------------------------------------------------------------------
+
+_ANALYTICS_RANGES = {"7d": 7, "30d": 30, "90d": 90, "all": None}
+
+
+def _analytics_range_bounds(now, range_key):
+    """Return ``(current_period_start, previous_period_start)`` as tz-aware
+    datetimes. ``"all"`` returns ``(None, None)``: no lower bound and no
+    previous-period delta. Unknown keys fall back to 30d."""
+    days = _ANALYTICS_RANGES.get(range_key, 30)
+    if days is None:
+        return None, None
+    cur_start = now - _dt.timedelta(days=days)
+    prev_start = now - _dt.timedelta(days=days * 2)
+    return cur_start, prev_start
+
+
+def _analytics_parse_ts(raw):
+    """Parse an ISO-8601 ledger timestamp to a tz-aware datetime, or None.
+    Accepts a trailing ``Z`` and explicit offsets; never raises."""
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        d = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=_dt.timezone.utc)
+    return d
+
+
+def _analytics_in_range(raw_ts, start, now):
+    """True if ``raw_ts`` falls within ``[start, now]``. ``start=None`` means no
+    lower bound (the 'all' range). Unparseable / future timestamps are excluded."""
+    d = _analytics_parse_ts(raw_ts)
+    if d is None:
+        return False
+    if d > now:
+        return False
+    if start is not None and d < start:
+        return False
+    return True
+
+
+def _aggregate_analytics(now, range_key):
+    """Pure aggregation: read the six ledgers via the mtime cache, filter to the
+    range, and return the chart-ready payload documented in the spec. Never raises
+    on null/missing/malformed rows."""
+    cur_start, prev_start = _analytics_range_bounds(now, range_key)
+
+    metrics = list(_load_jsonl_cached(METRICS_FILE))
+
+    def in_cur(row):
+        return _analytics_in_range(row.get("ts"), cur_start, now)
+
+    def in_prev(row):
+        # previous window is [prev_start, cur_start); None bounds => empty
+        if prev_start is None or cur_start is None:
+            return False
+        d = _analytics_parse_ts(row.get("ts"))
+        return d is not None and prev_start <= d < cur_start
+
+    cur_metrics = [r for r in metrics if in_cur(r)]
+    prev_metrics = [r for r in metrics if in_prev(r)]
+
+    def success_rate(rows):
+        rated = [r for r in rows if r.get("exit_code") is not None]
+        if not rated:
+            return None
+        return round(sum(1 for r in rated if r.get("exit_code") == 0) / len(rated), 4)
+
+    def avg_duration(rows):
+        ds = [r["duration_ms"] for r in rows if isinstance(r.get("duration_ms"), (int, float))]
+        return int(sum(ds) / len(ds)) if ds else None
+
+    payload = {
+        "range": range_key if range_key in _ANALYTICS_RANGES else "30d",
+        "generated_at": now.isoformat(),
+        "kpis": {
+            "phase_runs": {"value": len(cur_metrics), "prev": len(prev_metrics)},
+            "success_rate": {"value": success_rate(cur_metrics), "prev": success_rate(prev_metrics)},
+            "avg_duration": {"value": avg_duration(cur_metrics), "prev": avg_duration(prev_metrics), "unit": "ms"},
+            # filled in by the cost / backlog blocks below:
+            "total_spend": {"value": 0.0, "prev": 0.0, "unit": "usd"},
+            "open_todos": {"value": 0},
+            "pending_proposals": {"value": 0},
+        },
+        "cost": {"spend_over_time": [], "by_model": [], "duration_by_phase": []},
+        "health": {"runs_over_time": [], "outcomes": {}, "retries_over_time": [], "review_verdicts": {}},
+        "skills": {"top_by_invocations": [], "table": [], "cost_by_skill": []},
+        "backlog": {"proposal_status": {}, "todo_burndown": [], "recent_activity": []},
+    }
+
+    # ----- Cost & efficiency -------------------------------------------------
+    jobs = list(_load_jsonl_cached(JOBS_PERSIST_FILE))
+    skill_rows = list(_load_jsonl_cached(SKILL_METRICS_FILE))
+
+    def job_ts(r):
+        # jobs rows are stamped with `created_at`, NOT `ts`. Do not reuse the
+        # `in_prev` closure (keyed on `ts`) for jobs — use job_ts everywhere.
+        return r.get("created_at") or r.get("ts")
+
+    def cost_events(rows, ts_getter, cost_getter):
+        out = []
+        for r in rows:
+            ts = ts_getter(r)
+            if not _analytics_in_range(ts, cur_start, now):
+                continue
+            usd = cost_getter(r)
+            if isinstance(usd, (int, float)):
+                out.append((ts, r.get("model") or "unknown", float(usd)))
+        return out
+
+    cur_costs = (
+        cost_events(jobs, job_ts, lambda r: (r.get("cost") or {}).get("cost_usd"))
+        + cost_events(skill_rows, lambda r: r.get("ts"), lambda r: r.get("cost_usd"))
+    )
+    by_model = {}
+    for _ts, model, usd in cur_costs:
+        by_model[model] = by_model.get(model, 0.0) + usd
+    payload["kpis"]["total_spend"]["value"] = round(sum(by_model.values()), 6)
+    payload["cost"]["by_model"] = [
+        {"model": m, "usd": round(v, 6)} for m, v in sorted(by_model.items(), key=lambda kv: -kv[1])
+    ]
+    # spend_over_time: bucket by date (from the parsed datetime, robust vs format)
+    by_day = {}
+    for ts, _m, usd in cur_costs:
+        d = _analytics_parse_ts(ts)
+        if d is None:
+            continue
+        day = d.date().isoformat()
+        by_day[day] = by_day.get(day, 0.0) + usd
+    payload["cost"]["spend_over_time"] = [
+        {"date": day, "usd": round(by_day[day], 6)} for day in sorted(by_day)
+    ]
+    # duration_by_phase from metrics (duration only — no cost source per spec)
+    phase_dur, phase_cnt = {}, {}
+    for r in cur_metrics:
+        ph = r.get("phase") or "unknown"
+        if isinstance(r.get("duration_ms"), (int, float)):
+            phase_dur[ph] = phase_dur.get(ph, 0) + r["duration_ms"]
+            phase_cnt[ph] = phase_cnt.get(ph, 0) + 1
+    payload["cost"]["duration_by_phase"] = [
+        {"phase": ph, "duration_ms": phase_dur[ph], "runs": phase_cnt[ph]} for ph in sorted(phase_dur)
+    ]
+
+    # previous-period spend for the KPI delta
+    def in_prev_jobs(r):
+        if prev_start is None or cur_start is None:
+            return False
+        d = _analytics_parse_ts(job_ts(r))     # jobs use created_at, hence job_ts
+        return d is not None and prev_start <= d < cur_start
+
+    prev_spend = sum(
+        float((r.get("cost") or {}).get("cost_usd") or 0) for r in jobs if in_prev_jobs(r)
+    ) + sum(float(r.get("cost_usd") or 0) for r in skill_rows if in_prev(r))
+    payload["kpis"]["total_spend"]["prev"] = round(prev_spend, 6)
+
+    # ----- Workflow health ---------------------------------------------------
+    # Outcomes: exit_code 0 -> done, non-zero -> failed. No "cancelled" bucket —
+    # that is a jobs-level status absent from metrics.jsonl (see spec).
+    outcomes = {}
+    runs_by_day = {}
+    retries_by_day = {}
+    verdicts = {}
+    for r in cur_metrics:
+        code = r.get("exit_code")
+        day = None
+        d = _analytics_parse_ts(r.get("ts"))
+        if d is not None:
+            day = d.date().isoformat()
+        if code is not None:
+            label = "done" if code == 0 else "failed"
+            outcomes[label] = outcomes.get(label, 0) + 1
+            if day is not None:
+                bucket = runs_by_day.setdefault(day, {"date": day, "done": 0, "failed": 0})
+                bucket[label] += 1
+        retries = r.get("retries")
+        if isinstance(retries, (int, float)) and day is not None:
+            rb = retries_by_day.setdefault(day, {"date": day, "retries": 0})
+            rb["retries"] += retries
+        verdict = r.get("review_verdict") or "none"
+        verdicts[verdict] = verdicts.get(verdict, 0) + 1
+    payload["health"]["outcomes"] = outcomes
+    payload["health"]["runs_over_time"] = [runs_by_day[k] for k in sorted(runs_by_day)]
+    payload["health"]["retries_over_time"] = [retries_by_day[k] for k in sorted(retries_by_day)]
+    payload["health"]["review_verdicts"] = verdicts
+
+    # ----- Skills & agents ---------------------------------------------------
+    cur_skill_rows = [r for r in skill_rows if _analytics_in_range(r.get("ts"), cur_start, now)]
+    by_skill = {}
+    for r in cur_skill_rows:
+        sid = r.get("skill") or ""
+        if not sid:
+            continue
+        agg = by_skill.setdefault(sid, {
+            "skill": sid, "runs": 0, "successes": 0, "invocations": 0,
+            "total_cost_usd": 0.0, "_by_day": {},
+        })
+        agg["runs"] += 1
+        agg["invocations"] += int(r.get("invocations") or 1)
+        if r.get("outcome") == "done":
+            agg["successes"] += 1
+        agg["total_cost_usd"] += float(r.get("cost_usd") or 0.0)
+        d = _analytics_parse_ts(r.get("ts"))
+        if d is not None:
+            day = d.date().isoformat()
+            agg["_by_day"][day] = agg["_by_day"].get(day, 0) + 1
+    table = []
+    for agg in by_skill.values():
+        runs = agg["runs"] or 1
+        spark = [agg["_by_day"][day] for day in sorted(agg["_by_day"])]
+        table.append({
+            "skill": agg["skill"],
+            "runs": agg["runs"],
+            "success_rate": round(agg["successes"] / runs, 4),
+            "avg_cost_usd": round(agg["total_cost_usd"] / runs, 6),
+            "spark": spark,
+        })
+    payload["skills"]["table"] = sorted(table, key=lambda t: -t["runs"])
+    payload["skills"]["top_by_invocations"] = sorted(
+        [{"skill": a["skill"], "invocations": a["invocations"], "success": a["successes"]}
+         for a in by_skill.values()],
+        key=lambda t: -t["invocations"],
+    )
+    payload["skills"]["cost_by_skill"] = sorted(
+        [{"skill": a["skill"], "usd": round(a["total_cost_usd"], 6)} for a in by_skill.values()],
+        key=lambda t: -t["usd"],
+    )
+
+    # ----- Improvements & backlog --------------------------------------------
+    improvements = list(_load_jsonl_cached(IMPROVEMENTS_LEDGER))
+    todos = list(_load_jsonl_cached(TODOS_FILE))
+    events = list(_load_jsonl_cached(EVENTS_FILE))
+
+    # proposal_status: 5 explicit buckets so none are silently dropped.
+    # `installed` folds into `applied`.
+    _PROPOSAL_BUCKETS = {
+        "pending": "pending", "applied": "applied", "installed": "applied",
+        "rejected": "rejected", "no_change": "no_change", "failed": "failed",
+    }
+    proposal_status = {"pending": 0, "applied": 0, "rejected": 0, "no_change": 0, "failed": 0}
+    for r in improvements:
+        if not _analytics_in_range(r.get("ts"), cur_start, now):
+            continue
+        bucket = _PROPOSAL_BUCKETS.get(r.get("status"))
+        if bucket:
+            proposal_status[bucket] += 1
+    payload["backlog"]["proposal_status"] = proposal_status
+
+    # todo burndown: per-day open vs resolved counts (range-filtered by created_at).
+    def todo_ts(r):
+        return r.get("created_at") or r.get("updated_at") or r.get("ts")
+
+    burn = {}
+    for r in todos:
+        d = _analytics_parse_ts(todo_ts(r))
+        if d is None or not _analytics_in_range(todo_ts(r), cur_start, now):
+            continue
+        day = d.date().isoformat()
+        b = burn.setdefault(day, {"date": day, "open": 0, "resolved": 0})
+        status = (r.get("status") or "").lower()
+        if status == "open":
+            b["open"] += 1
+        elif status.startswith("resolved"):
+            b["resolved"] += 1
+    payload["backlog"]["todo_burndown"] = [burn[k] for k in sorted(burn)]
+
+    # recent_activity: newest ~15 events. The events ledger has no summary/ref
+    # fields, so synthesise a readable summary and use session_id as the ref.
+    def event_summary(r):
+        parts = [str(r.get("kind") or "event")]
+        for key in ("phase", "tool", "model"):
+            val = r.get(key)
+            if val and val != "unknown":
+                parts.append(str(val))
+        return " · ".join(parts)
+
+    sorted_events = sorted(events, key=lambda r: r.get("ts") or "", reverse=True)
+    payload["backlog"]["recent_activity"] = [
+        {"ts": r.get("ts"), "kind": r.get("kind"),
+         "summary": event_summary(r), "ref": r.get("session_id") or ""}
+        for r in sorted_events[:15]
+    ]
+
+    # ----- Current-state KPIs (whole-ledger totals, NOT range-filtered) ------
+    payload["kpis"]["open_todos"]["value"] = sum(
+        1 for r in todos if (r.get("status") or "").lower() == "open"
+    )
+    payload["kpis"]["pending_proposals"]["value"] = sum(
+        1 for r in improvements if r.get("status") == "pending"
+    )
+
+    return payload
+
+
 def _aggregate_skill_metrics() -> dict[str, dict]:
     """Roll up ``SKILL_METRICS_FILE`` into per-skill summaries the dashboard
     can render in skill cards. Keyed by both the raw skill id and the
@@ -5300,6 +5604,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/timeline":
             self._handle_timeline()
             return
+        if parsed.path == "/api/analytics":
+            self._handle_analytics(parsed)
+            return
         if parsed.path == "/api/events":
             self._handle_events_list(urllib.parse.parse_qs(parsed.query))
             return
@@ -6075,6 +6382,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """Pipeline Gantt data — phase_dispatch events from .ai/ledgers/events.jsonl
         grouped per session_id. Powers the Timeline view."""
         self._json(200, {"runs": _load_timeline_runs()})
+
+    def _handle_analytics(self, parsed) -> None:
+        """Chart-ready aggregation of the six ledgers for the Analytics tab.
+        Query param ``range`` is one of 7d/30d/90d/all (defaults to 30d)."""
+        qs = urllib.parse.parse_qs(parsed.query)
+        range_key = (qs.get("range", ["30d"])[0] or "30d")
+        now = _dt.datetime.now(_dt.timezone.utc)
+        try:
+            payload = _aggregate_analytics(now, range_key)
+        except Exception as exc:  # never 500 the whole dashboard
+            self._json(500, {"error": str(exc)})
+            return
+        self._json(200, payload)
 
     def _agent_orchestrations_origin_guard(self) -> bool:
         if _browser_cross_origin_blocked(self.headers):
