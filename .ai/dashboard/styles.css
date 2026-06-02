@@ -5477,6 +5477,11 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
   display: block;
   width: 100%;
   min-height: 380px;
+  /* Let a node dragged past the viewBox edge stay visible (e.g. into the empty
+     area exposed when zoomed out). The SVG isn't resized until drop, so without
+     this the node is clipped mid-drag and only reappears once dropped. The
+     .pipeline-canvas (overflow:auto) still clips at the canvas boundary. */
+  overflow: visible;
 }
 
 /* SVG nodes */
