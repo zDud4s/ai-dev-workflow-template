@@ -75,10 +75,6 @@
       card.appendChild(desc);
       var meta = el("div", { className: "pipeline-card-meta" });
       meta.appendChild(el("span", {
-        className: "badge-shape", text: String(row.shape || "linear"),
-        attrs: { title: "pipeline shape" },
-      }));
-      meta.appendChild(el("span", {
         className: "badge-shape",
         text: (row.node_count || 0) + " node" + (row.node_count === 1 ? "" : "s"),
         attrs: { title: "node count", "data-kind": "count" },
