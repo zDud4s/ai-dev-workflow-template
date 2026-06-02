@@ -25,6 +25,9 @@ def validate(pipeline: dict[str, Any]) -> tuple[bool, list[str]]:
     """Validate the parsed-YAML shape of a pipeline against the schema."""
     errs: list[str] = []
 
+    if not isinstance(pipeline, dict):
+        return (False, ["pipeline invalid: pipeline must be a mapping"])
+
     if "nodes" not in pipeline:
         errs.append("pipeline invalid: missing key 'nodes'")
 
@@ -80,7 +83,7 @@ def validate(pipeline: dict[str, Any]) -> tuple[bool, list[str]]:
             )
             continue
         for d in deps:
-            if d not in ids:
+            if not isinstance(d, str) or d not in ids:
                 errs.append(
                     f"pipeline invalid: '{node['id']}' depends on unknown '{d}'"
                 )
@@ -89,7 +92,7 @@ def validate(pipeline: dict[str, Any]) -> tuple[bool, list[str]]:
     dependents: dict[str, list[str]] = {n["id"]: [] for n in valid}
     for n in valid:
         for d in (n.get("depends_on") or []):
-            if d in dependents:
+            if isinstance(d, str) and d in dependents:
                 dependents[d].append(n["id"])
 
     input_nodes = [n for n in valid if n.get("kind") == "input"]

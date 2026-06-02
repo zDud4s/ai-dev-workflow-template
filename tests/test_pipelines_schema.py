@@ -257,3 +257,27 @@ def test_all_messages_carry_prefix() -> None:
     ok, errors = validate({"nodes": []})
     assert not ok
     assert all(e.startswith("pipeline invalid:") for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# Malformed-input robustness (garbage in -> clean verdict, never an exception)
+# ---------------------------------------------------------------------------
+
+def test_non_dict_pipeline_is_invalid() -> None:
+    for bad in (None, [], "nope", 42):
+        ok, errors = validate(bad)
+        assert not ok
+        assert errors and all(e.startswith("pipeline invalid:") for e in errors)
+
+
+def test_non_string_depends_on_member_is_clean_error() -> None:
+    p = {
+        "nodes": [
+            {"id": "input", "kind": "input"},
+            {"id": "a", "agent": "x", "depends_on": [{"bad": 1}]},
+            {"id": "out", "kind": "synthesize", "depends_on": ["a"]},
+        ],
+    }
+    ok, errors = validate(p)  # must not raise
+    assert not ok
+    assert all(e.startswith("pipeline invalid:") for e in errors)
