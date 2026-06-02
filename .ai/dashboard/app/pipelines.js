@@ -10,10 +10,8 @@
   var VALID_MODES = ["synthesize", "passthrough", "per-agent"];
 
   var _state = { all: [], catalog: [] };
-  var _editorState = {
-    slug: null, description: "", nodes: [],
-    output: { mode: "synthesize", node: null },
-  };
+  var _editorState = { slug: null, description: "", nodes: [] };
+  var SINK_KINDS = ["synthesize", "collect", "passthrough"];
   var _loadEpoch = 0;
   var _catalogLoaded = false;
 
@@ -373,7 +371,14 @@
     _editorState.slug = null;
     _editorState.description = "";
     _editorState.nodes = [];
-    _editorState.output = { mode: "synthesize", node: null };
+  }
+
+  function seedFlowNodes() {
+    _editorState.nodes = [
+      { id: "input", kind: "input", x: PAD, y: PAD },
+      { id: "output", kind: "synthesize",
+        x: PAD + 2 * (NODE_W + LAYER_GAP), y: PAD, depends_on: [] },
+    ];
   }
 
   function closePipelineEditor() {
@@ -412,18 +417,12 @@
         _editorState.description = typeof data.description === "string" ? data.description : "";
         var nodes = Array.isArray(data.nodes) ? data.nodes : [];
         _editorState.nodes = nodes.map(function (n) {
-          var c = {
-            id: String(n && n.id != null ? n.id : ""),
-            agent: String(n && n.agent != null ? n.agent : ""),
-          };
+          var c = { id: String(n && n.id != null ? n.id : "") };
+          if (n && typeof n.kind === "string") c.kind = n.kind;
+          else c.agent = String(n && n.agent != null ? n.agent : "");
           if (n && Array.isArray(n.depends_on)) c.depends_on = n.depends_on.map(String);
           return c;
         });
-        var out = (data && typeof data.output === "object" && data.output) || {};
-        _editorState.output = {
-          mode: typeof out.mode === "string" ? out.mode : "synthesize",
-          node: typeof out.node === "string" ? out.node : null,
-        };
         populateEditorFromState();
       } catch (e) {
         if (myEpoch !== _loadEpoch) return;
@@ -431,32 +430,15 @@
           + (e && e.message ? e.message : e)]);
       }
     } else {
+      seedFlowNodes();
       populateEditorFromState();
     }
   }
 
   function populateEditorFromState() {
     var d = qs(".pipeline-description"); if (d) d.value = _editorState.description || "";
-    var m = qs(".pipeline-output-mode"); if (m) m.value = _editorState.output.mode || "synthesize";
-    refreshOutputNodeSelect();
     renderNodes();
     validateEditor();
-  }
-
-  function refreshOutputNodeSelect() {
-    var wrap = qs(".pipeline-output-node");
-    var sel = qs(".pipeline-output-node-select");
-    var mode = _editorState.output.mode || "synthesize";
-    if (wrap) wrap.hidden = (mode !== "passthrough");
-    if (!sel) return;
-    clear(sel);
-    sel.appendChild(el("option", { attrs: { value: "" }, text: "(select node)" }));
-    _editorState.nodes.forEach(function (n) {
-      sel.appendChild(el("option", {
-        attrs: { value: n.id }, text: n.id || "(unnamed)",
-      }));
-    });
-    sel.value = _editorState.output.node || "";
   }
 
   // ----- Editor: canvas rendering ------------------------------------------
@@ -464,7 +446,6 @@
     var canvasEl = qs(".pipeline-canvas");
     if (canvasEl) canvasEl.hidden = false;
     renderCanvas();
-    refreshOutputNodeSelect();
   }
 
   // ----- SVG DAG editor -----------------------------------------------------
@@ -520,9 +501,6 @@
       if (!n || !Array.isArray(n.depends_on)) return;
       n.depends_on = n.depends_on.map(function (d) { return d === oldId ? newId : d; });
     });
-    if (_editorState.output && _editorState.output.node === oldId) {
-      _editorState.output.node = newId || null;
-    }
   }
 
   // Topo-sort via Kahn's algorithm; returns {cycle:true} or layered layout.
@@ -724,7 +702,7 @@
       var p = pos[n.id];
       var node = p.node;
       var g = svgEl("g", {
-        class: "dag-node", "data-id": node.id,
+        class: "dag-node" + (node.kind ? " dag-node-flow" : ""), "data-id": node.id,
         tabindex: "0",
         transform: "translate(" + p.x + " " + p.y + ")",
         "aria-label": "Pipeline node " + node.id,
@@ -732,38 +710,57 @@
       g.appendChild(svgEl("rect", { class: "dag-node-rect", width: NODE_W, height: NODE_H, rx: 6 }));
       var fo = svgEl("foreignObject", { x: 10, y: 9, width: NODE_W - 20, height: NODE_H - 18 });
       var body = el("div", { className: "dag-node-body" });
-      var input = el("input", {
-        className: "dag-node-label dag-node-control",
-        attrs: { type: "text", "aria-label": "Node id", value: node.id || "" },
-      });
-      input.value = node.id || "";
-      input.addEventListener("input", function () {
-        var oldId = node.id || "";
-        node.id = input.value || "";
-        updateNodeReferences(oldId, node.id);
-        g.setAttribute("data-id", node.id);
-        qsa(".dag-port", g).forEach(function (port) { port.setAttribute("data-id", node.id); });
-        if (_canvasPos && oldId && _canvasPos[oldId]) {
-          _canvasPos[node.id] = _canvasPos[oldId];
-          delete _canvasPos[oldId];
-        }
-        refreshOutputNodeSelect();
-        validateEditor();
-      });
-      var del = el("button", {
-        className: "dag-node-delete dag-node-control",
-        text: "x",
-        attrs: { type: "button", "aria-label": "Delete node" },
-      });
-      del.addEventListener("click", function () { deleteNodeByRef(node); });
-      body.appendChild(input);
-      body.appendChild(del);
+      if (node.kind === "input") {
+        var lbl = el("span", { className: "dag-node-fixed-label", text: "Input" });
+        body.appendChild(lbl);
+      } else if (node.kind && SINK_KINDS.indexOf(node.kind) >= 0) {
+        var sel = el("select", { className: "dag-sink-kind dag-node-control" });
+        SINK_KINDS.forEach(function (k) {
+          sel.appendChild(el("option", { attrs: { value: k }, text: k }));
+        });
+        sel.value = node.kind;
+        sel.addEventListener("change", function () {
+          node.kind = sel.value || "synthesize";
+          validateEditor();
+        });
+        body.appendChild(sel);
+      } else {
+        var input = el("input", {
+          className: "dag-node-label dag-node-control",
+          attrs: { type: "text", "aria-label": "Node id", value: node.id || "" },
+        });
+        input.value = node.id || "";
+        input.addEventListener("input", function () {
+          var oldId = node.id || "";
+          node.id = input.value || "";
+          updateNodeReferences(oldId, node.id);
+          g.setAttribute("data-id", node.id);
+          qsa(".dag-port", g).forEach(function (port) { port.setAttribute("data-id", node.id); });
+          if (_canvasPos && oldId && _canvasPos[oldId]) {
+            _canvasPos[node.id] = _canvasPos[oldId];
+            delete _canvasPos[oldId];
+          }
+          validateEditor();
+        });
+        var del = el("button", {
+          className: "dag-node-delete dag-node-control",
+          text: "x",
+          attrs: { type: "button", "aria-label": "Delete node" },
+        });
+        del.addEventListener("click", function () { deleteNodeByRef(node); });
+        body.appendChild(input);
+        body.appendChild(del);
+      }
       fo.appendChild(body);
       g.appendChild(fo);
-      g.appendChild(svgEl("circle", { class: "dag-port dag-port-in", "data-kind": "in",
-        "data-id": node.id, cx: 0, cy: NODE_H / 2, r: PORT_R }));
-      g.appendChild(svgEl("circle", { class: "dag-port dag-port-out", "data-kind": "out",
-        "data-id": node.id, cx: NODE_W, cy: NODE_H / 2, r: PORT_R }));
+      if (node.kind !== "input") {
+        g.appendChild(svgEl("circle", { class: "dag-port dag-port-in", "data-kind": "in",
+          "data-id": node.id, cx: 0, cy: NODE_H / 2, r: PORT_R }));
+      }
+      if (!(node.kind && SINK_KINDS.indexOf(node.kind) >= 0)) {
+        g.appendChild(svgEl("circle", { class: "dag-port dag-port-out", "data-kind": "out",
+          "data-id": node.id, cx: NODE_W, cy: NODE_H / 2, r: PORT_R }));
+      }
       g.addEventListener("pointerdown", function (e) { onCanvasPointerDown(e, g, node); });
       svg.appendChild(g);
     });
@@ -1448,7 +1445,6 @@
         n.depends_on = n.depends_on.filter(function (d) { return d !== removedId; });
       }
     });
-    if (_editorState.output.node === removedId) _editorState.output.node = null;
     renderNodes();
     validateEditor();
   }
@@ -1504,17 +1500,6 @@
       var descInput = qs(".pipeline-description", modal);
       if (descInput) descInput.addEventListener("input", function () {
         _editorState.description = descInput.value || "";
-        validateEditor();
-      });
-      var modeSel = qs(".pipeline-output-mode", modal);
-      if (modeSel) modeSel.addEventListener("change", function () {
-        _editorState.output.mode = modeSel.value || "synthesize";
-        refreshOutputNodeSelect();
-        validateEditor();
-      });
-      var outNodeSel = qs(".pipeline-output-node-select", modal);
-      if (outNodeSel) outNodeSel.addEventListener("change", function () {
-        _editorState.output.node = outNodeSel.value || null;
         validateEditor();
       });
       var catSearch = qs(".pipeline-catalog-search", modal);
