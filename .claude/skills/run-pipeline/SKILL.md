@@ -4,9 +4,9 @@ description: Execute a saved pipeline YAML from .ai/pipelines/<name>.yaml by dis
 tools: Read, Glob, Grep, Bash, Task, Write
 ---
 
-You are the pipeline executor. You load a user-authored pipeline from `.ai/pipelines/<name>.yaml`, resolve every node against the live agent catalog, topo-dispatch the DAG with the Task tool, and apply the pipeline's declared output mode.
+You are the pipeline executor. You load a user-authored pipeline from `.ai/pipelines/<name>.yaml`, resolve every node against the live agent catalog, topo-dispatch the DAG with the Task tool, and apply the output behavior declared by the pipeline's sink node `kind`.
 
-**Runtime branch.** Detect the runtime before dispatch. Claude sessions dispatch ready DAG layers through the `Task` tool (Phase 2A below). Codex sessions dispatch ready DAG layers through `codex exec` subprocesses orchestrated by `.ai/dashboard/scripts/pipeline_fanout.py` (Phase 2B below). Both paths reuse the same DAG resolution, output modes, and Wrap-up steps.
+**Runtime branch.** Detect the runtime before dispatch. Claude sessions dispatch ready DAG layers through the `Task` tool (Phase 2A below). Codex sessions dispatch ready DAG layers through `codex exec` subprocesses orchestrated by `.ai/dashboard/scripts/pipeline_fanout.py` (Phase 2B below). Both paths reuse the same DAG resolution, sink-kind output handling, and Wrap-up steps.
 
 **Read `.ai/workflow/dispatch.md` once before starting.** It defines the dispatch contract used for the `synthesize` phase. Do not duplicate those rules here.
 
@@ -25,8 +25,8 @@ STOP on any failure:
 - `.ai/pipelines/<name>.yaml` exists.
 - Slug matches `^[a-z0-9-]+$`.
 - YAML parses (`yaml.safe_load`).
-- Schema validation passes — reuse the dashboard validator (`from pipeline_schema import validate` in `.ai/dashboard/pipeline_schema.py`); surface every returned error verbatim.
-- Only when pipeline `output.mode = synthesize`: `.ai/models.yaml` has `run_pipeline.synthesize` configured AND the `synthesizer` skill body exists in the discovery path. Other modes skip both checks.
+- Schema validation passes — reuse the dashboard validator (`from pipeline_schema import validate` in `.ai/dashboard/scripts/pipeline_schema.py`); surface every returned error verbatim.
+- Only when the sink node's `kind` is `synthesize`: `.ai/models.yaml` has `run_pipeline.synthesize` configured AND the `synthesizer` skill body exists in the discovery path. Other sink kinds skip both checks.
 
 ## Phase 1 - Load + catalog
 
@@ -45,6 +45,10 @@ Compute `subagent_type` per scope:
 - `plugin_market` + `plugin_cache`: `<plugin>:<name>`, where `<plugin>` is the directory two levels above the agent file (parent of the enclosing `agents/` directory). Example: `~/.claude/plugins/cache/<owner>/<plugin>/agents/foo.md` yields `<plugin>:foo`.
 
 Resolve each pipeline `node.agent` string against the catalog's `subagent_type` values. STOP with `agent '<x>' not found in any scope at runtime` if any node is unresolvable.
+
+## Dispatch note (applies to Phase 2A and 2B)
+
+Flow nodes (`kind: input` and the sink node) are never dispatched as agents — they are not dispatched. The `input` node is a no-op source marker; nodes that `depends_on` it are the roots that receive the runtime task. Catalog resolution and `Task`/`codex exec` dispatch apply only to nodes with an `agent` field.
 
 ## Phase 2A - Dispatch (Claude / Task fan-out)
 
@@ -79,7 +83,7 @@ Failure handling — three distinct node statuses:
 | --- | --- | --- |
 | `completed` | Task call returned non-empty output without error | Output flows to descendants |
 | `failed` | Task call errored, refused, or returned empty | Descendants whose `depends_on` includes this node are marked `skipped` (not dispatched) |
-| `skipped` | Any ancestor in the node's transitive `depends_on` is `failed` or `skipped` | Not dispatched; surfaced in output mode reporting |
+| `skipped` | Any ancestor in the node's transitive `depends_on` is `failed` or `skipped` | Not dispatched; surfaced in sink-kind output reporting |
 
 Independent branches (no shared failed ancestor) continue normally. The pipeline halts only when no further progress is possible (every remaining node is `skipped`).
 
@@ -165,24 +169,24 @@ This Codex dispatch row intentionally differs from the existing Claude-side row,
 
 ## Phase 3 - Output handling
 
-Apply `output.mode`:
+Read the sink node's `kind`:
 
-| Mode | Behavior | Cost |
+| Sink kind | Behavior | Cost |
 | --- | --- | --- |
-| `passthrough` | Return the output of `output.node`. Failed and skipped nodes are listed as notes appended to the returned text. | 0 extra LLM calls |
-| `synthesize` | Dispatch the `synthesizer` skill via the tool/model in `.ai/models.yaml` `run_pipeline.synthesize` (per the dispatch contract referenced above). Pass the original task, every node's output, the DAG with final statuses, and the failed/skipped sets. | 1 extra LLM call |
-| `per-agent` | Return the structured map `{<id>: {status, output}, ...}` without fusion. Skipped and failed nodes carry their status verbatim. | 0 extra LLM calls |
+| `passthrough` | Return the single `depends_on` node's output. Failed and skipped nodes are listed as notes appended to the returned text. | 0 extra LLM calls |
+| `synthesize` | Dispatch the `synthesizer` skill over the sink's `depends_on` outputs via the tool/model in `.ai/models.yaml` `run_pipeline.synthesize` (per the dispatch contract referenced above). Pass the original task, every node's output, the DAG with final statuses, and the failed/skipped sets. | 1 extra LLM call |
+| `collect` | Return the `{id: output}` map of the sink's `depends_on` nodes without fusion. Skipped and failed nodes carry their status verbatim. | 0 extra LLM calls |
 
 ## Wrap-up
 
 1. Persist the filled run to `.ai/agent-runs/<YYYY-MM-DD>-<task_slug>.md`. The packet includes a top-level `pipeline: <name>` field. New file only — never overwrite; if the path exists, append `-2`, `-3`, ... before `.md` until unique. `<YYYY-MM-DD>` is today's UTC date.
 2. Append compact JSON metrics rows to `.ai/ledgers/metrics.jsonl`:
    - One `pipeline_dispatch` row per dispatched node (`tool=<agent_name>`, `model=<agent.model from frontmatter>`). Skipped nodes do not emit a row.
-   - One `pipeline_synthesis` row only when `output.mode = synthesize` (`tool=claude`, `model=<configured synth model>`).
+   - One `pipeline_synthesis` row only when the sink node's `kind` is `synthesize` (`tool=claude`, `model=<configured synth model>`).
    - Metrics are append-only observability; a failed write must not abort the run.
 3. If the `synthesize` phase produced memory updates, append them as `- YYYY-MM-DD [pipeline] <fact>` lines to `.ai/memory.md`. If the memory size after the append would cross `memory_tuning.consolidation_threshold_lines` from `.ai/project.yaml`, dispatch the `maintenance` skill per `.ai/models.yaml` `run_pipeline.maintenance` to compact memory; otherwise append inline. If there are no updates, report `none`.
 
-Report to the user: final output (per mode), per-node statuses, failed and skipped nodes with reasons, files changed (if any agent changed files), memory updates, and the phase execution log.
+Report to the user: final output (per sink kind), per-node statuses, failed and skipped nodes with reasons, files changed (if any agent changed files), memory updates, and the phase execution log.
 
 ## Error table
 
@@ -192,7 +196,7 @@ Report to the user: final output (per mode), per-node statuses, failed and skipp
 | Slug fails regex | STOP `invalid slug '<name>' (must match ^[a-z0-9-]+$)`. |
 | YAML parse error | STOP `pipeline invalid: <yaml parse error>`. |
 | Schema validation failure | STOP and surface every `pipeline invalid: ...` error from the validator. |
-| `output.mode = synthesize` but `run_pipeline.synthesize` missing in `.ai/models.yaml` | STOP `run_pipeline.synthesize not configured`. |
+| sink `kind` is `synthesize` but `run_pipeline.synthesize` missing in `.ai/models.yaml` | STOP `run_pipeline.synthesize not configured`. |
 | `synthesizer` skill body missing when needed | STOP and report the expected discovery path. |
 | Node `agent` unresolvable in catalog | STOP `agent '<x>' not found in any scope at runtime`. |
 | Agent Task call failure / empty output | Mark node `failed`; mark dependents `skipped`; continue independent branches; surface in output. |
