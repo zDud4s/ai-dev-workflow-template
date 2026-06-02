@@ -7,7 +7,6 @@
   var DETAIL_URL = function (slug) { return "/api/pipelines/" + encodeURIComponent(slug); };
   var CATALOG_URL = "/api/agents/all";
   var SLUG_RE = /^[a-z0-9-]+$/;
-  var VALID_MODES = ["synthesize", "passthrough", "per-agent"];
 
   var _state = { all: [], catalog: [] };
   var _editorState = { slug: null, description: "", nodes: [] };
@@ -1201,12 +1200,17 @@
     if (!nodes.length) errors.push("pipeline invalid: nodes must be a non-empty list");
     var seen = Object.create(null);
     nodes.forEach(function (n, i) {
-      var nid = n && n.id, na = n && n.agent;
+      var nid = n && n.id;
       if (typeof nid !== "string" || !nid) {
-        errors.push("pipeline invalid: node #" + i + " missing id or agent"); return;
+        errors.push("pipeline invalid: node #" + i + " missing id"); return;
       }
-      if (typeof na !== "string" || !na) {
-        errors.push("pipeline invalid: node #" + i + " missing id or agent");
+      var hasAgent = typeof (n && n.agent) === "string" && !!n.agent;
+      var hasKind = !!(n && "kind" in n);
+      if (hasAgent === hasKind) {
+        errors.push("pipeline invalid: node '" + nid + "' must have either 'agent' or 'kind', not both");
+      }
+      if (hasKind && ["input"].concat(SINK_KINDS).indexOf(n.kind) < 0) {
+        errors.push("pipeline invalid: node '" + nid + "' has unknown kind '" + n.kind + "'");
       }
       if (seen[nid]) errors.push("pipeline invalid: duplicate id '" + nid + "'");
       seen[nid] = true;
@@ -1246,14 +1250,37 @@
         errors.push("pipeline invalid: cycle detected");
       }
     }
-    var out = _editorState.output || {};
-    if (VALID_MODES.indexOf(out.mode) < 0) {
-      errors.push("pipeline invalid: output.mode must be synthesize/passthrough/per-agent");
-    } else if (out.mode === "passthrough") {
-      if (!out.node || !idSet[out.node]) {
-        errors.push("pipeline invalid: passthrough node '" + (out.node || "") + "' not in nodes");
-      }
+    var inputNodes = nodes.filter(function (n) { return n && n.kind === "input"; });
+    var sinkNodes = nodes.filter(function (n) { return n && SINK_KINDS.indexOf(n.kind) >= 0; });
+    if (inputNodes.length !== 1) {
+      errors.push("pipeline invalid: pipeline must have exactly one input node (found " + inputNodes.length + ")");
     }
+    if (sinkNodes.length !== 1) {
+      errors.push("pipeline invalid: pipeline must have exactly one sink node (found " + sinkNodes.length + ")");
+    }
+    var dependents = Object.create(null);
+    nodes.forEach(function (n) { if (n && n.id) dependents[n.id] = 0; });
+    nodes.forEach(function (n) {
+      if (n && Array.isArray(n.depends_on)) {
+        n.depends_on.forEach(function (d) { if (d in dependents) dependents[d] += 1; });
+      }
+    });
+    inputNodes.forEach(function (n) {
+      if (Array.isArray(n.depends_on) && n.depends_on.length) {
+        errors.push("pipeline invalid: input node '" + n.id + "' must not depend on anything");
+      }
+      if (!dependents[n.id]) {
+        errors.push("pipeline invalid: input node '" + n.id + "' has no downstream nodes");
+      }
+    });
+    sinkNodes.forEach(function (n) {
+      var deps = Array.isArray(n.depends_on) ? n.depends_on : [];
+      if (!deps.length) errors.push("pipeline invalid: sink node '" + n.id + "' has no inputs");
+      if (dependents[n.id]) errors.push("pipeline invalid: sink node '" + n.id + "' must be terminal");
+      if (n.kind === "passthrough" && deps.length !== 1) {
+        errors.push("pipeline invalid: passthrough sink '" + n.id + "' must have exactly one input");
+      }
+    });
     renderEditorErrors(errors);
     var saveBtn = qs(".pipeline-editor-save");
     if (saveBtn) saveBtn.disabled = errors.length > 0;
@@ -1291,18 +1318,11 @@
   function serializeYaml(state) {
     var s = state || _editorState, lines = [];
     lines.push("description: " + yamlQuote(s.description == null ? "" : String(s.description)));
-    var out = s.output || {};
-    lines.push("output:");
-    lines.push("  mode: " + yamlQuote(out.mode || "synthesize"));
-    if (out.mode === "passthrough") {
-      lines.push("  node: " + yamlQuote(out.node || ""));
-    } else if (out.node) {
-      lines.push("  node: " + yamlQuote(out.node));
-    }
     lines.push("nodes:");
     (s.nodes || []).forEach(function (n) {
       lines.push("  - id: " + yamlQuote(n.id || ""));
-      lines.push("    agent: " + yamlQuote(n.agent || ""));
+      if (n.kind) lines.push("    kind: " + yamlQuote(n.kind));
+      else lines.push("    agent: " + yamlQuote(n.agent || ""));
       if (Array.isArray(n.depends_on) && n.depends_on.length) {
         lines.push("    depends_on:");
         n.depends_on.forEach(function (d) {
@@ -1316,13 +1336,18 @@
   // ----- DOM <-> state sync -------------------------------------------------
   function readEditorStateFromDom() {
     var d = qs(".pipeline-description"); if (d) _editorState.description = d.value || "";
-    var m = qs(".pipeline-output-mode"); if (m) _editorState.output.mode = m.value || "synthesize";
-    var o = qs(".pipeline-output-node-select"); if (o) _editorState.output.node = o.value || null;
     qsa(".dag-node").forEach(function (group) {
       var currentId = group.getAttribute("data-id") || "";
       var node = _editorState.nodes.filter(function (n) { return n && n.id === currentId; })[0];
+      if (!node) return;
+      if (node.kind && SINK_KINDS.indexOf(node.kind) >= 0) {
+        var sel = qs(".dag-sink-kind", group);
+        if (sel && sel.value) node.kind = sel.value;
+        return;
+      }
+      if (node.kind) return; // input node: fixed id, nothing to sync
       var idIn = qs(".dag-node-label", group);
-      if (node && idIn && node.id !== (idIn.value || "")) {
+      if (idIn && node.id !== (idIn.value || "")) {
         var oldId = node.id || "";
         node.id = idIn.value || "";
         updateNodeReferences(oldId, node.id);
