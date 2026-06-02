@@ -1097,6 +1097,10 @@
     if (Array.isArray(target.depends_on) && target.depends_on.indexOf(fromId) >= 0) {
       return "duplicate";
     }
+    if (target.kind === "passthrough"
+        && Array.isArray(target.depends_on) && target.depends_on.length >= 1) {
+      return "duplicate"; // passthrough already has its one input -> reject as invalid
+    }
     // Cycle iff fromId already depends (transitively) on toId.
     var nodes = _editorState.nodes || [];
     var depMap = Object.create(null);
