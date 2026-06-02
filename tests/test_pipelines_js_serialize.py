@@ -31,3 +31,10 @@ def test_sink_kinds_defined() -> None:
 def test_no_editor_output_state_references() -> None:
     # Catches the deleteNodeByRef / updateNodeReferences sites mechanically.
     assert "_editorState.output" not in JS
+
+
+def test_index_html_has_no_output_mode_markup() -> None:
+    html = (pathlib.Path(__file__).resolve().parent.parent
+            / ".ai" / "dashboard" / "index.html").read_text(encoding="utf-8")
+    assert "pipeline-output-mode" not in html
+    assert "pipeline-output-node-select" not in html
