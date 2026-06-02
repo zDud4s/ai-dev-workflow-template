@@ -16,7 +16,7 @@ def test_no_output_block_in_serializer() -> None:
 
 
 def test_serializer_emits_kind() -> None:
-    assert '"    kind: "' in JS or "kind: " in JS
+    assert '"    kind: "' in JS
 
 
 def test_no_output_mode_select_wiring() -> None:

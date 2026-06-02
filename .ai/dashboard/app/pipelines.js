@@ -1277,6 +1277,40 @@
         errors.push("pipeline invalid: passthrough sink '" + n.id + "' must have exactly one input");
       }
     });
+    // Orphan/connectivity: every agent node must lie on an input->sink path.
+    // Mirrors pipeline_schema.py; only meaningful once the graph is well-formed.
+    if (!errors.length && inputNodes.length === 1 && sinkNodes.length === 1) {
+      var childrenMap = Object.create(null), parentsMap = Object.create(null);
+      nodes.forEach(function (n) {
+        if (n && n.id) { childrenMap[n.id] = []; parentsMap[n.id] = []; }
+      });
+      nodes.forEach(function (n) {
+        if (n && Array.isArray(n.depends_on)) {
+          n.depends_on.forEach(function (d) {
+            if (childrenMap[d]) childrenMap[d].push(n.id);
+            if (parentsMap[n.id]) parentsMap[n.id].push(d);
+          });
+        }
+      });
+      var reach = function (start, adj) {
+        var seen = Object.create(null), stack = [start];
+        while (stack.length) {
+          var x = stack.pop();
+          if (seen[x]) continue;
+          seen[x] = true;
+          (adj[x] || []).forEach(function (y) { stack.push(y); });
+        }
+        return seen;
+      };
+      var fromInput = reach(inputNodes[0].id, childrenMap);
+      var toSink = reach(sinkNodes[0].id, parentsMap);
+      nodes.forEach(function (n) {
+        if (!n || n.kind) return; // agent nodes only
+        if (!fromInput[n.id] || !toSink[n.id]) {
+          errors.push("pipeline invalid: node '" + n.id + "' is not connected between input and sink");
+        }
+      });
+    }
     renderEditorErrors(errors);
     var saveBtn = qs(".pipeline-editor-save");
     if (saveBtn) saveBtn.disabled = errors.length > 0;
