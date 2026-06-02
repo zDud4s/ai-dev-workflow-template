@@ -34,9 +34,10 @@ Rescue output ≤40 lines.
 
 ## Output format
 
-- What failed
-- Wrong assumptions (each with confidence level)
-- Evidence (paste actual logs/errors)
-- Safer fallback
-- Next experiment
-- Escalation recommendation
+Markdown report with the following sections:
+- **What failed** — summary of the failure and its symptoms
+- **Wrong assumptions** — each assumption with confidence level (high | medium | low)
+- **Evidence** — actual logs, errors, or test output from the failure
+- **Safer fallback** — alternative approach if the current direction is blocked
+- **Next experiment** — single narrow, testable step to validate or refute assumptions
+- **Escalation** — *optional* — recommendation to escalate per `.ai/packets/README.md`
