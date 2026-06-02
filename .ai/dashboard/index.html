@@ -111,8 +111,17 @@
     </section>
 
     <section class="view" id="view-analytics" role="tabpanel" aria-labelledby="tab-analytics">
+      <!-- KPI strip — bound to the top; reuses the standard .card design -->
+      <div class="analytics-kpis" id="analytics-kpis" data-skeletoned="1">
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
+        <div class="card skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
+      </div>
+
       <div class="analytics-toolbar">
-        <h2 class="analytics-title">Analytics</h2>
         <div class="analytics-controls">
           <label for="analytics-range" class="label">Range</label>
           <select id="analytics-range" class="analytics-range">
@@ -121,25 +130,13 @@
             <option value="90d">Last 90 days</option>
             <option value="all">All time</option>
           </select>
-          <button type="button" id="analytics-refresh" class="refresh" title="Refresh analytics">Refresh</button>
-          <span id="analytics-meta" class="analytics-meta"></span>
         </div>
       </div>
       <div id="analytics-error" class="err" hidden></div>
 
-      <!-- KPI strip -->
-      <div class="analytics-kpis" id="analytics-kpis" data-skeletoned="1">
-        <div class="analytics-kpi skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
-        <div class="analytics-kpi skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
-        <div class="analytics-kpi skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
-        <div class="analytics-kpi skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
-        <div class="analytics-kpi skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
-        <div class="analytics-kpi skeleton-overview-card"><span class="skeleton skeleton-title"></span><span class="skeleton skeleton-big"></span></div>
-      </div>
-
       <!-- 1 · Cost & efficiency -->
       <section class="block analytics-section">
-        <h3 class="analytics-section-title">Cost &amp; efficiency</h3>
+        <h2>Cost &amp; efficiency</h2>
         <div class="analytics-grid analytics-grid-3">
           <div class="analytics-panel"><h4>Spend over time</h4><div class="analytics-canvas-wrap"><canvas id="chart-spend-over-time"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
           <div class="analytics-panel"><h4>Cost by model</h4><div class="analytics-canvas-wrap"><canvas id="chart-cost-by-model"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
@@ -149,7 +146,7 @@
 
       <!-- 2 · Workflow health -->
       <section class="block analytics-section">
-        <h3 class="analytics-section-title">Workflow health</h3>
+        <h2>Workflow health</h2>
         <div class="analytics-grid analytics-grid-3">
           <div class="analytics-panel"><h4>Runs over time</h4><div class="analytics-canvas-wrap"><canvas id="chart-runs-over-time"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
           <div class="analytics-panel"><h4>Outcomes</h4><div class="analytics-canvas-wrap"><canvas id="chart-outcomes"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
@@ -159,7 +156,7 @@
 
       <!-- 3 · Skills & agents -->
       <section class="block analytics-section">
-        <h3 class="analytics-section-title">Skills &amp; agents</h3>
+        <h2>Skills &amp; agents</h2>
         <div class="analytics-grid analytics-grid-2">
           <div class="analytics-panel"><h4>Top skills by invocations</h4><div class="analytics-canvas-wrap"><canvas id="chart-top-skills"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
           <div class="analytics-panel"><h4>Cost per skill</h4><div class="analytics-canvas-wrap"><canvas id="chart-cost-by-skill"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
@@ -173,7 +170,7 @@
 
       <!-- 4 · Improvements & backlog -->
       <section class="block analytics-section">
-        <h3 class="analytics-section-title">Improvements &amp; backlog</h3>
+        <h2>Improvements &amp; backlog</h2>
         <div class="analytics-grid analytics-grid-3">
           <div class="analytics-panel"><h4>Proposal status</h4><div class="analytics-canvas-wrap"><canvas id="chart-proposal-status"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
           <div class="analytics-panel"><h4>Todo burndown</h4><div class="analytics-canvas-wrap"><canvas id="chart-todo-burndown"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>

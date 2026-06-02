@@ -21,6 +21,21 @@
   var GRID = "rgba(255,255,255,0.08)";
   var TICK = "rgba(220,230,240,0.62)";
 
+  // Make Chart.js typography coherent with the dashboard HUD (mono ticks/legend,
+  // dimmed label color). Runs once at module load — chart.umd.js is a deferred
+  // script ordered before this one, so window.Chart is defined here.
+  (function applyChartDefaults() {
+    if (typeof window.Chart === "undefined") return;
+    var mono = "";
+    try {
+      mono = getComputedStyle(document.documentElement)
+        .getPropertyValue("--ff-mono").trim();
+    } catch (_) { /* ignore */ }
+    window.Chart.defaults.font.family = mono || "ui-monospace, monospace";
+    window.Chart.defaults.font.size = 11;
+    window.Chart.defaults.color = TICK;
+  })();
+
   function fmtUsd(v) { return "$" + (Number(v) || 0).toFixed(2); }
   function fmtInt(v) { return String(Number(v) || 0); }
   function fmtPct(v) { return v == null ? "—" : Math.round(v * 100) + "%"; }
@@ -57,25 +72,46 @@
     if (_charts[id]) { _charts[id].destroy(); delete _charts[id]; }
   }
 
-  // Build (or rebuild) a chart. `series` empty => show the empty state, skip draw.
+  // Build or UPDATE a chart. On a refresh, an existing chart of the same type is
+  // updated in place (labels + datasets swapped, then update("none")) so it never
+  // disappears/re-animates — the canvas stays on screen the whole time. Only a
+  // first render, a type change, or a transition to/from the empty state creates
+  // or destroys the instance.
   function makeChart(id, hasData, config) {
-    destroyChart(id);
     setPanelEmpty(id, !hasData);
-    if (!hasData) return;
+    if (!hasData) { destroyChart(id); return; }
     var canvas = document.getElementById(id);
     if (!canvas || typeof window.Chart === "undefined") return;
+    var existing = _charts[id];
+    if (existing && existing.config && existing.config.type === config.type) {
+      // Refresh DATA ONLY. Never reassign options here: config-level settings
+      // like indexAxis (horizontal bars) and doughnut layout are resolved at
+      // construction and don't reliably re-apply on update(), which corrupted
+      // the Top Skills and Outcomes charts on range changes.
+      existing.data.labels = config.data.labels;
+      existing.data.datasets = config.data.datasets;
+      existing.update("none");   // no animation -> seamless, no flicker
+      return;
+    }
+    destroyChart(id);
     _charts[id] = new window.Chart(canvas.getContext("2d"), config);
   }
 
-  var BASE_OPTS = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: { legend: { labels: { color: TICK, boxWidth: 12 } } },
-    scales: {
-      x: { grid: { color: GRID }, ticks: { color: TICK } },
-      y: { grid: { color: GRID }, ticks: { color: TICK }, beginAtZero: true },
-    },
-  };
+  // Factory, NOT a shared constant: Chart.js v4 takes ownership of the options
+  // object (and its nested scales) and mutates it during construction. Sharing
+  // one object across charts cross-contaminates them — which broke the
+  // horizontal-bar Top Skills chart. Each chart must get its own fresh copy.
+  function baseOpts() {
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: TICK, boxWidth: 12 } } },
+      scales: {
+        x: { grid: { color: GRID }, ticks: { color: TICK } },
+        y: { grid: { color: GRID }, ticks: { color: TICK }, beginAtZero: true },
+      },
+    };
+  }
 
   function noScaleOpts() {
     return { responsive: true, maintainAspectRatio: false,
@@ -113,8 +149,10 @@
                       " vs prev</span>";
         }
       }
-      return '<div class="analytics-kpi"><span class="kpi-label">' + d.label +
-             '</span><span class="kpi-value">' + val + "</span>" + deltaHtml + "</div>";
+      // Reuse the standard .card structure (h3 + .val) so KPI cards inherit the
+      // exact card chrome — gradient hairline, cut corner, beacon, hover.
+      return '<div class="card"><h3>' + d.label + '</h3><div class="val big">' + val +
+             "</div>" + deltaHtml + "</div>";
     }).join("");
   }
 
@@ -127,7 +165,7 @@
               datasets: [{ label: "$/day", data: sot.map(function (r) { return r.usd; }),
                            borderColor: COLORS[0], backgroundColor: "rgba(94,200,216,0.18)",
                            fill: true, tension: 0.25, pointRadius: 2 }] },
-      options: BASE_OPTS,
+      options: baseOpts(),
     });
 
     var bm = cost.by_model || [];
@@ -136,7 +174,7 @@
       data: { labels: bm.map(function (r) { return r.model; }),
               datasets: [{ label: "$", data: bm.map(function (r) { return r.usd; }),
                            backgroundColor: COLORS[2] }] },
-      options: BASE_OPTS,
+      options: baseOpts(),
     });
 
     var dp = cost.duration_by_phase || [];
@@ -146,7 +184,7 @@
               datasets: [{ label: "total seconds",
                            data: dp.map(function (r) { return Math.round(r.duration_ms / 1000); }),
                            backgroundColor: COLORS[3] }] },
-      options: BASE_OPTS,
+      options: baseOpts(),
     });
   }
 
@@ -162,7 +200,7 @@
                 { label: "failed", data: rot.map(function (r) { return r.failed; }),
                   backgroundColor: COLORS[5], stack: "s" },
               ] },
-      options: Object.assign({}, BASE_OPTS, {
+      options: Object.assign(baseOpts(), {
         scales: { x: { stacked: true, grid: { color: GRID }, ticks: { color: TICK } },
                   y: { stacked: true, beginAtZero: true, grid: { color: GRID }, ticks: { color: TICK } } },
       }),
@@ -185,7 +223,7 @@
       data: { labels: vKeys,
               datasets: [{ label: "count", data: vKeys.map(function (k) { return verdicts[k]; }),
                            backgroundColor: COLORS[1] }] },
-      options: BASE_OPTS,
+      options: baseOpts(),
     });
   }
 
@@ -197,7 +235,7 @@
       data: { labels: top.map(function (r) { return r.skill; }),
               datasets: [{ label: "invocations", data: top.map(function (r) { return r.invocations; }),
                            backgroundColor: COLORS[0] }] },
-      options: Object.assign({}, BASE_OPTS, { indexAxis: "y" }),
+      options: Object.assign(baseOpts(), { indexAxis: "y" }),
     });
 
     var cbs = (skills.cost_by_skill || []).filter(function (r) { return r.usd > 0; }).slice(0, 12);
@@ -206,7 +244,7 @@
       data: { labels: cbs.map(function (r) { return r.skill; }),
               datasets: [{ label: "$", data: cbs.map(function (r) { return r.usd; }),
                            backgroundColor: COLORS[6] }] },
-      options: BASE_OPTS,
+      options: baseOpts(),
     });
 
     renderSkillTable(skills.table || []);
@@ -260,7 +298,7 @@
       data: { labels: psKeys,
               datasets: [{ label: "proposals", data: psKeys.map(function (k) { return ps[k]; }),
                            backgroundColor: COLORS[1] }] },
-      options: BASE_OPTS,
+      options: baseOpts(),
     });
 
     var tb = backlog.todo_burndown || [];
@@ -273,7 +311,7 @@
                 { label: "resolved", data: tb.map(function (r) { return r.resolved; }),
                   borderColor: COLORS[4], tension: 0.25, pointRadius: 2 },
               ] },
-      options: BASE_OPTS,
+      options: baseOpts(),
     });
 
     renderActivity(backlog.recent_activity || []);
@@ -310,9 +348,26 @@
     return (sel && sel.value) || "30d";
   }
 
+  // Reuse the global topbar "updated HH:MM" indicator (#meta) — same structured
+  // markup loadAll() builds — rather than a duplicate meta in the analytics view.
+  function updateGlobalMeta() {
+    var metaEl = document.getElementById("meta");
+    if (!metaEl) return;
+    var time = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    metaEl.replaceChildren();
+    var stack = document.createElement("span");
+    stack.className = "meta-stack";
+    var label = document.createElement("span");
+    label.className = "meta-label";
+    label.textContent = "updated";
+    var value = document.createElement("span");
+    value.className = "meta-value";
+    value.textContent = time;
+    stack.append(label, value);
+    metaEl.appendChild(stack);
+  }
+
   function loadAnalytics() {
-    var meta = $a("#analytics-meta");
-    if (meta) meta.textContent = "loading…";
     fetch("/api/analytics?range=" + encodeURIComponent(currentRange()))
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
@@ -325,13 +380,9 @@
         renderHealth(data.health || {});
         renderSkills(data.skills || {});
         renderBacklog(data.backlog || {});
-        if (meta) {
-          var t = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-          meta.textContent = "updated " + t;
-        }
+        updateGlobalMeta();
       })
       .catch(function (e) {
-        if (meta) meta.textContent = "";
         setError("Failed to load analytics: " + (e && e.message ? e.message : e));
       });
   }
@@ -351,8 +402,6 @@
   document.addEventListener("DOMContentLoaded", function () {
     var sel = $a("#analytics-range");
     if (sel) sel.addEventListener("change", loadAnalytics);
-    var btn = $a("#analytics-refresh");
-    if (btn) btn.addEventListener("click", loadAnalytics);
     startAutoRefresh();
   });
 

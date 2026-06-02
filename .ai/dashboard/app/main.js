@@ -131,6 +131,14 @@
           stack.append(label, value);
           metaEl.appendChild(stack);
         }
+        // The topbar Refresh button (data-action="loadAll") should also refresh
+        // the Analytics charts when that tab is the active view. loadAnalytics
+        // re-stamps #meta itself, so the "updated" time stays accurate.
+        const analyticsView = $("#view-analytics");
+        if (analyticsView && analyticsView.classList.contains("active") &&
+            typeof window.loadAnalytics === "function") {
+          window.loadAnalytics();
+        }
       } catch (err) {
         if (metaEl) metaEl.textContent = "error";
         const cards = $("#overview-cards");
