@@ -154,6 +154,15 @@ for js_src in "$SCRIPT_DIR/.ai/dashboard/app/"*.js; do
   copy_if_different "$js_src" "$TARGET_DIR/.ai/dashboard/app/$(basename "$js_src")"
 done
 
+# Vendored third-party assets live in app/vendor/ (e.g. chart.umd.js, which the
+# Analytics tab needs). The app/*.js glob above is top-level only and skips this
+# subdirectory — without an explicit copy the Analytics charts 404 on Chart.js.
+mkdir -p "$TARGET_DIR/.ai/dashboard/app/vendor"
+for vendor_src in "$SCRIPT_DIR/.ai/dashboard/app/vendor/"*; do
+  [ -f "$vendor_src" ] || continue
+  copy_if_different "$vendor_src" "$TARGET_DIR/.ai/dashboard/app/vendor/$(basename "$vendor_src")"
+done
+
 # Pre-split monolithic app.js lingers from older installs — remove it so the
 # new index.html (which loads app/*.js) doesn't share a directory with dead code.
 if [ -f "$TARGET_DIR/.ai/dashboard/app.js" ]; then
