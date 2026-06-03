@@ -256,15 +256,114 @@
   // auto-select-warning banner — that's the one region that depends on the
   // just-changed auto-select state (the table itself is rendered by core.js
   // renderModels and reloads via loadAll on phase-row save).
+  // Canonical phases the orchestrator dispatches plus the `session`
+  // pseudo-phase. data-phase is user-mutable via devtools, so savePhaseRow
+  // validates against this allow-list before any POST reaches the server.
+  var ALL_PHASES = ["session", "plan", "execute", "review", "rescue", "maintenance", "bootstrap"];
+
+  // Surgical re-fetch of /api/settings that repaints the phase routing table
+  // IN PLACE — no showLoadingState(), so the just-saved row never flashes the
+  // skeleton. Used by save handlers as the optimistic-UI follow-up.
   async function refreshPhasesSection() {
     try {
       var data = await getJson("/api/settings");
       _settingsVersion = data.version != null ? data.version : _settingsVersion;
       renderAutoSelectBanner(data.auto_select || {});
+      renderPhasesTable(data.phases || {});
     } catch (e) {
-      // Non-fatal: the previous banner stays as-is — strictly better than
-      // a flash-clear followed by a load failure.
+      // Non-fatal: the previous table/banner stays as-is — strictly better
+      // than a flash-clear followed by a load failure.
       console.warn("[settings] refreshPhasesSection failed:", e.message);
+    }
+  }
+
+  // Repaint #models-table from a phases map without disturbing the skeleton
+  // state machine. Row shape matches core.js renderModels() so the delegated
+  // Edit/Save click handler wired there keeps working after an in-place
+  // repaint. Every interpolated value is escaped; the tool name additionally
+  // feeds a CSS class, so it is restricted to safe class-identifier chars.
+  function renderPhasesTable(phases) {
+    var table = $q("#models-table");
+    if (!table) return;
+    phases = phases || {};
+    var rows = ALL_PHASES.map(function (ph) {
+      var p = phases[ph] || {};
+      var showMode = ph !== "session";
+      // Case-insensitive: a YAML that drifted ("Low", "HIGH") still maps to a
+      // canonical lowercase value for display + dropdown matching.
+      var current = String(p.reasoning_effort || "").toLowerCase();
+      var effort = showMode ? (current || "default") : "—";
+      var timeout = showMode
+        ? (p.timeout_seconds ? escHtml(String(p.timeout_seconds)) + "s" : "default")
+        : "—";
+      // Restrict to CSS class-identifier chars before building the modifier
+      // class — a tampered tool string must not break out of the attribute.
+      var toolClass = String(p.tool || "none").replace(/[^a-z0-9_-]/gi, "");
+      return '<tr data-phase="' + escHtml(ph) + '">'
+        + '<td class="mono"><strong>' + escHtml(ph) + '</strong></td>'
+        + '<td data-field="tool"><span class="pill ph-tool-' + toolClass + '">'
+        + escHtml(p.tool || "—") + '</span></td>'
+        + '<td class="mono" data-field="model">' + escHtml(p.model || "—") + '</td>'
+        + '<td data-field="mode">' + (showMode ? escHtml(p.mode || "auto") : "—") + '</td>'
+        + '<td class="mono" data-field="effort">' + escHtml(effort) + '</td>'
+        + '<td class="mono" data-field="timeout">' + escHtml(timeout) + '</td>'
+        + '<td style="text-align:right"><button class="btn secondary" data-edit-phase="'
+        + escHtml(ph) + '">Edit</button></td>'
+        + '</tr>';
+    }).join("");
+    delete table.dataset.skeletoned;
+    table.innerHTML = '<table>'
+      + '<thead><tr><th>Phase</th><th>Tool</th><th>Model</th><th>Override</th>'
+      + '<th>Effort</th><th>Timeout</th><th></th></tr></thead>'
+      + '<tbody>' + rows + '</tbody></table>';
+  }
+
+  // Per-row save for the phase routing table. `tr` is the edited row element;
+  // its dataset.phase is the (devtools-mutable) phase key. We validate the
+  // phase against ALL_PHASES and the timeout input's HTML5 validity before
+  // any POST, and echo the version token as _if_match for concurrency control.
+  async function savePhaseRow(tr) {
+    if (!tr || !tr.dataset) return;
+    var phase = tr.dataset.phase;
+    if (!phase || ALL_PHASES.indexOf(phase) < 0) {
+      setMsg("models-phase-msg", "invalid phase: " + String(phase), "bad");
+      return;
+    }
+    var toolEl = tr.querySelector("#pe-tool");
+    var modelEl = tr.querySelector("#pe-model");
+    var payload = {
+      phase: phase,
+      tool: toolEl ? toolEl.value : "",
+      model: modelEl ? modelEl.value.trim() : "",
+    };
+    if (phase !== "session") {
+      var modeEl = tr.querySelector("#pe-mode");
+      var reffEl = tr.querySelector("#pe-reff");
+      if (modeEl) payload.mode = modeEl.value || "";
+      if (reffEl) payload.reasoning_effort = reffEl.value || "";
+      var tInput = tr.querySelector("#pe-timeout");
+      if (tInput) {
+        // HTML5 min/max only validate on form submit, not type=button. Reject
+        // out-of-range timeouts here so the server never sees a bad value.
+        if (!tInput.validity.valid) {
+          setMsg("models-phase-msg", "Timeout: " + tInput.validationMessage, "bad");
+          return;
+        }
+        payload.timeout_seconds = tInput.value;
+      }
+    }
+    if (!payload.model) {
+      setMsg("models-phase-msg", "Model is required", "bad");
+      return;
+    }
+    if (_settingsVersion != null) payload._if_match = _settingsVersion;
+    try {
+      await postJson("/api/models/phase", payload);
+      setMsg("models-phase-msg", "Saved " + phase, "good");
+      // Optimistic UI: surgical repaint, no skeleton flash.
+      await refreshPhasesSection();
+    } catch (e) {
+      setMsg("models-phase-msg", "Save failed: " + e.message, "bad");
     }
   }
 
