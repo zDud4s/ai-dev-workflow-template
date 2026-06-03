@@ -117,10 +117,9 @@ def test_yaml_shape_preserved() -> None:
 
     for snippet in (
         'lines.push("description: "',
-        'lines.push("output:")',
-        'lines.push("  mode: "',
         'lines.push("nodes:")',
         'lines.push("  - id: "',
+        'lines.push("    kind: "',
         'lines.push("    agent: "',
         'lines.push("    depends_on:")',
     ):
