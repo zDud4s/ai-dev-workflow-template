@@ -1512,7 +1512,36 @@ def _fill_percent_shares(out: dict) -> None:
 _CLAUDE_CREDENTIALS_PATH_OVERRIDE: Path | None = None
 _CLAUDE_USAGE_CACHE: dict = {"at": 0.0, "data": None}
 _CLAUDE_USAGE_TTL_SECONDS = 60.0
+# A *failed* or degraded (stale) usage result is cached only briefly so a
+# transient blip (token mid-rewrite, a single upstream 429) clears on the next
+# poll instead of pinning the overview card to "n/a" for the full success TTL.
+_CLAUDE_USAGE_ERROR_TTL_SECONDS = 10.0
+# Last genuinely-successful payload. Served (flagged ``stale``) when a later
+# fetch fails, so one momentary error doesn't blank a previously-good reading.
+_CLAUDE_USAGE_LAST_GOOD: dict = {"at": 0.0, "data": None}
 _CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+
+
+# Reading the credentials file can transiently fail when another Claude Code
+# instance (a second project) is rewriting it to refresh the OAuth token:
+# Windows raises a sharing violation (OSError/PermissionError) and a half-
+# written file fails to parse (JSONDecodeError). Both are momentary, so retry a
+# few times with a short backoff before treating a rewrite race as "signed out".
+_CREDENTIALS_READ_RETRIES = 3
+_CREDENTIALS_READ_RETRY_SLEEP_S = 0.05
+
+
+def _read_credentials_json(path) -> dict | None:
+    """Parse the Claude credentials JSON, retrying past the transient errors a
+    concurrent rewrite produces. Returns the parsed dict, or ``None`` if the
+    file stays unreadable/unparseable across every attempt."""
+    for attempt in range(_CREDENTIALS_READ_RETRIES):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            if attempt < _CREDENTIALS_READ_RETRIES - 1:
+                time.sleep(_CREDENTIALS_READ_RETRY_SLEEP_S)
+    return None
 
 
 def _read_claude_oauth_token() -> tuple[str | None, str | None]:
@@ -1523,9 +1552,8 @@ def _read_claude_oauth_token() -> tuple[str | None, str | None]:
     ``rateLimitTier`` (e.g. ``default_claude_max_5x``); useful for UI hints
     but not required for the API call itself."""
     path = _CLAUDE_CREDENTIALS_PATH_OVERRIDE or (Path.home() / ".claude" / ".credentials.json")
-    try:
-        creds = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
+    creds = _read_credentials_json(path)
+    if not isinstance(creds, dict):
         return None, None
     oauth = creds.get("claudeAiOauth")
     if not isinstance(oauth, dict):
@@ -1540,20 +1568,36 @@ def _read_claude_oauth_token() -> tuple[str | None, str | None]:
     return tok, oauth.get("rateLimitTier")
 
 
+def _usage_cache_ttl(cached: dict | None) -> float:
+    """Cache lifetime for a usage result. A fresh success holds for the full
+    TTL; a failure or a degraded (stale) reading holds only briefly so the next
+    poll retries soon and can recover real data instead of pinning the error."""
+    if cached and cached.get("available") and not cached.get("stale"):
+        return _CLAUDE_USAGE_TTL_SECONDS
+    return _CLAUDE_USAGE_ERROR_TTL_SECONDS
+
+
 def _fetch_claude_oauth_usage() -> dict:
     """Fetch real Claude session/weekly utilization from the OAuth usage
     endpoint Claude Code itself uses for ``/usage``. Caches the response for
     ``_CLAUDE_USAGE_TTL_SECONDS`` so a busy overview reload doesn't hammer
     the API. The token never leaves this process.
 
-    Returns ``{"available": bool, "data"?: {...}, "error"?: str, "tier"?: str}``.
-    Network errors are swallowed and surfaced as ``available=False``."""
+    On a transient failure (token mid-rewrite, an upstream 429/5xx) the last
+    genuinely-successful payload is served instead, flagged ``stale`` with the
+    error attached, and cached only for ``_CLAUDE_USAGE_ERROR_TTL_SECONDS`` so
+    the card degrades gracefully and recovers on the next poll rather than
+    blanking to "n/a" for a full minute.
+
+    Returns ``{"available": bool, "data"?: {...}, "error"?: str, "tier"?: str,
+    "stale"?: bool}``. Network errors are swallowed and surfaced as
+    ``available=False`` (or a stale reading when one is available)."""
     import urllib.error
     import urllib.request
 
     now_mono = time.monotonic()
     cached = _CLAUDE_USAGE_CACHE["data"]
-    if cached is not None and (now_mono - _CLAUDE_USAGE_CACHE["at"]) < _CLAUDE_USAGE_TTL_SECONDS:
+    if cached is not None and (now_mono - _CLAUDE_USAGE_CACHE["at"]) < _usage_cache_ttl(cached):
         return cached
 
     tok, tier = _read_claude_oauth_token()
@@ -1581,6 +1625,23 @@ def _fetch_claude_oauth_usage() -> dict:
             result = {"available": False, "error": f"http {e.code}", "tier": tier}
         except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as e:
             result = {"available": False, "error": str(e)[:160], "tier": tier}
+
+    if result.get("available"):
+        # Remember the good reading so a later failure can degrade to it.
+        _CLAUDE_USAGE_LAST_GOOD["data"] = result
+        _CLAUDE_USAGE_LAST_GOOD["at"] = now_mono
+    else:
+        last = _CLAUDE_USAGE_LAST_GOOD["data"]
+        if last is not None and last.get("data") is not None:
+            # Degrade to the last-known-good reading rather than blanking the
+            # card; flag it stale and keep the error for the "n/a" tooltip.
+            result = {
+                "available": True,
+                "data": last["data"],
+                "tier": last.get("tier", result.get("tier")),
+                "stale": True,
+                "error": result.get("error"),
+            }
 
     _CLAUDE_USAGE_CACHE["data"] = result
     _CLAUDE_USAGE_CACHE["at"] = now_mono
