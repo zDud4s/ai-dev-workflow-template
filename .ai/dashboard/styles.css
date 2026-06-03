@@ -5500,7 +5500,7 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
 }
 /* Flow nodes (input source + sink) read as structural, not as agents. */
 #pipeline-editor-modal .dag-node-flow .dag-node-rect {
-  fill: var(--surf-3, var(--surf-2));
+  fill: var(--surf-3);
   stroke: var(--accent);
   stroke-dasharray: 4 3;
 }

@@ -182,7 +182,7 @@
       // (~50 listeners per keystroke while searching). Now we wire once
       // and let event bubbling resolve the target card. The grid element
       // is never replaced by re-renders, so a one-time wire is sufficient.
-      if (!_skillsGridDelegationWired) {
+      if (!_skillsGridKeydownWired) {
         grid.addEventListener("click", (e) => {
           const card = e.target.closest(".skill-card[data-name]");
           if (!card || !grid.contains(card)) return;
@@ -195,7 +195,7 @@
           e.preventDefault();
           openSkillDetail(card.dataset.source, card.dataset.name);
         });
-        _skillsGridDelegationWired = true;
+        _skillsGridKeydownWired = true;
       }
     }
 
@@ -203,7 +203,7 @@
     // #skills-grid. The grid container is stable across renders (innerHTML
     // replaces children, not the host element), so wiring is one-shot.
     // Wiring more than once would fire the same opener N times per click.
-    var _skillsGridDelegationWired = false;
+    var _skillsGridKeydownWired = false;
 
     // ----- Skill detail modal -----
     var _currentSkillKey = null;
@@ -228,6 +228,11 @@
       if (typeof window.trapFocusInModal === "function") {
         window.trapFocusInModal(modal, closeSkillDetail);
       }
+      // Early epoch guard: if a newer openSkillDetail already incremented
+      // the counter (rapid double-open before this frame painted), abandon
+      // this opener before it spends work building the meta row / kicks off
+      // fetches. The later opener owns the modal now.
+      if (epoch !== _skillDetailEpoch) return;
       // Hide the improve action by default; we re-show it post-metrics
       // only when it's actionable (project scope + room to improve).
       _setImproveAction(null, source, null);
@@ -274,6 +279,10 @@
       const rationaleHtml = cached && cached.description
         ? `<div class="skill-detail-rationale">${escape(cached.description)}</div>`
         : "";
+      // Re-check the epoch before mutating the shared meta DOM: a newer
+      // opener may have raced ahead while this one built its meta strings.
+      // Writing here would clobber the newer modal's meta with stale content.
+      if (epoch !== _skillDetailEpoch) return;
       $("#skill-detail-meta").innerHTML =
         `<div class="skill-meta-line">${lineItems.join("")}${telemetryPill}</div>`
         + pathHtml

@@ -46,7 +46,7 @@
       const titleRaw = (entry.title || entry.task || "").replace(/\s+/g, " ").trim();
       const taskRaw = (entry.task || "").replace(/\s+/g, " ").trim();
       const label = titleRaw.slice(0, 80);
-      const taskEl = t.pane.querySelector(".task");
+      const taskEl = t.pane.querySelector(".term-head .task");
       if (taskEl && label && taskEl.textContent !== label) {
         taskEl.textContent = label;
         const tipParts = [];

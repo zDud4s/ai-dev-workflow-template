@@ -10,7 +10,7 @@
     // replaces children, not the host element), so a one-shot wire suffices.
     // Without this, every search keystroke re-attached N click listeners,
     // which was the primary perf complaint on the agents view.
-    var _agentsGridDelegationWired = false;
+    var _agentsGridKeydownWired = false;
 
     // Shorten an absolute path by collapsing the project root to "<repo>"
     // and the user's home to "~". Both values are derived dynamically from
@@ -247,7 +247,7 @@
       // Previously a click listener was attached to every card on every
       // render, so typing in the search box re-attached N listeners per
       // keystroke. Now we wire once and bubble.
-      if (!_agentsGridDelegationWired) {
+      if (!_agentsGridKeydownWired) {
         grid.addEventListener("click", (e) => {
           const card = e.target.closest(".agent-card[data-name]");
           if (!card || !grid.contains(card)) return;
@@ -260,7 +260,7 @@
           e.preventDefault();
           openAgentDetail(card.dataset.path, card.dataset.name, card.dataset.source);
         });
-        _agentsGridDelegationWired = true;
+        _agentsGridKeydownWired = true;
       }
     }
 
