@@ -274,8 +274,10 @@ _TRANSCRIPT_PREVIEW_LOCK = threading.Lock()
 # mtime-keyed cache of parsed agent-run .md files: (str(path), st.st_mtime_ns) -> parsed dict.
 _AGENT_RUN_PARSE_CACHE: dict[str, tuple[int, dict]] = {}
 _AGENT_RUN_PARSE_LOCK = threading.Lock()
-# Per-cwd memo of resolved ~/.claude/projects/<slug> dir (None included).
-_TRANSCRIPTS_DIR_CACHE: dict[str, "Path | None"] = {}
+# Memo of resolved ~/.claude/projects/<slug> dir (None included), keyed by
+# (str(cwd), str(projects_root)) so a changed projects-root override never
+# returns a dir resolved against a stale root.
+_TRANSCRIPTS_DIR_CACHE: dict[tuple[str, "str | None"], "Path | None"] = {}
 # Caps concurrent /api/suggestions/<id>/draft + /api/agents/suggest requests.
 # Both endpoints spawn long-running `claude -p` / `codex` subprocesses
 # (timeout_seconds, default 120s) on the request thread; without a cap a
@@ -903,8 +905,11 @@ def _persist_job(job_id: str) -> None:
                             try:
                                 f.seek(0)
                                 msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-                            except OSError:
-                                pass
+                            except OSError as e:
+                                # Unlock failed; the OS releases the byte-range
+                                # lock on handle close anyway, but a recurring
+                                # trace here points at a flaky fs/handle.
+                                print(f"[serve] file unlock failed: {e}", flush=True)
                     except (ImportError, OSError):
                         # Lock acquisition failed (rare) - fall back to a plain
                         # write rather than dropping the event entirely.
@@ -1126,10 +1131,14 @@ def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
     Claude Code's slug rule (observed): replace ``:``, ``/``, ``\\`` and
     spaces with ``-``. We try a few common variants because case-folding
     of the drive letter has been seen both ways across machines."""
-    key = str(cwd)
+    root = _claude_projects_root()
+    # Key the memo by BOTH the cwd and the current projects root. The root is
+    # an overridable module global (tests monkeypatch ``_CLAUDE_PROJECTS_ROOT_
+    # OVERRIDE`` to point at a tmp tree); keying on cwd alone would hand back a
+    # stale dir resolved against a previous root once that override changes.
+    key = (str(cwd), str(root) if root is not None else None)
     if key in _TRANSCRIPTS_DIR_CACHE:
         return _TRANSCRIPTS_DIR_CACHE[key]
-    root = _claude_projects_root()
     if root is None:
         _TRANSCRIPTS_DIR_CACHE[key] = None
         return None
@@ -2525,8 +2534,11 @@ def _audit_improvement(skill_id: str, status: str, reason: str,
                             try:
                                 f.seek(0)
                                 msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-                            except OSError:
-                                pass
+                            except OSError as e:
+                                # Unlock failed; the OS releases the byte-range
+                                # lock on handle close anyway, but a recurring
+                                # trace here points at a flaky fs/handle.
+                                print(f"[serve] file unlock failed: {e}", flush=True)
                     except (ImportError, OSError):
                         # Lock acquisition failed (rare) - fall back to a plain
                         # write rather than dropping the event entirely.
@@ -3733,8 +3745,11 @@ def _record_skill_metrics(job_id: str) -> int:
                             try:
                                 f.seek(0)
                                 msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-                            except OSError:
-                                pass
+                            except OSError as e:
+                                # Unlock failed; the OS releases the byte-range
+                                # lock on handle close anyway, but a recurring
+                                # trace here points at a flaky fs/handle.
+                                print(f"[serve] file unlock failed: {e}", flush=True)
                     except (ImportError, OSError):
                         # Lock acquisition failed (rare) - fall back to a plain
                         # write rather than dropping the event entirely.
@@ -6647,7 +6662,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         PIPELINES_DIR.mkdir(parents=True, exist_ok=True)
         canonical = _yaml_mod.safe_dump(parsed, sort_keys=False, default_flow_style=False)
-        target.write_text(canonical, encoding="utf-8")
+        try:
+            target.write_text(canonical, encoding="utf-8")
+        except OSError as e:
+            print(f"[serve] failed to write pipeline {slug}: {e}", flush=True)
+            self._json(500, {"error": f"could not write pipeline: {e}"})
+            return
         # Best-effort repo-relative path for client display. Falls back to
         # the absolute path if PIPELINES_DIR has been monkey-patched outside
         # ROOT (the unit tests do this with tmp_path).
