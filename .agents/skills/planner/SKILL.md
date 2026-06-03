@@ -1,6 +1,6 @@
 ---
 name: planner
-description: Convert a development request into a minimal, executable plan with narrow execution packets. Use when breaking down a coding task into phases, or for any task larger than a tiny local edit (trivial: ~1 file, <10 lines).
+description: "Convert a development request into a minimal, executable plan with narrow execution packets. Use when breaking down a coding task into phases, or for any task larger than a tiny local edit (trivial is ~1 file, under 10 lines)."
 tools: Read, Glob, Grep, Write
 ---
 
@@ -15,13 +15,13 @@ Before triaging, verify:
 1. `.ai/project.yaml` exists with non-empty `project_name` (not `unknown`) and non-empty `stack` field
 2. `.ai/packets/execute.md` exists (read-only template — do not edit)
 3. `.ai/memory.md` exists (may be empty, file must exist)
-4. If `.ai/models.yaml` has `auto_select.enabled: true`, validate that `.ai/workflow/auto-models.md` exists and is readable. If unreadable or malformed YAML, log a warning and emit Selected models using static `.ai/models.yaml` instead (skip adaptive scoring).
+4. If `.ai/models.yaml` has `auto_select.enabled: true`, validate `.ai/workflow/auto-models.md` exists and is readable. If unreadable/malformed, log a warning and emit Selected models from static `.ai/models.yaml` (skip adaptive scoring).
 
 If ANY file is missing or malformed (excluding auto-select fallback), STOP with a specific error: `"[filename] not found — run bootstrap first"` or `"[field] in .ai/project.yaml is empty — bootstrap required"`.
 
 ## Triage (do this next)
 
-Triage has two axes: **Size** controls plan complexity. **Risk level** controls whether review is mandatory. They are computed independently — do not collapse one into the other.
+Two independent axes — do not collapse one into the other: **Size** controls plan complexity; **Risk level** controls whether review is mandatory.
 
 ### Step 1 — Size
 
@@ -50,16 +50,12 @@ State both `Size` and `Risk level` at the top of your output.
 3. Factual base: `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md`. State assumptions explicitly.
 4. Produce self-contained packets (executor needs no prior conversation context). Fill every schema field from `.ai/packets/execute.md`; include actual code snippets in File Context so the executor doesn't re-read whole files.
 5. **`.ai/packets/*.md` are read-only templates.** Read for format; emit filled copies in output. Never Edit/Write the templates. Medium/large MAY persist a new `.ai/plans/<YYYY-MM-DD>-<slug>.md` (new file only, never overwrite).
-6. **Plan tests, don't postpone.** Each acceptance criterion → one test (path + case) under `Tests to add`. Required for `Risk level: elevated` OR Size `medium`/`large`. Trivial/low-risk small may use `none` + one-line reason. Execution packet's `Validation.Commands` must run the test runner when `Tests to add` is non-empty.
-7. **Plan and execute packets must agree on tests.** Execute packet's `## Tests / To add:` MUST be byte-identical to plan's `Tests to add:`. If drafting execute reveals new tests are needed, amend the plan — never emit mismatched test sections.
+6. **Plan tests, don't postpone.** Each acceptance criterion → one test (path + case) under `Tests to add`. Required for Risk `elevated` OR Size `medium`/`large`; trivial/low-risk small may use `none` + reason. `Validation.Commands` must run the test runner when `Tests to add` is non-empty.
+7. **Plan and execute agree on tests.** Execute packet's `## Tests / To add:` MUST be byte-identical to plan's `Tests to add:`. If execute reveals new tests, amend the plan — never emit mismatched sections.
 
 ## Token budget
 
-- small: ≤40 lines total output
-- medium: ≤80 lines total output
-- large: ≤120 lines total output
-
-If you need more, decompose into multiple packets instead of writing longer.
+Output caps by Size: small ≤40, medium ≤80, large ≤120 lines. Need more → decompose into multiple packets, don't write longer.
 
 ## Output format
 
@@ -69,28 +65,19 @@ If you need more, decompose into multiple packets instead of writing longer.
 - Relevant files
 - Constraints
 - Acceptance criteria
-- Tests to add (one per acceptance criterion, or `none` with a one-line reason)
+- Tests to add (one per criterion, or `none` + reason)
 - Smallest safe plan
-- Execution packet(s) — using the schema from `.ai/packets/execute.md`
+- Execution packet(s) — schema from `.ai/packets/execute.md`
 - Escalation trigger
-- Memory candidates — operational facts worth persisting to `.ai/memory.md`
-- Memory tags — list of `[topic]` tags from `.ai/memory.md` predicted relevant to executing this task. Format on its own line: `Memory tags: [tag1, tag2, ...]`. The orchestrator uses these to inject only matching entries into dispatched phase prompts (instead of the full file). Empty list (`Memory tags: []`) = no filtering, full `memory.md` loaded. Omit the line entirely only for `TRIVIAL:` outputs.
+- Memory candidates — facts worth persisting to `.ai/memory.md`
+- Memory tags — `[topic]` tags from `.ai/memory.md` relevant here, own line: `Memory tags: [tag1, ...]`. Orchestrator injects only matching entries into phase prompts; `[]` = full `memory.md`. Omit only for `TRIVIAL:`.
 - **Selected models** — append the block defined in "## Auto-select output block" ONLY when `.ai/models.yaml` has `auto_select.enabled: true` AND auto-select parsing succeeds.
 
-When filling the execution packet `Validation.Commands`, prefer commands whose output makes pass/fail unambiguous (exit code + a recognisable success line). The executor must paste evidence for each one.
+Prefer `Validation.Commands` whose output makes pass/fail unambiguous (exit code + a recognisable success line); the executor pastes evidence for each.
 
 ## Submission checklist
 
-Before emitting output, verify:
-
-1. Size/Risk stated at top (`Size: [trivial|small|medium|large]`, `Risk level: [low|elevated]`)
-2. All Output format sections present (skip Memory tags only for trivial outputs)
-3. Execution packets fully filled: no TODOs, all `.ai/packets/execute.md` fields completed
-4. Test matching: If `Tests to add` is non-empty, identical copy in execute packet's `## Tests / To add:`
-5. Review condition: If Risk=elevated OR Size=medium/large, include "Review required" statement
-6. Token budget respected (40/80/120 line limits by Size)
-
-If any check fails, revise before submitting.
+Before emitting, verify: (1) Size/Risk stated at top; (2) all Output format sections present (skip Memory tags only for trivial); (3) packets fully filled — no TODOs, all `.ai/packets/execute.md` fields done; (4) if `Tests to add` non-empty, identical copy in execute's `## Tests / To add:`; (5) if Risk=elevated OR Size=medium/large, include "Review required"; (6) token budget respected. Else revise.
 
 ## Auto-select output block
 
@@ -102,6 +89,8 @@ execute: tool=<v>  model=<v>  [reasoning_effort=<v>]  reason="<≤120 chars>"
 review:  tool=<v>  model=<v>  [reasoning_effort=<v>]  reason="<≤120 chars>"
 rescue:  tool=<v>  model=<v>  [reasoning_effort=<v>]  reason="<≤120 chars>"
 ```
+
+**Adaptive scoring (when `auto_select.adaptive: true`).** Before applying the static table for each phase, read the last 200 records from `.ai/ledgers/metrics.jsonl` filtered to `(phase, size_bucket, risk)`. Group by `(tool, model, effort)`. For each candidate with ≥5 samples, `score = 0.6 * success_rate + 0.2 * (1 - normalized_duration) + 0.2 * budget_alignment(effort, effective_budget)`, where `success_rate = (exit_code == 0 AND handoff_complete AND review_verdict ∈ {approve, null}) / total`. Pick the highest scorer. **Guard rail:** if the top adaptive candidate differs from the static pick AND has `success_rate < 0.7`, use the static table. **Cold-start:** any phase with <5 samples falls back to the static table (per-phase). `reason` annotates the source: `reason="adaptive: <n> samples, sr=<rate>"` or `reason="static: <key>"`.
 
 **Fill.** (1) `effective_budget` = `auto_select.token_budget`; bump one rung (`low→medium→high`, `high` stays) if `Risk level: elevated` OR `Size: large`. (2) For each phase in `auto_select.phases` (default `[execute, review, rescue]`), look up `(phase, Size, Risk level, effective_budget)` in `.ai/workflow/auto-models.md`; rows in order, first match wins, `*` matches any. (3) Emit one line per match; OMIT `reasoning_effort` when `effort == n/a` — never emit `reasoning_effort=n/a`. Both claude and codex rows may carry an explicit effort. (4) No match → omit that phase. (5) `reason`: double-quoted, ≤120 chars, no embedded `"`. 
 
