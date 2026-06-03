@@ -2193,8 +2193,17 @@ def _last_improver_run_ts(skill_id: str) -> float:
     return last
 
 
+# A failure only counts as a "concrete pain signal" if it is RECENT. Without
+# this window, demo-seed or long-resolved failures sit in a rarely-run skill's
+# last-N telemetry forever, so the periodic sweep re-audits that skill on every
+# wake and the LLM emits a fresh speculative (often wrong) edit each time. The
+# 7-day horizon mirrors the transcript-policy STALE_DAYS.
+_RECENT_FAILURE_MAX_AGE_DAYS = 7
+
+
 def _has_audit_signal(skill_id: str,
-                      recent_outcomes: list[dict] | None) -> tuple[bool, str]:
+                      recent_outcomes: list[dict] | None,
+                      *, now: float | None = None) -> tuple[bool, str]:
     """Decide whether a structural audit is worth invoking the LLM for.
 
     Returns ``(should_audit, reason)``. The periodic sweep uses this to
@@ -2205,7 +2214,12 @@ def _has_audit_signal(skill_id: str,
 
     Triggers (any one is enough):
     1. First-time audit (never visited before) — sanity sweep.
-    2. ≥1 failure in ``recent_outcomes`` — concrete pain signal.
+    2. ≥1 failure within the last ``_RECENT_FAILURE_MAX_AGE_DAYS`` days in
+       ``recent_outcomes`` — concrete, *current* pain signal. Failures we can
+       prove are older than that window are ignored; a failure whose ``ts`` is
+       missing/unparseable is conservatively still counted.
+
+    ``now`` (epoch seconds) is injectable for tests; defaults to wall clock.
 
     The manual "Improve now" button bypasses this gate (caller passes
     ``force=True`` to ``_run_improver_for_skill``) because the user's
@@ -2213,11 +2227,18 @@ def _has_audit_signal(skill_id: str,
     if _last_improver_run_ts(skill_id) == 0:
         return True, "first-time audit"
     if recent_outcomes:
-        failed = sum(
-            1 for r in recent_outcomes
-            if isinstance(r, dict)
-            and str(r.get("outcome") or "").lower() in {"failed", "error"}
-        )
+        now_epoch = time.time() if now is None else now
+        cutoff = now_epoch - _RECENT_FAILURE_MAX_AGE_DAYS * 86400
+        failed = 0
+        for r in recent_outcomes:
+            if not isinstance(r, dict):
+                continue
+            if str(r.get("outcome") or "").lower() not in {"failed", "error"}:
+                continue
+            ts = _iso_to_epoch(r.get("ts") or "")
+            if ts and ts < cutoff:
+                continue  # provably stale failure — not a current signal
+            failed += 1
         if failed >= 1:
             return True, f"{failed} recent failure(s)"
     return False, "no failure signal (skipped to avoid speculative proposals)"
@@ -4042,12 +4063,65 @@ def _aggregate_analytics(now, range_key):
     return payload
 
 
+# A dispatched phase in ``METRICS_FILE`` maps back to the project skill that
+# fulfils it, so phase-only skills (planner/reviewer/rescue) accrue per-skill
+# telemetry even though they never run as standalone dashboard jobs. ``execute``
+# is omitted on purpose: the executor is a configured tool/model, not a
+# SKILL.md, so there is nothing for the improver to edit.
+PHASE_TO_SKILL = {
+    "plan": "planner",
+    "review": "reviewer",
+    "rescue": "rescue",
+}
+
+
+def _phase_metric_rows() -> list[dict]:
+    """Re-key ``METRICS_FILE`` phase rows into ``skill_metrics``-shaped rows.
+
+    One metrics.jsonl row == one dispatched phase. Rows whose phase has no
+    project skill (e.g. ``execute``) or no usable ``exit_code`` are dropped so
+    we never fabricate a skill or a phantom failure signal. Each survivor is
+    shaped exactly like a ``SKILL_METRICS_FILE`` row so ``_aggregate_skill_metrics``
+    can fold it into the same rollup."""
+    out: list[dict] = []
+    for row in _load_jsonl_cached(METRICS_FILE):
+        if not isinstance(row, dict):
+            continue
+        sid = PHASE_TO_SKILL.get(str(row.get("phase") or ""))
+        if not sid:
+            continue
+        ec = row.get("exit_code")
+        if ec is None:
+            continue  # no outcome recorded — not a signal either way
+        out.append({
+            "ts": row.get("ts"),
+            "skill": sid,
+            "name": _skill_name_canonical(sid),
+            "job_id": row.get("task_slug"),
+            "kind": f"phase:{row.get('phase')}",
+            "outcome": "done" if ec == 0 else "failed",
+            "exit_code": ec,
+            "duration_ms": int(row.get("duration_ms") or 0),
+            "cost_usd": 0.0,
+            "turns": 0,
+            "invocations": 1,
+            "session_id": row.get("session_id"),
+            "model": row.get("model"),
+        })
+    return out
+
+
 def _aggregate_skill_metrics() -> dict[str, dict]:
-    """Roll up ``SKILL_METRICS_FILE`` into per-skill summaries the dashboard
-    can render in skill cards. Keyed by both the raw skill id and the
-    canonical short name so callers can look up either flavor."""
+    """Roll up per-skill telemetry into summaries the dashboard renders in
+    skill cards (and the auto-improver gates on).
+
+    Sources: job-scoped rows from ``SKILL_METRICS_FILE`` PLUS phase-scoped rows
+    bridged from ``METRICS_FILE`` (see ``_phase_metric_rows``) so skills that
+    run only as dispatched phases are represented too. The two sources never
+    overlap on a skill (orchestrate has no matching phase; plan/review/rescue
+    have no job kind), so merging cannot double-count."""
     by_skill: dict[str, dict] = {}
-    for row in _load_jsonl_cached(SKILL_METRICS_FILE):
+    for row in [*_load_jsonl_cached(SKILL_METRICS_FILE), *_phase_metric_rows()]:
         sid = row.get("skill") or ""
         if not sid:
             continue
