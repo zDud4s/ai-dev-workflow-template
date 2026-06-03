@@ -1,6 +1,6 @@
 """Size budgets on workflow-core files.
 
-These guard the gains from .ai/specs/2026-05-17-token-efficiency-quickwins-design.md.
+These guard the gains from the initial density pass and prevent future bloat from creeping in unnoticed.
 If a file exceeds its budget, either justify and raise the cap here, or trim.
 Caps are intentionally loose (10-15% headroom over current size) to allow
 small additions without churn but block significant re-bloating.

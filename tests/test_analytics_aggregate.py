@@ -1,6 +1,5 @@
 """Unit tests for the dashboard analytics aggregation (serve._aggregate_analytics
-and its helpers). See .ai/specs/2026-06-02-analytics-page-design.md and
-.ai/plans/2026-06-02-analytics-page.md."""
+and its helpers)."""
 from __future__ import annotations
 
 import datetime as dt
