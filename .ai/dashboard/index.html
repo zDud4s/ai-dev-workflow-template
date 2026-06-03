@@ -123,6 +123,7 @@
 
       <div class="analytics-toolbar">
         <div class="analytics-controls">
+          <span id="analytics-live" class="analytics-live" aria-hidden="true" title="Pulses when analytics data refreshes"></span>
           <label for="analytics-range" class="label">Range</label>
           <select id="analytics-range" class="analytics-range">
             <option value="7d">Last 7 days</option>
@@ -138,9 +139,9 @@
       <section class="block analytics-section">
         <h2>Cost &amp; efficiency</h2>
         <div class="analytics-grid analytics-grid-3">
-          <div class="analytics-panel"><h4>Spend over time</h4><div class="analytics-canvas-wrap"><canvas id="chart-spend-over-time"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
-          <div class="analytics-panel"><h4>Cost by model</h4><div class="analytics-canvas-wrap"><canvas id="chart-cost-by-model"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
-          <div class="analytics-panel"><h4>Duration by phase</h4><div class="analytics-canvas-wrap"><canvas id="chart-duration-by-phase"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
+          <div class="analytics-panel"><h3>Spend over time ($/day)</h3><div class="analytics-canvas-wrap"><canvas id="chart-spend-over-time"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
+          <div class="analytics-panel"><h3>Cost by model ($)</h3><div class="analytics-canvas-wrap"><canvas id="chart-cost-by-model"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
+          <div class="analytics-panel"><h3>Duration by phase (s)</h3><div class="analytics-canvas-wrap"><canvas id="chart-duration-by-phase"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
         </div>
       </section>
 
@@ -148,9 +149,9 @@
       <section class="block analytics-section">
         <h2>Workflow health</h2>
         <div class="analytics-grid analytics-grid-3">
-          <div class="analytics-panel"><h4>Runs over time</h4><div class="analytics-canvas-wrap"><canvas id="chart-runs-over-time"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
-          <div class="analytics-panel"><h4>Outcomes</h4><div class="analytics-canvas-wrap"><canvas id="chart-outcomes"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
-          <div class="analytics-panel"><h4>Retries &amp; review verdicts</h4><div class="analytics-canvas-wrap"><canvas id="chart-verdicts"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
+          <div class="analytics-panel"><h3>Runs over time</h3><div class="analytics-canvas-wrap"><canvas id="chart-runs-over-time"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
+          <div class="analytics-panel"><h3>Outcomes</h3><div class="analytics-canvas-wrap"><canvas id="chart-outcomes"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
+          <div class="analytics-panel"><h3>Review verdicts</h3><div class="analytics-canvas-wrap"><canvas id="chart-verdicts"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
         </div>
       </section>
 
@@ -158,11 +159,11 @@
       <section class="block analytics-section">
         <h2>Skills &amp; agents</h2>
         <div class="analytics-grid analytics-grid-2">
-          <div class="analytics-panel"><h4>Top skills by invocations</h4><div class="analytics-canvas-wrap"><canvas id="chart-top-skills"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
-          <div class="analytics-panel"><h4>Cost per skill</h4><div class="analytics-canvas-wrap"><canvas id="chart-cost-by-skill"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
+          <div class="analytics-panel"><h3>Top skills by invocations</h3><div class="analytics-canvas-wrap"><canvas id="chart-top-skills"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
+          <div class="analytics-panel"><h3>Cost per skill ($)</h3><div class="analytics-canvas-wrap"><canvas id="chart-cost-by-skill"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
         </div>
         <div class="analytics-panel analytics-panel-wide">
-          <h4>Skill success rate</h4>
+          <h3>Skill success rate</h3>
           <div id="analytics-skill-table" class="analytics-table-wrap"></div>
           <div class="analytics-empty" hidden>No data in range</div>
         </div>
@@ -172,9 +173,9 @@
       <section class="block analytics-section">
         <h2>Improvements &amp; backlog</h2>
         <div class="analytics-grid analytics-grid-3">
-          <div class="analytics-panel"><h4>Proposal status</h4><div class="analytics-canvas-wrap"><canvas id="chart-proposal-status"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
-          <div class="analytics-panel"><h4>Todo burndown</h4><div class="analytics-canvas-wrap"><canvas id="chart-todo-burndown"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
-          <div class="analytics-panel"><h4>Recent activity</h4><div id="analytics-activity" class="analytics-activity"></div><div class="analytics-empty" hidden>No recent activity</div></div>
+          <div class="analytics-panel"><h3>Proposal status</h3><div class="analytics-canvas-wrap"><canvas id="chart-proposal-status"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
+          <div class="analytics-panel"><h3>Todo burndown</h3><div class="analytics-canvas-wrap"><canvas id="chart-todo-burndown"></canvas></div><div class="analytics-empty" hidden>No data in range</div></div>
+          <div class="analytics-panel"><h3>Recent activity</h3><div id="analytics-activity" class="analytics-activity"></div><div class="analytics-empty" hidden>No recent activity</div></div>
         </div>
       </section>
     </section>

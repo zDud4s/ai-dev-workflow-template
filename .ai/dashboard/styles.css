@@ -5919,6 +5919,27 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
   text-transform: uppercase;
   letter-spacing: 0.18em;
 }
+/* HUD "live" beacon: a dim diamond that pulses bright on each data refresh,
+   giving in-view acknowledgment (range change / 60s auto-refresh) without
+   duplicating the topbar's textual "updated" stamp. */
+.analytics-live {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--accent-soft);
+  transform: rotate(45deg);
+}
+.analytics-live.pulse {
+  animation: analytics-live-pulse 600ms var(--ease-out-expo);
+}
+@keyframes analytics-live-pulse {
+  0%   { background: var(--accent); transform: rotate(45deg) scale(1);   box-shadow: 0 0 0 0 oklch(78% 0.11 195 / 0.55); }
+  45%  { transform: rotate(45deg) scale(1.55); }
+  100% { background: var(--accent-soft); transform: rotate(45deg) scale(1); box-shadow: 0 0 9px 2px oklch(78% 0.11 195 / 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .analytics-live.pulse { animation: none; }
+}
 .analytics-range {
   min-width: 150px;
   background-color: var(--panel-inset);
@@ -5946,12 +5967,12 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
   margin-bottom: var(--s-3);
 }
 .analytics-kpis .card {
-  min-height: 92px;
-  padding: var(--s-3) var(--s-4);
+  min-height: 104px;
+  padding: var(--s-4);
   gap: var(--s-1);
   justify-content: flex-start;
 }
-.analytics-kpis .val.big { font-size: 30px; }
+.analytics-kpis .val.big { font-size: 36px; }
 .analytics-kpis .kpi-delta {
   font-family: var(--ff-mono);
   font-size: var(--fs-1);
@@ -5962,17 +5983,26 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
 .analytics-kpis .kpi-delta.down { color: oklch(68% 0.15 25); }
 
 .analytics-grid { display: grid; gap: var(--s-3); }
-.analytics-grid-2 { grid-template-columns: repeat(2, 1fr); }
-.analytics-grid-3 { grid-template-columns: repeat(3, 1fr); }
+/* Each section gets a focal "lead" chart (first panel) + two stacked
+   secondaries, instead of three equal cards — so the four sections read as
+   distinct compositions, not the same grid four times. */
+.analytics-grid-2 { grid-template-columns: 1.6fr 1fr; }   /* ranked chart wider */
+.analytics-grid-3 {
+  grid-template-columns: 1.8fr 1fr;
+  grid-auto-rows: minmax(190px, auto);
+}
+.analytics-grid-3 > .analytics-panel:first-child { grid-row: span 2; }  /* tall lead */
 .analytics-panel {
   background: var(--surf-2);
   border: 1px solid var(--border-soft);
   clip-path: var(--clip-card);
   padding: var(--s-4);
+  display: flex;
+  flex-direction: column;
   transition: background var(--dur-base) var(--easing);
 }
 .analytics-panel:hover { background: var(--surf-3); }
-.analytics-panel h4 {
+.analytics-panel h3 {
   margin: 0 0 var(--s-3);
   font-family: var(--ff-mono);
   font-size: 10px;
@@ -5982,7 +6012,9 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
   color: var(--accent);
 }
 .analytics-panel-wide { margin-top: var(--s-3); }
-.analytics-canvas-wrap { position: relative; height: 200px; }
+/* Canvas fills remaining panel height (flex) so the tall lead chart grows to
+   fill its 2-row span — fixing the previously cramped doughnut / line charts. */
+.analytics-canvas-wrap { position: relative; flex: 1 1 auto; min-height: 180px; }
 .analytics-canvas-wrap canvas { max-width: 100%; }
 .analytics-empty {
   color: var(--text-dim);
@@ -6016,10 +6048,16 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
 
 @media (max-width: 1100px) {
   .analytics-kpis { grid-template-columns: repeat(3, 1fr); }
-  .analytics-grid-3 { grid-template-columns: repeat(2, 1fr); }
+  /* Drop the lead/secondary split — stack every panel full width. */
+  .analytics-grid-2,
+  .analytics-grid-3 { grid-template-columns: 1fr; grid-auto-rows: auto; }
+  .analytics-grid-3 > .analytics-panel:first-child { grid-row: auto; }
 }
 @media (max-width: 720px) {
   .analytics-kpis { grid-template-columns: repeat(2, 1fr); }
-  .analytics-grid-2,
-  .analytics-grid-3 { grid-template-columns: 1fr; }
+  /* Loosen the tight 0.18em tracking on tiny uppercase labels so they stay
+     legible when cards get narrow. */
+  .analytics-panel h3,
+  .analytics-kpis .card h3,
+  .analytics-controls .label { letter-spacing: 0.1em; }
 }

@@ -1,7 +1,5 @@
-// .ai/dashboard/app/analytics.js
 // Analytics tab: fetches GET /api/analytics?range=… and renders a KPI strip plus
 // four chart sections with the vendored Chart.js (v4.4.6, app/vendor/chart.umd.js).
-// See .ai/specs/2026-06-02-analytics-page-design.md.
 // IIFE + `var` so identifiers behave like the other app/*.js modules.
 (function () {
   "use strict";
@@ -14,12 +12,81 @@
   var _refreshTimer = null;
   var AUTO_REFRESH_MS = 60000;
 
-  // Palette pulled from the dashboard accent family; kept literal so charts
-  // render even if CSS custom properties aren't resolvable from canvas context.
-  var COLORS = ["#5ec8d8", "#c45ec8", "#7aa2ff", "#f2b14c", "#7ad97a", "#f2715e",
-                "#b07af2", "#9aa7b2"];
-  var GRID = "rgba(255,255,255,0.08)";
-  var TICK = "rgba(220,230,240,0.62)";
+  // Palette read from the design-system tokens so chart colors match the rest
+  // of the platform (and track the theme). Hex fallbacks keep charts rendering
+  // if a token can't be resolved. Modern browsers (which this dashboard already
+  // requires for oklch/clip-path CSS) accept oklch() values in canvas.
+  function cssVar(name, fallback) {
+    try {
+      var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return v || fallback;
+    } catch (_) { return fallback; }
+  }
+  var THEME = {
+    accent:   cssVar("--accent",    "#46c7d6"),  // cyan — primary
+    accentHi: cssVar("--accent-hi", "#74e2ee"),  // light cyan
+    magenta:  cssVar("--magenta",   "#d24da0"),  // secondary
+    violet:   cssVar("--violet",    "#8e6be8"),  // tertiary
+    good:     cssVar("--good",      "#45c07e"),  // success / done   (status only)
+    warn:     cssVar("--warn",      "#e6b040"),  // pending / open   (status only)
+    bad:      cssVar("--bad",       "#eb5e4d"),  // failure          (status only)
+    surf:     cssVar("--surf-2",    "#11161f"),  // panel surface — for arc separators
+  };
+  // Translucent variant for area fills — srgb mix is broadly supported in canvas.
+  function alpha(color, pct) {
+    return "color-mix(in srgb, " + color + " " + pct + "%, transparent)";
+  }
+  function mix(a, b) { return "color-mix(in oklch, " + a + ", " + b + ")"; }
+  // Categorical sequence for ranked / multi-category charts: BRAND FAMILY ONLY
+  // (cyan → violet → magenta and blends). Green/amber/red are deliberately
+  // excluded here — they carry status meaning and would clash used as plain
+  // category colors.
+  var PALETTE = [THEME.accent, THEME.violet, THEME.magenta, THEME.accentHi,
+                 mix(THEME.accent, THEME.violet), mix(THEME.violet, THEME.magenta)];
+  // Gridlines use the platform's tinted border token (not pure white) so the
+  // chart frame reads as the same line-work as the rest of the HUD.
+  var GRID = cssVar("--border-soft", "rgba(255,255,255,0.08)");
+  var TICK = cssVar("--text-dim", "rgba(220,230,240,0.62)");
+  function cycle(n) {
+    var out = [];
+    for (var i = 0; i < n; i++) out.push(PALETTE[i % PALETTE.length]);
+    return out;
+  }
+  // Semantic mappings so the same concept reads the same color everywhere.
+  function outcomeColor(key) {
+    return ({ done: THEME.good, failed: THEME.bad, cancelled: THEME.warn })[key] || THEME.accent;
+  }
+  function verdictColor(key) {
+    return ({ approve: THEME.good, "request-changes": THEME.warn,
+              escalate: THEME.bad, none: THEME.violet })[key] || THEME.accent;
+  }
+  function proposalColor(key) {
+    return ({ pending: THEME.warn, applied: THEME.good, rejected: THEME.bad,
+              no_change: THEME.violet, failed: THEME.bad })[key] || THEME.accent;
+  }
+
+  // Mix a color toward the panel surface so saturated status fills sit IN the
+  // panel rather than floating on top.
+  function soft(color, keepPct) {
+    return "color-mix(in oklch, " + color + " " + (keepPct == null ? 86 : keepPct) +
+           "%, " + THEME.surf + ")";
+  }
+  // Scriptable bar fill: a gradient anchored solid at the bar's base and fading
+  // toward the surface at its tip, echoing the card chrome instead of a flat block.
+  // `colors` may be one color or a per-bar array; `axis` "x" => horizontal bars.
+  function barBg(colors, axis) {
+    return function (c) {
+      var area = c.chart.chartArea;
+      var base = Array.isArray(colors) ? colors[c.dataIndex % colors.length] : colors;
+      if (!area) return base;            // pre-layout / legend swatch -> solid
+      var g = axis === "x"
+        ? c.chart.ctx.createLinearGradient(area.left, 0, area.right, 0)
+        : c.chart.ctx.createLinearGradient(0, area.bottom, 0, area.top);
+      g.addColorStop(0, base);
+      g.addColorStop(1, soft(base, 42));
+      return g;
+    };
+  }
 
   // Make Chart.js typography coherent with the dashboard HUD (mono ticks/legend,
   // dimmed label color). Runs once at module load — chart.umd.js is a deferred
@@ -37,6 +104,14 @@
   })();
 
   function fmtUsd(v) { return "$" + (Number(v) || 0).toFixed(2); }
+  // Costs can be fractions of a cent (e.g. a high-volume skill's per-run avg).
+  // "$0.00" reads as "free" and hides the real figure, so show "<$0.01" for
+  // tiny non-zero values; full precision goes in a title tooltip at the call site.
+  function fmtCost(v) {
+    v = Number(v) || 0;
+    if (v > 0 && v < 0.01) return "<$0.01";
+    return "$" + v.toFixed(2);
+  }
   function fmtInt(v) { return String(Number(v) || 0); }
   function fmtPct(v) { return v == null ? "—" : Math.round(v * 100) + "%"; }
   function fmtDuration(ms) {
@@ -46,6 +121,21 @@
     var m = s / 60;
     if (m < 90) return m.toFixed(1) + "m";
     return (m / 60).toFixed(1) + "h";
+  }
+  // Turn raw ledger keys into human labels for chart axes/legends. Known keys
+  // get explicit names; anything else has separators stripped and is capitalized.
+  // Model/skill IDs are NOT passed through here — they read fine as-is to devs.
+  function humanize(s) {
+    var map = {
+      no_change: "No change", "request-changes": "Request changes",
+      none: "None", unknown: "Unknown", done: "Done", failed: "Failed",
+      pending: "Pending", applied: "Applied", rejected: "Rejected",
+      approve: "Approve", escalate: "Escalate", cancelled: "Cancelled",
+    };
+    var key = String(s == null ? "" : s);
+    if (map[key]) return map[key];
+    var t = key.replace(/[_-]+/g, " ");
+    return t.charAt(0).toUpperCase() + t.slice(1);
   }
 
   function setError(msg) {
@@ -82,6 +172,15 @@
     if (!hasData) { destroyChart(id); return; }
     var canvas = document.getElementById(id);
     if (!canvas || typeof window.Chart === "undefined") return;
+    // A11y: a <canvas> is opaque to screen readers. Expose the panel heading as
+    // an image label so the chart's purpose is announced.
+    if (!canvas.getAttribute("aria-label")) {
+      var panel = canvas.closest(".analytics-panel");
+      var heading = panel && panel.querySelector("h3, h4");
+      canvas.setAttribute("role", "img");
+      canvas.setAttribute("aria-label",
+        (heading ? heading.textContent.trim() : "Analytics") + " chart");
+    }
     var existing = _charts[id];
     if (existing && existing.config && existing.config.type === config.type) {
       // Refresh DATA ONLY. Never reassign options here: config-level settings
@@ -101,11 +200,17 @@
   // object (and its nested scales) and mutates it during construction. Sharing
   // one object across charts cross-contaminates them — which broke the
   // horizontal-bar Top Skills chart. Each chart must get its own fresh copy.
+  // Fresh each call (Chart.js may mutate options). Small SQUARE legend chips
+  // (boxWidth == boxHeight, no rounding) to match the platform's sharp geometry.
+  function legendCfg() {
+    return { labels: { color: TICK, boxWidth: 10, boxHeight: 10, useBorderRadius: false } };
+  }
+
   function baseOpts() {
     return {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: TICK, boxWidth: 12 } } },
+      plugins: { legend: legendCfg() },
       scales: {
         x: { grid: { color: GRID }, ticks: { color: TICK } },
         y: { grid: { color: GRID }, ticks: { color: TICK }, beginAtZero: true },
@@ -115,7 +220,7 @@
 
   function noScaleOpts() {
     return { responsive: true, maintainAspectRatio: false,
-             plugins: { legend: { labels: { color: TICK, boxWidth: 12 } } } };
+             plugins: { legend: legendCfg() } };
   }
 
   // ----- KPI strip ---------------------------------------------------------
@@ -134,20 +239,19 @@
     host.innerHTML = defs.map(function (d) {
       var k = kpis[d.key] || {};
       var val = d.fmt(k.value);
-      var deltaHtml = "";
-      // Only show a delta when a meaningful previous value exists.
-      if (k.prev != null && k.value != null && d.better) {
+      // Always render the delta line so every card is the same height (no ragged
+      // strip). Show a real trend only when there's a non-zero prior period;
+      // otherwise a dim neutral placeholder — never a misleading "▲ — vs prev".
+      var deltaHtml = '<span class="kpi-delta" aria-hidden="true">—</span>';
+      if (d.better && k.prev != null && k.value != null && k.prev !== 0) {
         var diff = k.value - k.prev;
-        if (k.prev !== 0 || diff !== 0) {
-          var up = diff > 0;
-          var good = (d.better === "up" && up) || (d.better === "down" && !up);
-          var arrow = diff === 0 ? "→" : (up ? "▲" : "▼");
-          var cls = diff === 0 ? "" : (good ? "up" : "down");
-          var pct = k.prev ? Math.round(Math.abs(diff) / Math.abs(k.prev) * 100) + "%"
-                           : "—";
-          deltaHtml = '<span class="kpi-delta ' + cls + '">' + arrow + " " + pct +
-                      " vs prev</span>";
-        }
+        var up = diff > 0;
+        var good = (d.better === "up" && up) || (d.better === "down" && !up);
+        var arrow = diff === 0 ? "→" : (up ? "▲" : "▼");
+        var cls = diff === 0 ? "" : (good ? "up" : "down");
+        var pct = Math.round(Math.abs(diff) / Math.abs(k.prev) * 100) + "%";
+        deltaHtml = '<span class="kpi-delta ' + cls + '">' + arrow + " " + pct +
+                    " vs prev</span>";
       }
       // Reuse the standard .card structure (h3 + .val) so KPI cards inherit the
       // exact card chrome — gradient hairline, cut corner, beacon, hover.
@@ -163,17 +267,19 @@
       type: "line",
       data: { labels: sot.map(function (r) { return r.date; }),
               datasets: [{ label: "$/day", data: sot.map(function (r) { return r.usd; }),
-                           borderColor: COLORS[0], backgroundColor: "rgba(94,200,216,0.18)",
-                           fill: true, tension: 0.25, pointRadius: 2 }] },
+                           borderColor: THEME.accent, backgroundColor: alpha(THEME.accent, 16),
+                           fill: true, tension: 0.25, pointRadius: 2,
+                           pointBackgroundColor: THEME.accent, pointBorderColor: THEME.surf,
+                           pointBorderWidth: 1 }] },
       options: baseOpts(),
     });
 
     var bm = cost.by_model || [];
     makeChart("chart-cost-by-model", bm.length, {
       type: "bar",
-      data: { labels: bm.map(function (r) { return r.model; }),
+      data: { labels: bm.map(function (r) { return r.model === "unknown" ? "Unknown" : r.model; }),
               datasets: [{ label: "$", data: bm.map(function (r) { return r.usd; }),
-                           backgroundColor: COLORS[2] }] },
+                           backgroundColor: barBg(cycle(bm.length)) }] },
       options: baseOpts(),
     });
 
@@ -183,7 +289,7 @@
       data: { labels: dp.map(function (r) { return r.phase; }),
               datasets: [{ label: "total seconds",
                            data: dp.map(function (r) { return Math.round(r.duration_ms / 1000); }),
-                           backgroundColor: COLORS[3] }] },
+                           backgroundColor: barBg(cycle(dp.length)) }] },
       options: baseOpts(),
     });
   }
@@ -195,10 +301,10 @@
       type: "bar",
       data: { labels: rot.map(function (r) { return r.date; }),
               datasets: [
-                { label: "done", data: rot.map(function (r) { return r.done; }),
-                  backgroundColor: COLORS[4], stack: "s" },
-                { label: "failed", data: rot.map(function (r) { return r.failed; }),
-                  backgroundColor: COLORS[5], stack: "s" },
+                { label: "Done", data: rot.map(function (r) { return r.done; }),
+                  backgroundColor: barBg(THEME.good), stack: "s" },
+                { label: "Failed", data: rot.map(function (r) { return r.failed; }),
+                  backgroundColor: barBg(THEME.bad), stack: "s" },
               ] },
       options: Object.assign(baseOpts(), {
         scales: { x: { stacked: true, grid: { color: GRID }, ticks: { color: TICK } },
@@ -210,9 +316,10 @@
     var oKeys = Object.keys(outcomes);
     makeChart("chart-outcomes", oKeys.length, {
       type: "doughnut",
-      data: { labels: oKeys,
+      data: { labels: oKeys.map(humanize),
               datasets: [{ data: oKeys.map(function (k) { return outcomes[k]; }),
-                           backgroundColor: [COLORS[4], COLORS[5], COLORS[3], COLORS[7]] }] },
+                           backgroundColor: oKeys.map(function (k) { return soft(outcomeColor(k)); }),
+                           borderColor: THEME.surf, borderWidth: 2 }] },
       options: noScaleOpts(),
     });
 
@@ -220,9 +327,9 @@
     var vKeys = Object.keys(verdicts);
     makeChart("chart-verdicts", vKeys.length, {
       type: "bar",
-      data: { labels: vKeys,
+      data: { labels: vKeys.map(humanize),
               datasets: [{ label: "count", data: vKeys.map(function (k) { return verdicts[k]; }),
-                           backgroundColor: COLORS[1] }] },
+                           backgroundColor: barBg(vKeys.map(verdictColor)) }] },
       options: baseOpts(),
     });
   }
@@ -234,7 +341,7 @@
       type: "bar",
       data: { labels: top.map(function (r) { return r.skill; }),
               datasets: [{ label: "invocations", data: top.map(function (r) { return r.invocations; }),
-                           backgroundColor: COLORS[0] }] },
+                           backgroundColor: barBg(THEME.accent, "x") }] },
       options: Object.assign(baseOpts(), { indexAxis: "y" }),
     });
 
@@ -243,7 +350,7 @@
       type: "bar",
       data: { labels: cbs.map(function (r) { return r.skill; }),
               datasets: [{ label: "$", data: cbs.map(function (r) { return r.usd; }),
-                           backgroundColor: COLORS[6] }] },
+                           backgroundColor: barBg(cycle(cbs.length)) }] },
       options: baseOpts(),
     });
 
@@ -261,7 +368,7 @@
     }).join(" ");
     return '<svg class="analytics-spark" width="' + w + '" height="' + h +
            '" viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none">' +
-           '<polyline fill="none" stroke="' + COLORS[0] + '" stroke-width="1.5" points="' +
+           '<polyline fill="none" stroke="' + THEME.accent + '" stroke-width="1.5" points="' +
            pts + '"/></svg>';
   }
 
@@ -282,7 +389,8 @@
       return "<tr><td>" + escapeHtml(r.skill) + "</td>" +
              "<td class='num'>" + fmtInt(r.runs) + "</td>" +
              "<td class='num'>" + fmtPct(r.success_rate) + "</td>" +
-             "<td class='num'>" + fmtUsd(r.avg_cost_usd) + "</td>" +
+             "<td class='num' title='$" + (Number(r.avg_cost_usd) || 0).toFixed(6) + " avg/run'>" +
+                 fmtCost(r.avg_cost_usd) + "</td>" +
              "<td>" + sparkSvg(r.spark) + "</td></tr>";
     }).join("");
     host.innerHTML = "<table>" + head + "<tbody>" + body + "</tbody></table>";
@@ -295,9 +403,9 @@
     var psHasData = psKeys.some(function (k) { return ps[k] > 0; });
     makeChart("chart-proposal-status", psHasData, {
       type: "bar",
-      data: { labels: psKeys,
+      data: { labels: psKeys.map(humanize),
               datasets: [{ label: "proposals", data: psKeys.map(function (k) { return ps[k]; }),
-                           backgroundColor: COLORS[1] }] },
+                           backgroundColor: barBg(psKeys.map(proposalColor)) }] },
       options: baseOpts(),
     });
 
@@ -306,10 +414,12 @@
       type: "line",
       data: { labels: tb.map(function (r) { return r.date; }),
               datasets: [
-                { label: "open", data: tb.map(function (r) { return r.open; }),
-                  borderColor: COLORS[3], tension: 0.25, pointRadius: 2 },
-                { label: "resolved", data: tb.map(function (r) { return r.resolved; }),
-                  borderColor: COLORS[4], tension: 0.25, pointRadius: 2 },
+                { label: "Open", data: tb.map(function (r) { return r.open; }),
+                  borderColor: THEME.warn, tension: 0.25, pointRadius: 2,
+                  pointBackgroundColor: THEME.warn, pointBorderColor: THEME.surf, pointBorderWidth: 1 },
+                { label: "Resolved", data: tb.map(function (r) { return r.resolved; }),
+                  borderColor: THEME.good, tension: 0.25, pointRadius: 2,
+                  pointBackgroundColor: THEME.good, pointBorderColor: THEME.surf, pointBorderWidth: 1 },
               ] },
       options: baseOpts(),
     });
@@ -367,6 +477,16 @@
     metaEl.appendChild(stack);
   }
 
+  // Re-trigger the "live" beacon pulse (remove + reflow + add restarts the CSS
+  // animation) so every refresh produces a visible in-view acknowledgment.
+  function pulseLive() {
+    var live = $a("#analytics-live");
+    if (!live) return;
+    live.classList.remove("pulse");
+    void live.offsetWidth;
+    live.classList.add("pulse");
+  }
+
   function loadAnalytics() {
     fetch("/api/analytics?range=" + encodeURIComponent(currentRange()))
       .then(function (r) {
@@ -381,6 +501,7 @@
         renderSkills(data.skills || {});
         renderBacklog(data.backlog || {});
         updateGlobalMeta();
+        pulseLive();
       })
       .catch(function (e) {
         setError("Failed to load analytics: " + (e && e.message ? e.message : e));
