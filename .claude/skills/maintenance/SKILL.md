@@ -34,10 +34,10 @@ Mutable layer: `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md`, local AG
 3. Update ownership, important dirs, risky areas, do-not-touch zones in `.ai/project.yaml`.
 4. Append operational discoveries to `.ai/memory.md`.
 5. Record stable architectural decisions in `.ai/decisions.md` only with strong evidence.
-6. Scan TODOs — call `todos_parser.scan_and_append(repo)` then `todos_parser.auto_resolve(repo)` (via Bash if available in project). Capture from `[followup]` lines in memory, `## Follow-ups` blocks in latest plan Handoff, and `TODO|FIXME|XXX` in diffs since last maintenance commit. Auto-resolve only SUGGESTS (`status="resolved-suggested"`); never closes. Allowed writes: `.ai/ledgers/todos.jsonl`, `.ai/TODO.md`, `.ai/.todos.lock`, `.ai/dashboard/.todos-parser.log`.
+6. Scan TODOs — call `todos_parser.scan_and_append(repo)` then `todos_parser.auto_resolve(repo)` (via Bash if available). Capture `[followup]` lines in memory, `## Follow-ups` in latest plan Handoff, and `TODO|FIXME|XXX` in diffs since last maintenance commit. Auto-resolve only SUGGESTS (`status="resolved-suggested"`), never closes. Writes: `.ai/ledgers/todos.jsonl`, `.ai/TODO.md`, `.ai/.todos.lock`, `.ai/dashboard/.todos-parser.log`.
 7. Tighten local subdirectory AGENTS.md when structure clearly changed.
 8. Remove disproven assumptions.
-9. Keep the project layer concise, factual, operational — phases pay token cost per line.
+9. Keep the project layer concise, factual, operational — phases pay per line.
 10. Run a density pass when phrasing is verbose or files exceed budget.
 
 ## Never do without explicit user approval
@@ -51,9 +51,9 @@ Mutable layer: `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md`, local AG
 
 ## File-specific rules
 
-`.ai/project.yaml`: structured + compact; evidence-backed; assumptions explicit. **Budget ~800 tokens (~3200 chars).** Leaves ≤30 chars; no prose, decorative descriptions, or empty/null placeholders.
+`.ai/project.yaml`: structured + compact; evidence-backed; assumptions explicit. **Budget ~800 tokens (~3200 chars).** Leaves ≤30 chars; no prose, decoration, or empty/null placeholders.
 
-`.ai/memory.md`: format `- YYYY-MM-DD [topic] fact`. Drop stale when disproven. Not a changelog. Consolidate on trigger. **Budget ~2000 tokens (~8000 chars, ~150 dense lines).** ≤15 words/entry; one fact/line; paths and commands in backticks.
+`.ai/memory.md`: format `- YYYY-MM-DD [topic] fact`. Drop stale when disproven. Not a changelog. Consolidate on trigger. **Budget ~2000 tokens (~8000 chars, ~150 dense lines).** ≤15 words/entry; one fact/line; paths/commands in backticks.
 
 `.ai/decisions.md`: only stable decisions, each with a why. No temporary choices.
 
@@ -82,7 +82,7 @@ Append-only memory accumulates duplicates, contradictions, stale facts. Trigger 
 
 ### Output
 
-Report: entries before/after, lines before/after, deduplicated (with examples), merged, dropped (line + reason), archived count, conflicts surfaced, final lines, compaction ratio (`before/after`, 2dp), threshold update.
+Report: entries + lines before/after, deduplicated (examples), merged, dropped (line + reason), archived count, conflicts surfaced, final lines, compaction ratio (`before/after`, 2dp), threshold update.
 
 Archive is human-inspection-only; no phase loads it. Do NOT silently rewrite facts — report every removal/merge.
 
@@ -106,11 +106,11 @@ Inputs in `memory_tuning`: `consolidation_threshold_lines`, `floor` (default 50)
 4. **Clamp.** Round, clamp to `[floor, ceiling]`. Note in output if clamped.
 5. **Write back.** Update `consolidation_threshold_lines`, `last_ratios`, `last_consolidated_at` (today).
 
-Report `Threshold update: <old> → <new> (ratio <smoothed>)`. If change > ±20% in one pass, prepend a one-line note (usually first-time tune or one-off cleanup).
+Report `Threshold update: <old> → <new> (ratio <smoothed>)`. If change > ±20% in one pass, prepend a one-line note (first-time tune or one-off cleanup).
 
 ## Density pass (token optimization)
 
-Consolidation = **quantity** (dedupe, archive). Density = **quality** (terse phrasing). Both files load as phase context — redundant words are recurring cost.
+Consolidation = **quantity** (dedupe, archive); density = **quality** (terse phrasing). Both files load as phase context — redundant words recur as cost.
 
 Trigger ANY of:
 1. **Budget** — `.ai/memory.md` > ~2000 tokens OR `.ai/project.yaml` > ~800 tokens (estimate `chars / 4`).
@@ -120,9 +120,7 @@ Trigger ANY of:
 ### Rewrite rules — memory.md
 
 - Keep format `- YYYY-MM-DD [topic] fact`. Preserve date + topic; rewrite only the fact.
-- Drop filler: "we discovered that", "it turns out", "after running", "when we tried", "the user reported".
-- Drop narrative tense: "when X ran, Y happened" → "X causes Y" or "X → Y".
-- Drop redundant subjects: "db configured to use pooling" → "db: pooled".
+- Drop filler ("we discovered that", "it turns out"), narrative tense ("when X ran, Y happened" → "X → Y"), and redundant subjects ("db configured to use pooling" → "db: pooled").
 - Paths/commands/filenames in backticks, not prose.
 - One fact per line; split compounds.
 - Target ≤15 words; hard cap 25.
@@ -131,7 +129,7 @@ Trigger ANY of:
 
 - Leaf values ≤30 chars where possible. Multi-word identifiers OK; full sentences NOT.
 - Drop empty/null/placeholder leaves (`null`, `~`, `""`, `TODO`, `unknown`) — unless `unknown` is meaningful state (e.g. bootstrap signal).
-- Lists: one short item/line, no decorative descriptions.
+- Lists: one short item/line, no decoration.
 - No commentary in values. Comments via `# ...` only when load-bearing.
 - Collapse single-child nested objects up one level when meaning is preserved.
 
@@ -141,25 +139,19 @@ Trigger ANY of:
 2. Scan verbose entries (memory) + prose/placeholder leaves (yaml). Score: token cost vs operational value.
 3. Rewrite high-cost low-density entries in place. Preserve date + topic in memory entries.
 4. Drop fields/leaves with no operational value for any phase. List each.
-5. Re-estimate. Still over budget? Surface largest remaining for human triage — **never silently truncate**.
+5. Re-estimate. Still over budget? Surface the largest remaining — **never silently truncate**.
 
 ### Output
 
-Report tokens before→after (delta + %) for both files; entries rewritten with 2–3 before/after examples; fields dropped; still-over-budget flagged for human; untouched (already dense). Every rewrite/drop appears. If meaning changes, surface original and ask.
+Report tokens before→after (delta + %); entries rewritten (2–3 examples); fields dropped; still-over-budget flagged; untouched (already dense). Every rewrite/drop appears; if meaning changes, surface original and ask.
 
 ### Interaction with consolidation
 
-When both trigger on the same run:
-1. Density first (cheaper per-entry rewrite reduces what consolidation merges).
-2. Then consolidation (dedupe collapses now-similar entries).
-3. Report both; consolidation ratio is computed on post-density line counts.
+When both trigger on the same run: density first (rewrite reduces what consolidation merges), then consolidation (dedupe collapses now-similar entries). Report both; consolidation ratio uses post-density line counts.
 
 ## Stop conditions
 
-- Evidence too weak
-- Requested change would alter the immutable core
-- Maintenance would require product implementation
-- Multiple conflicting interpretations with no clear winner
+- Evidence too weak; change would alter the immutable core; would require product implementation; multiple conflicting interpretations with no clear winner.
 
 On stop, output: what is unclear, what evidence is missing, smallest safe next step.
 
