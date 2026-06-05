@@ -479,6 +479,42 @@ merge_claude_settings(
     script_dir / ".claude/settings.json",
     target_dir / ".claude/settings.json",
 )
+
+def upsert_gitignore(target_path):
+    # The workflow footprint (.ai/, .claude/, .agents/) is machinery for THIS
+    # developer's local agent runs — it should not land in the host project's
+    # history. Upsert a managed block into the target's .gitignore so every
+    # install keeps the workflow folders out of git. Idempotent: re-running
+    # rewrites only the managed block and preserves the rest of the file.
+    block = """# >>> AI WORKFLOW MANAGED >>>
+# Installed by ai-dev-workflow-template install.sh — keeps the workflow
+# footprint out of this project's git history.
+.ai/
+.claude/
+.agents/
+# <<< AI WORKFLOW MANAGED <<<"""
+    existed = target_path.exists()
+    had_block = False
+    if existed:
+        content = target_path.read_text(encoding="utf-8")
+        had_block = (
+            "# >>> AI WORKFLOW MANAGED >>>" in content
+            and "# <<< AI WORKFLOW MANAGED <<<" in content
+        )
+    upsert_block(
+        target_path,
+        "# >>> AI WORKFLOW MANAGED >>>",
+        "# <<< AI WORKFLOW MANAGED <<<",
+        block,
+    )
+    if not existed:
+        print(f"Created {target_path} (workflow footprint ignore block)")
+    elif had_block:
+        print(f"Refreshed {target_path} (workflow footprint ignore block)")
+    else:
+        print(f"Updated {target_path} (added workflow footprint ignore block)")
+
+upsert_gitignore(target_dir / ".gitignore")
 PY
 
 # Global skill mirror for Codex.
