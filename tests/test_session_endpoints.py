@@ -106,3 +106,21 @@ def test_engine_factory_builds_resume_argv(serve_module, monkeypatch):
         serve_module.time.sleep(0.05)
     assert "--resume" in captured["argv"] and "sid-xyz" in captured["argv"]
     eng.submit({"text": "oi"})
+
+
+def test_sessions_list_merges_ide_transcripts_and_dashboard(running_server, serve_module, tmp_path, monkeypatch):
+    projects = tmp_path / ".claude" / "projects"
+    slug = str(serve_module.ROOT).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
+    (projects / slug).mkdir(parents=True)
+    sid = "12345678-1234-1234-1234-1234abcd0001"
+    (projects / slug / f"{sid}.jsonl").write_text(
+        '{"type":"user","message":{"role":"user","content":"oi"}}\n', encoding="utf-8")
+    monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+
+    status, body, _ = _http("GET", f"{running_server}/api/sessions")
+    assert status == 200, body
+    data = serve_module.json.loads(body)
+    item = [x for x in data["sessions"] if x["sid"].endswith("abcd0001")]
+    assert item, data
+    assert item[0]["state"] in ("mirror", "acquiring", "engine")
+    assert item[0]["session_id"] == item[0]["sid"]

@@ -8659,17 +8659,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 print(f"[serve] transcript stream close failed: {e}", flush=True)
 
     def _handle_sessions_list(self) -> None:
-        """List chat sessions (claude + codex) that have a session_id, so the
-        dashboard can offer "Resume" picker entries."""
+        """Return a unified list merging IDE transcript sessions and in-memory
+        dashboard chat sessions.
+
+        (a) IDE sessions: discovered via the same transcript directory used by
+            _handle_transcripts_list — one entry per .jsonl file in
+            ~/.claude/projects/<slug>/.
+        (b) Dashboard sessions: in-memory chat / chat-codex JOBS that carry a
+            session_id (the existing behavior).
+
+        Items are de-duplicated by sid (session_id). When a sid appears in both
+        sources the dashboard-job record is treated as authoritative for
+        kind/model/status/timing fields, while transcript fields (title,
+        modified, size) fill any gaps.
+
+        Every item includes back-compat keys expected by existing tests
+        (session_id, task, model) plus the new additions (sid, state,
+        has_engine, title, modified, size).
+        """
+        # -- (b) Collect dashboard JOBS sessions ----------------------------
+        by_sid: dict[str, dict] = {}
         with JOBS_LOCK:
-            sessions = []
             for j in JOBS.values():
                 if j.get("kind") not in {"chat", "chat-codex"}:
                     continue
                 sid = j.get("session_id")
                 if not sid:
                     continue
-                sessions.append({
+                by_sid[sid] = {
+                    # Back-compat keys — must remain unchanged.
                     "session_id": sid,
                     "kind": j.get("kind"),
                     "task": (j.get("task") or "")[:120],
@@ -8678,8 +8696,93 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "ended_at": j.get("ended_at"),
                     "status": j.get("status"),
                     "last_job_id": j.get("id"),
-                })
-        sessions.sort(key=lambda s: s.get("started_at") or "", reverse=True)
+                    # New unified keys.
+                    "sid": sid,
+                    "title": None,
+                    "modified": None,
+                    "size": None,
+                    "source": "dashboard",
+                }
+
+        # -- (a) Collect IDE transcript sessions ----------------------------
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        if tdir is not None:
+            try:
+                files = sorted(tdir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            except OSError:
+                files = []
+            TASK_PREVIEW_LIMIT = 60
+            for idx, p in enumerate(files):
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                session_id = p.stem
+                task = None
+                title = None
+                if idx < TASK_PREVIEW_LIMIT:
+                    mtime_ns = st.st_mtime_ns
+                    with _TRANSCRIPT_PREVIEW_LOCK:
+                        cached = _TRANSCRIPT_PREVIEW_CACHE.get(session_id)
+                    if cached is not None and cached[0] == mtime_ns:
+                        _, task, title = cached
+                    else:
+                        task = _lookup_session_task(session_id)
+                        title = _lookup_session_title(session_id)
+                        with _TRANSCRIPT_PREVIEW_LOCK:
+                            _TRANSCRIPT_PREVIEW_CACHE[session_id] = (mtime_ns, task, title)
+                            _bound_path_cache(_TRANSCRIPT_PREVIEW_CACHE)
+                modified = _dt.datetime.fromtimestamp(
+                    st.st_mtime, _dt.timezone.utc
+                ).isoformat(timespec="seconds")
+                if session_id in by_sid:
+                    # Enrich the existing dashboard-job record with transcript info.
+                    entry = by_sid[session_id]
+                    if entry.get("title") is None:
+                        entry["title"] = title
+                    if entry.get("modified") is None:
+                        entry["modified"] = modified
+                    if entry.get("size") is None:
+                        entry["size"] = st.st_size
+                    if not entry.get("task"):
+                        entry["task"] = (task or "")[:120]
+                else:
+                    # New IDE-only entry.
+                    by_sid[session_id] = {
+                        # Back-compat keys.
+                        "session_id": session_id,
+                        "kind": "ide",
+                        "task": (task or "")[:120],
+                        "model": None,
+                        "started_at": None,
+                        "ended_at": None,
+                        "status": None,
+                        "last_job_id": None,
+                        # New unified keys.
+                        "sid": session_id,
+                        "title": title,
+                        "modified": modified,
+                        "size": st.st_size,
+                        "source": "ide",
+                    }
+
+        # -- Annotate each entry with registry state / has_engine -----------
+        with SESSION_REGISTRY._lock:
+            registry_snapshot = {
+                sid: (s.state.value, s.engine is not None)
+                for sid, s in SESSION_REGISTRY._sessions.items()
+            }
+        for sid, entry in by_sid.items():
+            reg = registry_snapshot.get(sid)
+            entry["state"] = reg[0] if reg is not None else "mirror"
+            entry["has_engine"] = reg[1] if reg is not None else False
+
+        sessions = list(by_sid.values())
+        # Sort: prefer modified timestamp (IDE), fall back to started_at (dashboard).
+        sessions.sort(
+            key=lambda s: s.get("modified") or s.get("started_at") or "",
+            reverse=True,
+        )
         self._json(200, {"sessions": sessions})
 
     def _handle_job_get(self, job_id: str, qs: dict[str, list[str]]) -> None:
