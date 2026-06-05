@@ -26,9 +26,16 @@ def _require_spec(spec: Any) -> tuple[list[dict[str, Any]], int]:
     nodes = spec["nodes"]
     if not isinstance(nodes, list):
         raise ValueError("'nodes' must be a list")
+    if not nodes:
+        # An empty fan-out is almost always an upstream construction bug that
+        # produced no nodes; reject it (mirroring pipeline_schema.py) rather
+        # than silently returning [] with exit 0.
+        raise ValueError("'nodes' must be a non-empty list")
 
     max_parallel = spec.get("max_parallel", DEFAULT_MAX_PARALLEL)
-    if not isinstance(max_parallel, int) or max_parallel < 1:
+    # bool is a subclass of int, so `True`/`False` would pass isinstance(int);
+    # reject explicitly so `"max_parallel": true` isn't silently read as 1.
+    if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or max_parallel < 1:
         raise ValueError("'max_parallel' must be a positive integer")
 
     seen: set[str] = set()
@@ -51,7 +58,9 @@ def _require_spec(spec: Any) -> tuple[list[dict[str, Any]], int]:
         if "stdin" in node and not isinstance(node["stdin"], str):
             raise ValueError(f"node #{index} stdin must be a string")
         if "timeout" in node and (
-            not isinstance(node["timeout"], int) or node["timeout"] < 1
+            isinstance(node["timeout"], bool)
+            or not isinstance(node["timeout"], int)
+            or node["timeout"] < 1
         ):
             raise ValueError(f"node #{index} timeout must be a positive integer")
 

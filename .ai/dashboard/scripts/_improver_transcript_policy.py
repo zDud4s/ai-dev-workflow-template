@@ -176,6 +176,12 @@ def classify_transcript(
         return "keep"
     matches = _matching_ledger_rows(skill, first_user_ts, ledger_rows)
     if not matches:
+        if first_user_ts is None:
+            # No parseable timestamp → correlation to the ledger is
+            # impossible (the time-window check can never succeed), so an
+            # empty match set here means "cannot audit", NOT "no resolved
+            # run exists". Keep rather than purge a possibly-resolved run.
+            return "keep"
         return "unmatched_pre_audit"
     if all(str(row.get("status") or "") in RESOLVED_STATUSES for row in matches):
         return "resolved"

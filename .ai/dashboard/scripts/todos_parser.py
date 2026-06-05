@@ -27,8 +27,13 @@ STOPWORDS = frozenset({
 })
 
 _MEMORY_FOLLOWUP_RE = re.compile(r"^- \d{4}-\d{2}-\d{2} \[followup\] (.+)")
+# Capture the comment opener so a block/html terminator (``*/``, ``-->``) is
+# stripped ONLY when that comment style actually opened the line. A previous
+# version stripped any of those terminators unconditionally, so a line comment
+# like ``# TODO: see http://x/*/foo`` was truncated at ``*/``. The text is now
+# captured to end-of-line and the matching terminator removed in code below.
 _DIFF_MARKER_RE = re.compile(
-    r"(?:#|//|/\*|<!--|^\s*\*\s)\s*\b(TODO|FIXME|XXX)\b(?![.\w])[:\s]+([^\n]+?)\s*(?:-->|\*/|\*\)|$)"
+    r"(?P<open>#|//|/\*|<!--|^\s*\*\s)\s*\b(?P<kw>TODO|FIXME|XXX)\b(?![.\w])[:\s]+(?P<text>.+?)\s*$"
 )
 _HUNK_RE = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -335,8 +340,13 @@ def _capture_handoff_followups(repo_root) -> list[dict]:
 
 
 def _run_git(repo_root, args: list[str]) -> subprocess.CompletedProcess:
+    # ``-c core.quotePath=false`` disables git's default C-style quoting of
+    # non-ASCII paths, so diff headers stay ``+++ b/.ai/packets/wîrd.md``
+    # instead of ``+++ "b/.ai/packets/w\303\256rd.md"``. Without it the
+    # quote/escape defeats the a//b/ prefix strip below, leaking TODOs from
+    # skip-listed dirs and corrupting source_ref. See also _unquote_git_path.
     return subprocess.run(
-        ["git"] + args,
+        ["git", "-c", "core.quotePath=false"] + args,
         cwd=str(repo_root),
         capture_output=True,
         text=True,
@@ -349,8 +359,29 @@ def _first_path_segment(path: str) -> str:
     return path.replace("\\", "/").split("/", 1)[0]
 
 
+def _unquote_git_path(raw: str) -> str:
+    """Decode a git C-style-quoted path (``"...\\303\\256..."``).
+
+    Defense-in-depth for the case core.quotePath is forced on elsewhere or
+    git quotes for another reason (control chars). A non-quoted path is
+    returned unchanged.
+    """
+    if len(raw) < 2 or not (raw.startswith('"') and raw.endswith('"')):
+        return raw
+    inner = raw[1:-1]
+    # Reverse git's octal/C escaping by encoding the literal escapes to
+    # latin-1 bytes, then decoding those bytes as UTF-8.
+    try:
+        decoded = inner.encode("latin-1", "backslashreplace").decode(
+            "unicode_escape"
+        )
+        return decoded.encode("latin-1").decode("utf-8")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return inner
+
+
 def _path_from_diff_header(line: str) -> str | None:
-    raw = line[4:].strip()
+    raw = _unquote_git_path(line[4:].strip())
     if raw == "/dev/null":
         return None
     if raw.startswith("b/") or raw.startswith("a/"):
@@ -386,7 +417,7 @@ def _capture_diff_markers(repo_root, last_sha=None) -> list[dict]:
         if hunk:
             new_line_no = int(hunk.group(1))
             continue
-        if line.startswith("+") and not line.startswith("+++"):
+        if line.startswith("+") and not line.startswith("+++ "):
             line_no = new_line_no
             if new_line_no is not None:
                 new_line_no += 1
@@ -395,7 +426,16 @@ def _capture_diff_markers(repo_root, last_sha=None) -> list[dict]:
             marker = _DIFF_MARKER_RE.search(line[1:])
             if not marker:
                 continue
-            title = marker.group(2).strip()
+            title = marker.group("text").strip()
+            # Strip the block/html terminator only for the comment style that
+            # actually opened this line. ``/*`` and a `` * `` continuation line
+            # both live inside a /* */ block → ``*/``; ``<!--`` → ``-->``.
+            # Line comments (#, //) keep their text verbatim.
+            opener = marker.group("open").strip()
+            if opener in ("/*", "*") and title.endswith("*/"):
+                title = title[:-2].strip()
+            elif opener == "<!--" and title.endswith("-->"):
+                title = title[:-3].strip()
             if not title:
                 continue
             source = f"{current_path}:{line_no}" if line_no is not None else current_path
@@ -467,6 +507,10 @@ def scan_and_append(repo_root, last_sha=None, captured_by: str = "maintenance") 
         current = by_hash.get(dedup)
         if current:
             row = dict(current)
+            # Refresh the title too: dedup is keyed on the NORMALIZED title, so
+            # captures that normalize equal but differ in casing/punctuation
+            # land here — the exported TODO.md should track the latest wording.
+            row["title"] = title
             row["source"] = source
             row["source_ref"] = capture.get("source_ref", source)
             row["updated_at"] = now
@@ -548,7 +592,7 @@ def _decision_candidates(repo_root, last_sha=None) -> list[tuple[str, str]]:
         if hunk:
             new_line_no = int(hunk.group(1))
             continue
-        if line.startswith("+") and not line.startswith("+++"):
+        if line.startswith("+") and not line.startswith("+++ "):
             line_no = new_line_no
             if new_line_no is not None:
                 new_line_no += 1

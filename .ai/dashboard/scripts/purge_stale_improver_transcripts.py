@@ -47,6 +47,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    # A non-positive --days makes the staleness threshold <= 0, classifying
+    # every improver transcript as stale and routing recent ones into purge
+    # buckets — under --apply that deletes transcripts the default window is
+    # meant to protect. Reject before mutating policy.STALE_DAYS.
+    if args.days < 1:
+        print("--days must be a positive integer (>= 1)", file=sys.stderr)
+        return 2
     project_dir = args.project_dir or _default_project_dir()
     if project_dir is None:
         print("could not resolve Claude project transcript directory", file=sys.stderr)

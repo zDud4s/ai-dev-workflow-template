@@ -53,7 +53,17 @@ def detect(command: str) -> dict | None:
         return None
     m_phase = RE_PHASE_PATH.search(command) or RE_PHASE_INLINE.search(command)
     phase = m_phase.group(1).lower() if m_phase else "unknown"
-    preview = command.strip().splitlines()[-1] if "\n" in command else command.strip()
+    # Prefer the line that actually carries the dispatch invocation. Taking the
+    # last line would, for a multi-line command, capture a trailing cleanup
+    # (e.g. `rm -f /tmp/phase-prompt.md`) instead of the matched claude/codex
+    # call this hook exists to record.
+    matched = m_claude or m_codex
+    if "\n" in command:
+        line_idx = command.count("\n", 0, matched.start())
+        lines = command.splitlines()
+        preview = (lines[line_idx] if line_idx < len(lines) else lines[-1]).strip()
+    else:
+        preview = command.strip()
     if len(preview) > 200:
         preview = preview[:197] + "..."
     return {"tool": tool, "model": model, "phase": phase, "command_preview": preview}
