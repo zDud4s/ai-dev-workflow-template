@@ -79,6 +79,7 @@ if _SCRIPTS_DIR not in sys.path:
 # behind one interface.
 import pty_session as _pty_session  # noqa: E402 — scripts/ helper
 import todos_parser as _todos_parser  # noqa: E402 — scripts/ helper
+import session_registry  # noqa: E402 — scripts/ helper
 
 from _improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
@@ -4926,6 +4927,100 @@ def _cancel_job(job_id: str) -> bool:
             print(f"[serve] taskkill timed out for pid={pid}", flush=True)
     return True
 
+
+# ---------------------------------------------------------------------------
+# SessionRegistry + EngineProtocol adapter
+#
+# _session_engine_factory(sid, model) devolve um adaptador que implementa
+# o EngineProtocol (submit / interrupt / kill / is_ready) sobre um job
+# de chat do tipo "chat" iniciado com ``claude --resume <sid>``.
+# SESSION_REGISTRY é instanciado uma vez a nível de módulo; os endpoints
+# das Tarefas 6-8 irão chamar SESSION_REGISTRY.submit_turn() / .release().
+# ---------------------------------------------------------------------------
+
+class _ResumeEngineAdapter:
+    """Adaptador EngineProtocol sobre um job de resume do dashboard.
+
+    Na construção, lança imediatamente ``claude --resume <sid>`` via
+    _start_subprocess_job (kind="chat"). submit(), interrupt() e kill()
+    delegam nas helpers existentes de stdin/cancel.
+    """
+
+    def __init__(self, job_id: str):
+        self._job_id = job_id
+
+    # --- EngineProtocol -------------------------------------------------------
+
+    def submit(self, turn: dict) -> None:
+        """Escreve um turno de utilizador no stdin do subprocess de resume.
+
+        turn é um dict como {"text": "..."} (e eventualmente imagens/ficheiros;
+        por agora só tratamos text).
+        """
+        text = turn.get("text") or ""
+        # Reutiliza _send_to_stdin que já trata do JSON-wrap para kind=chat.
+        _send_to_stdin(self._job_id, text)
+
+    def interrupt(self) -> None:
+        """Envia um envelope de interrupt ao subprocess de resume."""
+        _interrupt_chat_turn(self._job_id)
+
+    def kill(self) -> None:
+        """Cancela/termina o job de resume."""
+        _cancel_job(self._job_id)
+
+    def is_ready(self) -> bool:
+        """True logo que o subprocess esteja vivo (proc definido em JOBS)."""
+        with JOBS_LOCK:
+            j = JOBS.get(self._job_id)
+            if not j:
+                return False
+            return j.get("proc") is not None
+
+
+def _session_engine_factory(sid: str, model: str) -> _ResumeEngineAdapter:
+    """Fabrica um adaptador EngineProtocol para a sessão ``sid``.
+
+    Gera um job_id fresco, regista o job em JOBS com session_id=sid para
+    que _start_subprocess_job use o ficheiro de transcript correcto, e
+    arranca o subprocess ``claude --resume <sid>`` em background.
+    """
+    job_id = str(uuid.uuid4())
+    argv = _build_chat_argv(model=model, session_id=sid, resume=True)
+
+    # Pré-popula JOBS com session_id antes de chamar _start_subprocess_job
+    # para que o runner determine o log_path a partir do transcript.
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "id": job_id,
+            "kind": "chat",
+            "task": f"session-resume:{sid}",
+            "status": "queued",
+            "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+            "pid": None,
+            "log_path": None,
+            "exit_code": None,
+            "started_at": None,
+            "ended_at": None,
+            "session_id": sid,
+            "model": model,
+        }
+
+    _start_subprocess_job(
+        job_id=job_id,
+        kind="chat",
+        task=f"session-resume:{sid}",
+        argv=argv,
+    )
+
+    return _ResumeEngineAdapter(job_id)
+
+
+SESSION_REGISTRY = session_registry.SessionRegistry(
+    engine_factory=_session_engine_factory,
+)
+
+# ---------------------------------------------------------------------------
 
 _PID_ALIVE_CACHE: dict[int, tuple[float, bool]] = {}
 _PID_ALIVE_TTL_SECONDS = 2.0
