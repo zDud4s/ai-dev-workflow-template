@@ -218,3 +218,12 @@ def test_session_input_rejects_non_uuid_sid(running_server):
     status, body, _ = _http("POST", f"{running_server}/api/sessions/not-a-uuid/input",
                             data=b'{"text":"x"}', headers={"Content-Type": "application/json"})
     assert status in (400, 404), body
+
+def test_session_input_rejects_bad_model(running_server):
+    """A body-provided model must be validated before reaching the subprocess argv
+    (mirrors _handle_jobs_create's model guard). No engine should be spawned."""
+    sid = "aaaaaaaa-0000-1111-2222-eeeeeeeeeeee"
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/{sid}/input",
+                            data=b'{"text":"x","model":"--evil flag"}',
+                            headers={"Content-Type": "application/json"})
+    assert status == 400, body

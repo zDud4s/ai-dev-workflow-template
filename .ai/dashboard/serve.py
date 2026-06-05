@@ -9419,6 +9419,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Pick the model: body wins, otherwise fall back to session.model in
         # models.yaml, otherwise the hard-coded fallback used by job creation.
         model_override = (body.get("model") or "").strip() or None
+        # Validate the body-provided model id against the same regex used by
+        # _handle_jobs_create. The trusted models.yaml default skips this check.
+        if model_override and (
+            len(model_override) > 80
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", model_override)
+        ):
+            self._json(400, {"error": "model must be a short id matching [A-Za-z0-9._-]{1,80}"})
+            return
         if not model_override:
             session_cfg = _read_yaml_field(ROOT / ".ai" / "models.yaml", "session")
             model_override = (session_cfg.get("model") if isinstance(session_cfg, dict) else None) or "claude-sonnet-4-6"
