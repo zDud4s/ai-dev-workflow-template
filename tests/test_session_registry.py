@@ -53,3 +53,43 @@ def test_writing_ours_false_when_engine_idle_and_drained():
 def test_writing_ours_false_in_mirror():
     reg, s = _mk(sr.SessionState.MIRROR)
     assert reg.writing_ours(s) is False
+
+
+def test_submit_turn_from_mirror_acquires_engine_and_seeds_offset():
+    eng = _FakeEngine()
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    s.last_size = 128            # ficheiro já tinha histórico do IDE
+    status = reg.submit_turn("s", {"text": "olá"}, model="claude-sonnet-4-6")
+    assert status == "accepted"
+    assert s.state == sr.SessionState.ENGINE        # _FakeEngine.is_ready() True → vai direto
+    assert s.last_rendered_offset == 128            # semeado com o size atual
+    assert s.turn_in_flight is True
+    assert eng.turns == [{"text": "olá"}]
+
+def test_submit_turn_when_engine_idle_rearms_in_flight():
+    eng = _FakeEngine()
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    reg.submit_turn("s", {"text": "a"}, model="m")
+    reg.mark_turn_done("s")                          # motor ocioso, drenado
+    assert reg.writing_ours(s) is False
+    reg.submit_turn("s", {"text": "b"}, model="m")   # 2.º turno no motor vivo
+    assert s.turn_in_flight is True
+    assert reg.writing_ours(s) is True
+    assert eng.turns == [{"text": "a"}, {"text": "b"}]
+
+def test_acquiring_dwell_until_engine_ready():
+    """Motor não-pronto fica em ACQUIRING; mark_engine_ready promove a ENGINE
+    e submete o primeiro turno exatamente uma vez."""
+    eng = _FakeEngine(); eng._ready = False
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    reg.submit_turn("s", {"text": "olá"}, model="m")
+    assert s.state == sr.SessionState.ACQUIRING
+    assert eng.turns == []
+    eng._ready = True
+    reg.mark_engine_ready("s")
+    assert s.state == sr.SessionState.ENGINE
+    assert eng.turns == [{"text": "olá"}]
+    assert s.turn_in_flight is True

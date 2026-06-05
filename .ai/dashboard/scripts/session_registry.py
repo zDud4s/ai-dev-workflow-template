@@ -62,3 +62,42 @@ class SessionRegistry:
         if s.state == SessionState.ENGINE:
             return s.turn_in_flight or s.last_rendered_offset < s.last_size
         return False
+
+    def submit_turn(self, sid: str, turn: dict, model: str) -> str:
+        s = self._sessions[sid]
+        with s.lock:
+            if s.state == SessionState.MIRROR:
+                s.last_rendered_offset = s.last_size      # semear ANTES de escrever
+                s.engine = self._engine_factory(sid, model)
+                s.state = SessionState.ACQUIRING
+                s._pending_first_turn = turn
+                if s.engine.is_ready():
+                    self._promote_to_engine(s)
+                return "accepted"
+            if s.state == SessionState.ENGINE:
+                s.engine.submit(turn)
+                s.turn_in_flight = True                   # re-arma a posse
+                return "accepted"
+            # ACQUIRING: guarda como primeiro turno (já há um a caminho)
+            s._pending_first_turn = turn
+            return "accepted"
+
+    def _promote_to_engine(self, s: Session) -> None:
+        s.state = SessionState.ENGINE
+        first = getattr(s, "_pending_first_turn", None)
+        if first is not None:
+            s.engine.submit(first)
+            s.turn_in_flight = True
+            s._pending_first_turn = None
+
+    def mark_engine_ready(self, sid: str) -> None:
+        s = self._sessions[sid]
+        with s.lock:
+            if s.state == SessionState.ACQUIRING:
+                self._promote_to_engine(s)
+
+    def mark_turn_done(self, sid: str) -> None:
+        s = self._sessions[sid]
+        with s.lock:
+            s.turn_in_flight = False
+            s.last_rendered_offset = s.last_size
