@@ -269,6 +269,22 @@ _CODEX_FILE_AGG_CACHE: dict[str, tuple[int, dict]] = {}
 _CODEX_FILE_AGG_LOCK = threading.Lock()
 _COST_EXTRACT_CACHE: dict[str, tuple[int, dict | None]] = {}
 _COST_EXTRACT_LOCK = threading.Lock()
+# Max entries for the path-keyed parse caches below. They are mtime-keyed
+# (re-reading the same file overwrites its entry), so growth comes only from
+# distinct files/sessions seen — but over a long-lived server that is still
+# unbounded. Evict oldest-inserted entries past this cap, mirroring the
+# _PID_ALIVE_CACHE bound.
+_PATH_CACHE_MAX = 1024
+
+
+def _bound_path_cache(cache: dict, max_size: int = _PATH_CACHE_MAX) -> None:
+    # Plain dicts preserve insertion order, so popping the front drops the
+    # least-recently-added entries. Call under the cache's own lock.
+    while len(cache) > max_size:
+        try:
+            cache.pop(next(iter(cache)))
+        except (StopIteration, KeyError):
+            break
 _TRANSCRIPT_PREVIEW_CACHE: dict[str, tuple[int, str | None, str | None]] = {}
 _TRANSCRIPT_PREVIEW_LOCK = threading.Lock()
 # mtime-keyed cache of parsed agent-run .md files: (str(path), st.st_mtime_ns) -> parsed dict.
@@ -438,7 +454,10 @@ def _load_jsonl_cached(path: Path) -> list[dict]:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
-                if len(line) > max_line_bytes:
+                # Text mode yields str, so measure UTF-8 bytes to honour the
+                # byte cap — len(line) would count code points, letting a line
+                # of multi-byte UTF-8 reach ~4x the intended on-disk size.
+                if len(line.encode("utf-8", errors="replace")) > max_line_bytes:
                     continue
                 line = line.strip()
                 if not line:
@@ -775,6 +794,7 @@ def _list_agent_runs() -> list[dict]:
             else:
                 parsed = _parse_agent_run(path)
                 _AGENT_RUN_PARSE_CACHE[parse_key] = (mtime_ns, parsed)
+                _bound_path_cache(_AGENT_RUN_PARSE_CACHE)
         slug = parsed.get("task_slug")
         handoff = parsed.get("handoff") or ""
         plan_ts = _dt.datetime.fromtimestamp(st.st_mtime, _dt.timezone.utc).isoformat(timespec="seconds")
@@ -1051,6 +1071,7 @@ def _extract_cost_from_log(log_path: Path) -> dict | None:
         result = {"turns": turns, "cost_usd": round(cost, 6), "duration_ms": duration}
     with _COST_EXTRACT_LOCK:
         _COST_EXTRACT_CACHE[cache_key] = (mtime_ns, result)
+        _bound_path_cache(_COST_EXTRACT_CACHE)
     return result
 
 
@@ -1267,9 +1288,12 @@ def _aggregate_claude_usage(repo_root: Path, now: _dt.datetime) -> dict:
     except OSError:
         return out
     for p in files:
-        out["transcripts"] += 1
         try:
             with p.open("r", encoding="utf-8", errors="replace") as fh:
+                # Count only transcripts we actually opened — a locked/deleted
+                # file (OSError below) contributes no usage data and shouldn't
+                # inflate the scanned-transcript count.
+                out["transcripts"] += 1
                 for line in fh:
                     line = line.strip()
                     if not line.startswith("{"):
@@ -1444,6 +1468,7 @@ def _aggregate_codex_usage(repo_root: Path, now: _dt.datetime) -> dict:
         agg = parse_rollout_file(path)
         with _CODEX_FILE_AGG_LOCK:
             _CODEX_FILE_AGG_CACHE[str(path)] = (mtime_ns, agg)
+            _bound_path_cache(_CODEX_FILE_AGG_CACHE)
         return agg
 
     for p in files:
@@ -1879,6 +1904,10 @@ class WebSocket:
             raise _WsClosed()
         b1 = b1[0]
         masked = bool(b1 & 0x80)
+        # RFC 6455 §5.1: a server MUST fail the connection on any unmasked
+        # frame from a client. Reject rather than silently process it.
+        if not masked:
+            raise _WsClosed()
         length = b1 & 0x7F
         if length == 126:
             ext = self._rfile.read(2)
@@ -5714,9 +5743,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".env.staging", ".env.test",
         ".git-credentials", ".npmrc", ".npmrc-backup", ".netrc",
         "auth.json", "credentials", "id_ed25519", "id_rsa", "tokens.txt",
+        # settings.local.json holds local permission allow-lists, env values
+        # and hook commands — at least as sensitive as settings.json, which
+        # is already in _BLOCKED_PATHS. Block the basename (and any sibling
+        # *.local.json) across the static handler, file_read, and files-list.
+        "settings.local.json",
     })
     _BLOCKED_NAME_PREFIXES = ("id_",)
-    _BLOCKED_NAME_SUFFIXES = (".pem", ".key", ".pfx", ".p12", ".token", ".kdbx")
+    _BLOCKED_NAME_SUFFIXES = (".pem", ".key", ".pfx", ".p12", ".token", ".kdbx", ".local.json")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -6028,7 +6062,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return None
         try:
             raw = self.rfile.read(length).decode("utf-8")
-            return json.loads(raw) if raw else {}
+            parsed = json.loads(raw) if raw else {}
+            # Enforce object-ness once here so every POST handler can call
+            # body.get(...) safely. A non-dict body ([], "x", 5) would
+            # otherwise raise AttributeError → unhandled 500 in the handlers
+            # that don't carry their own isinstance guard.
+            if not isinstance(parsed, dict):
+                self._json(400, {"error": "request body must be a JSON object",
+                                 "detail": "request body must be a JSON object"})
+                return None
+            return parsed
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             # Don't leak parser internals to the client. Log the real reason
             # server-side so operators can still diagnose malformed bodies.
@@ -6519,6 +6562,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     title = _lookup_session_title(session_id)
                     with _TRANSCRIPT_PREVIEW_LOCK:
                         _TRANSCRIPT_PREVIEW_CACHE[session_id] = (mtime_ns, task, title)
+                        _bound_path_cache(_TRANSCRIPT_PREVIEW_CACHE)
             items.append({
                 "session_id": session_id,
                 "size_bytes": st.st_size,
@@ -6548,7 +6592,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             payload = _aggregate_analytics(now, range_key)
         except Exception as exc:  # never 500 the whole dashboard
-            self._json(500, {"error": str(exc)})
+            # Log server-side; return a generic message so an unexpected error
+            # (e.g. an OSError carrying a filesystem path) can't leak internals
+            # to the client — matching _read_json_body's convention.
+            print(f"[serve] analytics aggregation failed: {exc}", flush=True)
+            self._json(500, {"error": "analytics aggregation failed"})
             return
         self._json(200, payload)
 
@@ -6593,6 +6641,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             parsed = _yaml_mod.safe_load(candidate.read_text(encoding="utf-8")) or {}
         except Exception as e:
             self._json(400, {"error": f"yaml parse error: {e}"})
+            return
+        # A truthy non-mapping root (list/scalar) would make {**parsed} raise
+        # TypeError outside the try → unhandled 500. Mirror the PUT handler's
+        # guard. (safe_load(...) or {} only coerces falsy/None.)
+        if not isinstance(parsed, dict):
+            self._json(400, {"error": "pipeline root must be a mapping", "slug": slug})
             return
         payload = {"slug": slug, **parsed}
         self._json(200, payload)
@@ -8244,6 +8298,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         prefix = (qs.get("prefix", [""])[0] or "").lower()
         limit = 30
         files: list[str] = []
+        # Track whether the git path actually produced a file list. The rglob
+        # fallback must fire only when git is unavailable/failed — NOT merely
+        # when git succeeded with zero matches for this prefix (the normal
+        # autocomplete case), which would otherwise trigger a full repo walk
+        # per keystroke and surface untracked files git never lists.
+        git_ok = False
         git = _safe_which("git")
         if git:
             # Cache hits are invalidated by .git/index mtime so autocomplete
@@ -8261,6 +8321,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except (subprocess.TimeoutExpired, OSError):
                     lines = None
             if lines is not None:
+                git_ok = True
                 for line in lines:
                     if not line:
                         continue
@@ -8288,8 +8349,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # walk off the obvious hot paths (``.git/objects`` alone can be
         # hundreds of thousands of entries) and stops the autocomplete
         # endpoint leaking ``.venv`` / ``node_modules`` paths into the
-        # suggestion list.
-        if not files:
+        # suggestion list. Gate on ``git_ok`` (git unavailable/failed), not
+        # ``not files`` (which also fires on a normal zero-match prefix).
+        if not git_ok:
             try:
                 for p in ROOT.rglob("*"):
                     try:
@@ -8389,12 +8451,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         def _open_stream_file():
             return path.open("rb")
 
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+        except OSError:
+            # Client disconnected before the headers flushed — close fh so we
+            # don't leak the descriptor (and, on Windows, a lock on the file).
+            try:
+                fh.close()
+            except OSError:
+                pass
+            return
 
         # Catch-up: flush existing content first, capped so a multi-MB
         # transcript doesn't pin the whole file in memory per subscriber.
