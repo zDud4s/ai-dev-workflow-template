@@ -21,7 +21,7 @@ class SessionState(enum.Enum):
     MIRROR = "mirror"
     ACQUIRING = "acquiring"
     ENGINE = "engine"
-    # FOREIGN entra na Fase 2.
+    # FOREIGN enters in Phase 2.
 
 
 class Session:
@@ -34,7 +34,7 @@ class Session:
         self.turn_in_flight = False
         self.last_size = 0
         self.last_rendered_offset = 0
-        self._pending_first_turn = None   # turno guardado enquanto em ACQUIRING
+        self._pending_first_turn = None   # turn buffered while in ACQUIRING
         self.subscribers: set = set()
         self.lock = threading.RLock()
 
@@ -54,9 +54,9 @@ class SessionRegistry:
             return s
 
     def writing_ours(self, s: Session) -> bool:
-        """Verdadeiro sse state==ACQUIRING, OU state==ENGINE e (turno em voo
-        OU ainda a drenar a própria resposta: last_rendered_offset < last_size).
-        Falso em qualquer outro caso (MIRROR, ou ENGINE ocioso e drenado)."""
+        """True iff state==ACQUIRING, OR state==ENGINE and (turn in-flight
+        OR still draining our own reply: last_rendered_offset < last_size).
+        False in all other cases (MIRROR, or ENGINE idle and drained)."""
         if s.state == SessionState.ACQUIRING:
             return True
         if s.state == SessionState.ENGINE:
@@ -67,7 +67,7 @@ class SessionRegistry:
         s = self._sessions[sid]
         with s.lock:
             if s.state == SessionState.MIRROR:
-                s.last_rendered_offset = s.last_size      # semear ANTES de escrever
+                s.last_rendered_offset = s.last_size      # seed BEFORE writing
                 s.engine = self._engine_factory(sid, model)
                 s.state = SessionState.ACQUIRING
                 s._pending_first_turn = turn
@@ -76,9 +76,9 @@ class SessionRegistry:
                 return "accepted"
             if s.state == SessionState.ENGINE:
                 s.engine.submit(turn)
-                s.turn_in_flight = True                   # re-arma a posse
+                s.turn_in_flight = True                   # re-arm the baton
                 return "accepted"
-            # ACQUIRING: guarda como primeiro turno (já há um a caminho)
+            # ACQUIRING: store as first turn (one is already on its way)
             s._pending_first_turn = turn
             return "accepted"
 
@@ -110,5 +110,5 @@ class SessionRegistry:
                 except Exception: pass
             s.engine = None
             s.turn_in_flight = False
-            s.last_rendered_offset = s.last_size   # de-dup em qualquer saída de engine
+            s.last_rendered_offset = s.last_size   # de-dup on any engine exit
             s.state = SessionState.MIRROR

@@ -4931,19 +4931,19 @@ def _cancel_job(job_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # SessionRegistry + EngineProtocol adapter
 #
-# _session_engine_factory(sid, model) devolve um adaptador que implementa
-# o EngineProtocol (submit / interrupt / kill / is_ready) sobre um job
-# de chat do tipo "chat" iniciado com ``claude --resume <sid>``.
-# SESSION_REGISTRY é instanciado uma vez a nível de módulo; os endpoints
-# das Tarefas 6-8 irão chamar SESSION_REGISTRY.submit_turn() / .release().
+# _session_engine_factory(sid, model) returns an adapter that implements
+# EngineProtocol (submit / interrupt / kill / is_ready) over a "chat" job
+# started with ``claude --resume <sid>``.
+# SESSION_REGISTRY is instantiated once at module level; the endpoints
+# for Tasks 6-8 will call SESSION_REGISTRY.submit_turn() / .release().
 # ---------------------------------------------------------------------------
 
 class _ResumeEngineAdapter:
-    """Adaptador EngineProtocol sobre um job de resume do dashboard.
+    """EngineProtocol adapter over a dashboard resume job.
 
-    Na construção, lança imediatamente ``claude --resume <sid>`` via
-    _start_subprocess_job (kind="chat"). submit(), interrupt() e kill()
-    delegam nas helpers existentes de stdin/cancel.
+    At construction, immediately launches ``claude --resume <sid>`` via
+    _start_subprocess_job (kind="chat"). submit(), interrupt(), and kill()
+    delegate to the existing stdin/cancel helpers.
     """
 
     def __init__(self, job_id: str):
@@ -4952,25 +4952,25 @@ class _ResumeEngineAdapter:
     # --- EngineProtocol -------------------------------------------------------
 
     def submit(self, turn: dict) -> None:
-        """Escreve um turno de utilizador no stdin do subprocess de resume.
+        """Write a user turn to the stdin of the resume subprocess.
 
-        turn é um dict como {"text": "..."} (e eventualmente imagens/ficheiros;
-        por agora só tratamos text).
+        turn is a dict such as {"text": "..."} (and eventually images/files;
+        for now only text is handled).
         """
         text = turn.get("text") or ""
-        # Reutiliza _send_to_stdin que já trata do JSON-wrap para kind=chat.
+        # Reuses _send_to_stdin which already handles JSON-wrapping for kind=chat.
         _send_to_stdin(self._job_id, text)
 
     def interrupt(self) -> None:
-        """Envia um envelope de interrupt ao subprocess de resume."""
+        """Send an interrupt envelope to the resume subprocess."""
         _interrupt_chat_turn(self._job_id)
 
     def kill(self) -> None:
-        """Cancela/termina o job de resume."""
+        """Cancel/terminate the resume job."""
         _cancel_job(self._job_id)
 
     def is_ready(self) -> bool:
-        """True logo que o subprocess esteja vivo (proc definido em JOBS)."""
+        """True as soon as the subprocess is alive (proc set in JOBS)."""
         with JOBS_LOCK:
             j = JOBS.get(self._job_id)
             if not j:
@@ -4979,17 +4979,17 @@ class _ResumeEngineAdapter:
 
 
 def _session_engine_factory(sid: str, model: str) -> _ResumeEngineAdapter:
-    """Fabrica um adaptador EngineProtocol para a sessão ``sid``.
+    """Build an EngineProtocol adapter for session ``sid``.
 
-    Gera um job_id fresco, regista o job em JOBS com session_id=sid para
-    que _start_subprocess_job use o ficheiro de transcript correcto, e
-    arranca o subprocess ``claude --resume <sid>`` em background.
+    Generates a fresh job_id, registers the job in JOBS with session_id=sid so
+    that _start_subprocess_job resolves the correct transcript file, and
+    starts the ``claude --resume <sid>`` subprocess in the background.
     """
     job_id = str(uuid.uuid4())
     argv = _build_chat_argv(model=model, session_id=sid, resume=True)
 
-    # Pré-popula JOBS com session_id antes de chamar _start_subprocess_job
-    # para que o runner determine o log_path a partir do transcript.
+    # Pre-populate JOBS with session_id before calling _start_subprocess_job
+    # so the runner can determine log_path from the transcript.
     with JOBS_LOCK:
         JOBS[job_id] = {
             "id": job_id,

@@ -42,7 +42,7 @@ def test_writing_ours_true_while_turn_in_flight():
     assert reg.writing_ours(s) is True
 
 def test_writing_ours_true_while_draining_own_reply():
-    # turno acabou (não in-flight) mas ainda há bytes nossos por drenar
+    # turn finished (not in-flight) but our bytes are not yet drained
     reg, s = _mk(sr.SessionState.ENGINE, turn_in_flight=False, offset=10, size=42)
     assert reg.writing_ours(s) is True
 
@@ -59,11 +59,11 @@ def test_submit_turn_from_mirror_acquires_engine_and_seeds_offset():
     eng = _FakeEngine()
     reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
     s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
-    s.last_size = 128            # ficheiro já tinha histórico do IDE
+    s.last_size = 128            # file already had history from the IDE
     status = reg.submit_turn("s", {"text": "olá"}, model="claude-sonnet-4-6")
     assert status == "accepted"
     assert s.state == sr.SessionState.ENGINE        # _FakeEngine.is_ready() True → vai direto
-    assert s.last_rendered_offset == 128            # semeado com o size atual
+    assert s.last_rendered_offset == 128            # seeded with the current size
     assert s.turn_in_flight is True
     assert eng.turns == [{"text": "olá"}]
 
@@ -72,16 +72,16 @@ def test_submit_turn_when_engine_idle_rearms_in_flight():
     reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
     s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
     reg.submit_turn("s", {"text": "a"}, model="m")
-    reg.mark_turn_done("s")                          # motor ocioso, drenado
+    reg.mark_turn_done("s")                          # engine idle, drained
     assert reg.writing_ours(s) is False
-    reg.submit_turn("s", {"text": "b"}, model="m")   # 2.º turno no motor vivo
+    reg.submit_turn("s", {"text": "b"}, model="m")   # 2nd turn on the live engine
     assert s.turn_in_flight is True
     assert reg.writing_ours(s) is True
     assert eng.turns == [{"text": "a"}, {"text": "b"}]
 
 def test_acquiring_dwell_until_engine_ready():
-    """Motor não-pronto fica em ACQUIRING; mark_engine_ready promove a ENGINE
-    e submete o primeiro turno exatamente uma vez."""
+    """A not-ready engine stays in ACQUIRING; mark_engine_ready promotes to ENGINE
+    and submits the first turn exactly once."""
     eng = _FakeEngine(); eng._ready = False
     reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
     s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")

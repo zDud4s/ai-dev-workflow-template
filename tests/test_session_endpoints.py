@@ -99,8 +99,8 @@ def test_engine_factory_builds_resume_argv(serve_module, monkeypatch):
 
     assert hasattr(serve_module, "SESSION_REGISTRY")
     eng = serve_module._session_engine_factory("sid-xyz", "claude-sonnet-4-6")
-    # O motor arranca o job de resume na CONSTRUÇÃO (via _start_subprocess_job),
-    # por isso o argv é capturado já aqui; submit() só alimenta o stdin.
+    # The engine starts the resume job at CONSTRUCTION time (via _start_subprocess_job),
+    # so argv is captured here already; submit() only feeds stdin.
     for _ in range(40):
         if "argv" in captured: break
         serve_module.time.sleep(0.05)
