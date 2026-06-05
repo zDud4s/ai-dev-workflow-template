@@ -27,8 +27,12 @@ BUDGETS = [
     # +14L/+1.1KB of format rules consumed by the orchestrator regex parser) and
     # adaptive scoring section (PR 3, +1 paragraph/+1KB with the scoring formula,
     # guard rail, cold-start fallback). Sections are at maximum density; further
-    # trimming would risk parser/scorer drift.
-    (".claude/skills/planner/SKILL.md",     100,  7900),
+    # trimming would risk parser/scorer drift. Bumped again (7900→8300) for the
+    # 2026-06-05 code-review fixes: the missing/empty `## Selected models` block
+    # contract (must emit empty header, not omit — reconciles a STOP-vs-fallback
+    # contradiction with orchestrate/dispatch) and the tests-match normalization
+    # rule (rule 7 / checklist 4 aligned to reviewer gate 6, away from byte-identity).
+    (".claude/skills/planner/SKILL.md",     100,  8300),
     (".claude/skills/reviewer/SKILL.md",     70,  3700),
     # maintenance: Round 2 expanded the "Immutable core" enumeration to
     # cover all skills + future skills explicitly (closes D.P1-3). +1L

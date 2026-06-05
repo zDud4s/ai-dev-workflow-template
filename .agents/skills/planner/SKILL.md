@@ -51,7 +51,7 @@ State both `Size` and `Risk level` at the top of your output.
 4. Produce self-contained packets (executor needs no prior conversation context). Fill every schema field from `.ai/packets/execute.md`; include actual code snippets in File Context so the executor doesn't re-read whole files.
 5. **`.ai/packets/*.md` are read-only templates.** Read for format; emit filled copies in output. Never Edit/Write the templates. Medium/large MAY persist a new `.ai/plans/<YYYY-MM-DD>-<slug>.md` (new file only, never overwrite).
 6. **Plan tests, don't postpone.** Each acceptance criterion → one test (path + case) under `Tests to add`. Required for Risk `elevated` OR Size `medium`/`large`; trivial/low-risk small may use `none` + reason. `Validation.Commands` must run the test runner when `Tests to add` is non-empty.
-7. **Plan and execute agree on tests.** Execute packet's `## Tests / To add:` MUST be byte-identical to plan's `Tests to add:`. If execute reveals new tests, amend the plan — never emit mismatched sections.
+7. **Plan and execute agree on tests.** Execute packet's `## Tests / To add:` MUST match plan's `Tests to add:` after normalization (trim/lowercase; treat none/-/empty as equal), NOT byte-identical (templates use field vs heading) — reviewer gate 6. If execute reveals new tests, amend the plan — never emit mismatched sections.
 
 ## Token budget
 
@@ -77,11 +77,11 @@ Prefer `Validation.Commands` whose output makes pass/fail unambiguous (exit code
 
 ## Submission checklist
 
-Before emitting, verify: (1) Size/Risk stated at top; (2) all Output format sections present (skip Memory tags only for trivial); (3) packets fully filled — no TODOs, all `.ai/packets/execute.md` fields done; (4) if `Tests to add` non-empty, identical copy in execute's `## Tests / To add:`; (5) if Risk=elevated OR Size=medium/large, include "Review required"; (6) token budget respected. Else revise.
+Before emitting, verify: (1) Size/Risk stated at top; (2) all Output format sections present (skip Memory tags only for trivial); (3) packets fully filled — no TODOs, all `.ai/packets/execute.md` fields done; (4) if `Tests to add` non-empty, execute's `## Tests / To add:` matches it after normalization; (5) if Risk=elevated OR Size=medium/large, include "Review required"; (6) token budget respected. Else revise.
 
 ## Auto-select output block
 
-Required when `auto_select.enabled: true` AND auto-select parsing succeeded; omitted otherwise or when `Size: trivial`. If auto-models.md is unreadable or metrics parsing fails, skip this block entirely. Format (final block, after `Memory candidates`):
+Required when `auto_select.enabled: true` AND auto-select parsing succeeded; omitted otherwise or when `Size: trivial`. If auto-models.md is unreadable or metrics parsing fails, emit an **empty** `## Selected models` header (zero phase lines), NOT omit the block — a missing block STOPs the orchestrator, an empty header falls back to `models.yaml`. Format (final block, after `Memory candidates`):
 
 ```
 ## Selected models
@@ -94,4 +94,4 @@ rescue:  tool=<v>  model=<v>  [reasoning_effort=<v>]  reason="<≤120 chars>"
 
 **Fill.** (1) `effective_budget` = `auto_select.token_budget`; bump one rung (`low→medium→high`, `high` stays) if `Risk level: elevated` OR `Size: large`. (2) For each phase in `auto_select.phases` (default `[execute, review, rescue]`), look up `(phase, Size, Risk level, effective_budget)` in `.ai/workflow/auto-models.md`; rows in order, first match wins, `*` matches any. (3) Emit one line per match; OMIT `reasoning_effort` when `effort == n/a` — never emit `reasoning_effort=n/a`. Both claude and codex rows may carry an explicit effort. (4) No match → omit that phase. (5) `reason`: double-quoted, ≤120 chars, no embedded `"`. 
 
-**Strict format (orchestrator parses with regex).** Header exactly `## Selected models`. Phase lowercase + `:`, left-aligned. Order: `tool model [reasoning_effort] reason`; `reason` last; one+ spaces between fields. `reasoning_effort ∈ {low, medium, high, xhigh, max}` — `max` is claude-only (codex rejects it). No trailing whitespace, no blank lines inside. Empty header (zero phase lines) = "evaluated, no matches" → orchestrator falls back to `models.yaml` for every phase. **If any parsing error occurs, skip this block entirely; orchestrator will fall back to static `models.yaml`.**
+**Strict format (orchestrator parses with regex).** Header exactly `## Selected models`. Phase lowercase + `:`, left-aligned. Order: `tool model [reasoning_effort] reason`; `reason` last; one+ spaces between fields. `reasoning_effort ∈ {low, medium, high, xhigh, max}` — `max` is claude-only (codex rejects it). No trailing whitespace, no blank lines inside. Empty header (zero phase lines) = "evaluated, no matches" → orchestrator falls back to `models.yaml` for every phase. **On any parse error, emit this empty header — do NOT omit the block (missing ⇒ orchestrator STOPs, not fallback).**

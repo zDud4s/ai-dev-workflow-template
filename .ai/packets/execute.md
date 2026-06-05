@@ -17,7 +17,7 @@ Allowed files: <!-- only these files may be modified -->
 Do-not-touch files/dirs: <!-- these must not be changed under any circumstance -->
 
 ## Tests
-To add: <!-- byte-identical to planning packet `Tests to add` -->
+To add: <!-- same as planning packet `Tests to add` after normalization (trim/lowercase; none/-/empty equivalent) — not byte-identical -->
 
 ## Validation
 Commands: <!-- exact commands to run after implementation -->
