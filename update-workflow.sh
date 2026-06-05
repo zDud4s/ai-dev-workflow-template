@@ -144,7 +144,15 @@ copy_if_different "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.age
 # itself. `claude` is excluded for the symmetric reason and because it has no
 # .claude/skills/ counterpart (see copy_if_different above).
 for skill in bootstrap planner reviewer maintenance rescue orchestrate orchestrate-agents orchestrate-tdd run-pipeline synthesizer; do
-  copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
+  src_skill_dir="$TARGET_DIR/.claude/skills/$skill"
+  [ -d "$src_skill_dir" ] || continue
+  # Mirror EVERY file in the skill dir, not just SKILL.md, so a future
+  # multi-file shared skill (references/, etc.) propagates into the .agents
+  # mirror — matching sync_skills.py copy_skill()'s rglob behaviour.
+  find "$src_skill_dir" -type f | while IFS= read -r src_file; do
+    rel="${src_file#"$src_skill_dir"/}"
+    copy_if_different "$src_file" "$TARGET_DIR/.agents/skills/$skill/$rel"
+  done
 done
 
 copy_if_different "$SCRIPT_DIR/.ai/workflow/agents-block.md" "$TARGET_DIR/.ai/workflow/agents-block.md"
@@ -286,7 +294,7 @@ else:
 
 upsert_block(
     claude_target,
-    "<!-- >>> AI WORKFLOW MANAGED IMPORT >>>",
+    "<!-- >>> AI WORKFLOW MANAGED IMPORT >>> -->",
     "<!-- <<< AI WORKFLOW MANAGED IMPORT <<< -->",
     claude_import_block,
 )
@@ -629,7 +637,15 @@ def merge_claude_settings(template_path, target_path):
         )
         print(f"Created {target_path} (workflow settings)")
         return
-    target_data = json.loads(target_path.read_text(encoding="utf-8"))
+    try:
+        target_data = json.loads(target_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        # A malformed/empty user settings.json must not abort the whole
+        # update under `set -euo pipefail` after files were already copied.
+        # Warn and skip the merge so the operator can fix the file and re-run.
+        print(f"WARNING: {target_path} is not valid JSON ({exc}); "
+              f"skipping workflow settings merge — fix the file and re-run.")
+        return
     added_perms = []
     added_hooks = []
     # permissions.allow: union, preserve target order, append new ones.

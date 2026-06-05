@@ -114,7 +114,17 @@ copy_if_missing "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agent
 # to call itself. `claude` is excluded for the symmetric reason and because it
 # has no .claude/skills/ counterpart (see copy_if_missing above).
 for skill in bootstrap planner reviewer maintenance rescue orchestrate orchestrate-agents orchestrate-tdd run-pipeline synthesizer; do
-  copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
+  src_skill_dir="$TARGET_DIR/.claude/skills/$skill"
+  [ -d "$src_skill_dir" ] || continue
+  # Mirror EVERY file in the skill dir, not just SKILL.md, so a future
+  # multi-file shared skill (references/, etc.) propagates into the .agents
+  # mirror — matching sync_skills.py copy_skill()'s rglob behaviour. Mirroring
+  # only SKILL.md would silently drop bundled files and the rglob-based
+  # `sync_skills.py --check` would then flag the shell-installed copy as drift.
+  find "$src_skill_dir" -type f | while IFS= read -r src_file; do
+    rel="${src_file#"$src_skill_dir"/}"
+    copy_if_different "$src_file" "$TARGET_DIR/.agents/skills/$skill/$rel"
+  done
 done
 
 # Workflow core and packets — always update (immutable core)
@@ -242,7 +252,7 @@ else:
 
 upsert_block(
     claude_target,
-    "<!-- >>> AI WORKFLOW MANAGED IMPORT >>>",
+    "<!-- >>> AI WORKFLOW MANAGED IMPORT >>> -->",
     "<!-- <<< AI WORKFLOW MANAGED IMPORT <<< -->",
     claude_import_block,
 )
@@ -429,7 +439,15 @@ def merge_claude_settings(template_path, target_path):
         )
         print(f"Created {target_path} (workflow settings)")
         return
-    target_data = json.loads(target_path.read_text(encoding="utf-8"))
+    try:
+        target_data = json.loads(target_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        # A malformed/empty user settings.json must not abort the whole
+        # install under `set -euo pipefail` after files were already copied.
+        # Warn and skip the merge so the operator can fix the file and re-run.
+        print(f"WARNING: {target_path} is not valid JSON ({exc}); "
+              f"skipping workflow settings merge — fix the file and re-run.")
+        return
     added_perms = []
     added_hooks = []
     template_allow = (template_data.get("permissions") or {}).get("allow") or []
@@ -546,7 +564,7 @@ done
 # Only adds the setting if not already present — never overwrites a user's existing policy
 CODEX_CONFIG="$HOME/.codex/config.toml"
 if [ -f "$CODEX_CONFIG" ]; then
-  if ! grep -q "approval_policy" "$CODEX_CONFIG"; then
+  if ! grep -Eq '^[[:space:]]*approval_policy[[:space:]]*=' "$CODEX_CONFIG"; then
     echo "" >> "$CODEX_CONFIG"
     echo 'approval_policy = "on-request"' >> "$CODEX_CONFIG"
     echo "Added approval_policy = \"on-request\" to $CODEX_CONFIG"

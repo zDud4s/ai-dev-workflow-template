@@ -59,35 +59,62 @@ def list_common(src: Path, dst: Path) -> list[str]:
 
 
 def copy_skill(src_dir: Path, dst_dir: Path) -> list[str]:
-    """Mirror src_dir contents into dst_dir; return list of changed files."""
+    """Mirror src_dir contents into dst_dir; return list of changed files.
+
+    The mirror is a true regeneration: files removed/renamed on the src side
+    are pruned from dst so they don't orphan in the .agents mirror.
+    """
     changed: list[str] = []
     dst_dir.mkdir(parents=True, exist_ok=True)
+    src_rels: set[Path] = set()
     for src_file in src_dir.rglob("*"):
         if not src_file.is_file():
             continue
         rel = src_file.relative_to(src_dir)
+        src_rels.add(rel)
         dst_file = dst_dir / rel
         if dst_file.exists() and dst_file.read_bytes() == src_file.read_bytes():
             continue
         dst_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src_file, dst_file)
         changed.append(str(rel))
+    # Prune dst files with no src counterpart (left by a src-side delete/
+    # rename). Report removals alongside additions.
+    for dst_file in sorted(dst_dir.rglob("*")):
+        if not dst_file.is_file():
+            continue
+        if dst_file.relative_to(dst_dir) not in src_rels:
+            dst_file.unlink()
+            changed.append(f"removed {dst_file.relative_to(dst_dir)}")
     return changed
 
 
 def check(src: Path, dst: Path) -> int:
     drift = 0
     for name in list_common(src, dst):
-        for src_file in (src / name).rglob("*"):
+        src_skill = src / name
+        dst_skill = dst / name
+        for src_file in src_skill.rglob("*"):
             if not src_file.is_file():
                 continue
-            rel = src_file.relative_to(src / name)
-            dst_file = dst / name / rel
+            rel = src_file.relative_to(src_skill)
+            dst_file = dst_skill / rel
             if not dst_file.exists():
                 print(f"MISSING in {dst}: {name}/{rel}")
                 drift += 1
             elif dst_file.read_bytes() != src_file.read_bytes():
                 print(f"DIFF {name}/{rel}: {sha(src_file)} vs {sha(dst_file)}")
+                drift += 1
+        # Reverse direction: a file in dst with no src counterpart is an
+        # orphan (e.g. left by a src-side rename/delete). One-directional
+        # checking would report "in sync" while the mirror carries stale
+        # extra files.
+        for dst_file in dst_skill.rglob("*"):
+            if not dst_file.is_file():
+                continue
+            rel = dst_file.relative_to(dst_skill)
+            if not (src_skill / rel).exists():
+                print(f"EXTRA in {dst}: {name}/{rel}")
                 drift += 1
     return drift
 
