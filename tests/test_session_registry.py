@@ -93,3 +93,23 @@ def test_acquiring_dwell_until_engine_ready():
     assert s.state == sr.SessionState.ENGINE
     assert eng.turns == [{"text": "olá"}]
     assert s.turn_in_flight is True
+
+
+def test_release_kills_engine_and_returns_to_mirror():
+    eng = _FakeEngine()
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    reg.submit_turn("s", {"text": "x"}, model="m")
+    reg.release("s")
+    assert s.state == sr.SessionState.MIRROR
+    assert eng.killed is True
+    assert s.engine is None
+
+def test_release_reconciles_offset_to_size():
+    eng = _FakeEngine()
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    reg.submit_turn("s", {"text": "x"}, model="m")
+    s.last_size = 999
+    reg.release("s")
+    assert s.last_rendered_offset == 999   # tail recomeça daqui, sem repetir

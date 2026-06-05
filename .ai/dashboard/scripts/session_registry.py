@@ -84,7 +84,7 @@ class SessionRegistry:
 
     def _promote_to_engine(self, s: Session) -> None:
         s.state = SessionState.ENGINE
-        first = getattr(s, "_pending_first_turn", None)
+        first = s._pending_first_turn
         if first is not None:
             s.engine.submit(first)
             s.turn_in_flight = True
@@ -101,3 +101,14 @@ class SessionRegistry:
         with s.lock:
             s.turn_in_flight = False
             s.last_rendered_offset = s.last_size
+
+    def release(self, sid: str) -> None:
+        s = self._sessions[sid]
+        with s.lock:
+            if s.engine is not None:
+                try: s.engine.kill()
+                except Exception: pass
+            s.engine = None
+            s.turn_in_flight = False
+            s.last_rendered_offset = s.last_size   # de-dup em qualquer saída de engine
+            s.state = SessionState.MIRROR
