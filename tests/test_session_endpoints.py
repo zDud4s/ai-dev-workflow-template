@@ -169,3 +169,52 @@ def test_session_stream_tails_jsonl_in_mirror(running_server, serve_module, tmp_
 def test_session_stream_404_unknown(running_server):
     status, body, _ = _http("GET", f"{running_server}/api/sessions/00000000-0000-0000-0000-000000000000/stream")
     assert status == 404, body
+
+
+def _arm_fake_resume_engine(serve_module, monkeypatch):
+    """Monkeypatch Popen to a stand-in that reads stdin (keeps the job alive) and
+    captures the argv. Returns the `captured` dict."""
+    captured = {}
+    real_popen = serve_module.subprocess.Popen
+    def fake_popen(argv, **kw):
+        captured["argv"] = list(argv)
+        return real_popen([serve_module.sys.executable, "-u", "-c",
+                           "import sys; sys.stdin.readline()"], **kw)
+    monkeypatch.setattr(serve_module.subprocess, "Popen", fake_popen)
+    return captured
+
+
+def test_session_input_acquires_resume_engine(running_server, serve_module, monkeypatch):
+    captured = _arm_fake_resume_engine(serve_module, monkeypatch)
+    sid = "aaaaaaaa-0000-1111-2222-bbbbbbbbbbbb"
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/{sid}/input",
+                            data=b'{"text":"continua por favor"}',
+                            headers={"Content-Type": "application/json"})
+    assert status in (200, 202), body
+    assert serve_module.json.loads(body)["status"] == "accepted"
+    for _ in range(40):
+        if "argv" in captured: break
+        serve_module.time.sleep(0.05)
+    assert "--resume" in captured["argv"] and sid in captured["argv"]
+
+def test_session_release_returns_to_mirror(running_server, serve_module, monkeypatch):
+    sid = "aaaaaaaa-0000-1111-2222-cccccccccccc"
+    _arm_fake_resume_engine(serve_module, monkeypatch)
+    _http("POST", f"{running_server}/api/sessions/{sid}/input", data=b'{"text":"x"}',
+          headers={"Content-Type": "application/json"})
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/{sid}/release", data=b"{}",
+                            headers={"Content-Type": "application/json"})
+    assert status == 200, body
+    s = serve_module.SESSION_REGISTRY.get_or_create(sid, jsonl_path="x")
+    assert s.state == serve_module.session_registry.SessionState.MIRROR
+
+def test_session_input_400_empty_text(running_server):
+    sid = "aaaaaaaa-0000-1111-2222-dddddddddddd"
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/{sid}/input",
+                            data=b"{}", headers={"Content-Type": "application/json"})
+    assert status == 400, body
+
+def test_session_input_rejects_non_uuid_sid(running_server):
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/not-a-uuid/input",
+                            data=b'{"text":"x"}', headers={"Content-Type": "application/json"})
+    assert status in (400, 404), body

@@ -99,6 +99,8 @@ BOUND_PORT = PORT
 # table lookup + a hashed regex execution.
 _RE_TRANSCRIPT_STREAM = re.compile(r"/api/transcripts/([0-9a-fA-F-]+)/stream")
 _RE_SESSION_STREAM = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/stream")
+_RE_SESSION_INPUT = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/input")
+_RE_SESSION_RELEASE = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/release")
 _RE_AGENT_PROPOSAL_GET = re.compile(r"/api/agents/proposals/([A-Za-z0-9_\-]+)")
 _RE_SKILL_PROPOSAL_GET = re.compile(r"/api/skills/proposals/([A-Za-z0-9_\-]+)")
 _RE_JOB_STREAM = re.compile(r"/api/jobs/([0-9a-f-]+)/stream")
@@ -6179,6 +6181,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if m:
                 self._handle_agent_proposal_decision(m.group(1), m.group(2))
                 return
+            m = _RE_SESSION_INPUT.fullmatch(parsed.path)
+            if m:
+                self._handle_session_input(m.group(1), body)
+                return
+            m = _RE_SESSION_RELEASE.fullmatch(parsed.path)
+            if m:
+                self._handle_session_release(m.group(1))
+                return
             self._json(404, {"error": "unknown endpoint", "path": parsed.path})
 
     def do_PUT(self):  # noqa: N802
@@ -9381,6 +9391,58 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(code, {"error": err})
             return
         self._json(200, {"ok": True})
+
+    # UUID pattern used to validate session ids on the /api/sessions/* endpoints.
+    _UUID_RE = re.compile(
+        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
+
+    def _handle_session_input(self, sid: str, body: dict) -> None:
+        """POST /api/sessions/<sid>/input {text, model?}
+
+        Validates that ``sid`` is a UUID and ``text`` is non-empty, then calls
+        SESSION_REGISTRY.get_or_create + submit_turn.  Responds 200 {"status":
+        "accepted"} on success.
+        """
+        # Validate sid is a canonical UUID before doing anything else.
+        if not self._UUID_RE.match(sid):
+            self._json(400, {"error": "sid must be a UUID"})
+            return
+        # Validate text is present and non-empty.
+        text = body.get("text") or ""
+        if not isinstance(text, str) or not text.strip():
+            self._json(400, {"error": "text is required and must be non-empty"})
+            return
+        # Resolve the session transcript path (may be None if no .claude/projects dir).
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        jsonl_path = str(tdir / f"{sid}.jsonl") if tdir else f"{sid}.jsonl"
+        # Pick the model: body wins, otherwise fall back to session.model in
+        # models.yaml, otherwise the hard-coded fallback used by job creation.
+        model_override = (body.get("model") or "").strip() or None
+        if not model_override:
+            session_cfg = _read_yaml_field(ROOT / ".ai" / "models.yaml", "session")
+            model_override = (session_cfg.get("model") if isinstance(session_cfg, dict) else None) or "claude-sonnet-4-6"
+        SESSION_REGISTRY.get_or_create(sid, jsonl_path=jsonl_path)
+        result = SESSION_REGISTRY.submit_turn(sid, {"text": text}, model_override)
+        self._json(200, {"status": result})
+
+    def _handle_session_release(self, sid: str) -> None:
+        """POST /api/sessions/<sid>/release
+
+        Validates that ``sid`` is a UUID, then releases the session back to
+        MIRROR state via SESSION_REGISTRY.release.  Responds 200 {"status":
+        "released"}.
+        """
+        # Validate sid is a canonical UUID.
+        if not self._UUID_RE.match(sid):
+            self._json(400, {"error": "sid must be a UUID"})
+            return
+        # Ensure the session exists in the registry (create in MIRROR if not).
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        jsonl_path = str(tdir / f"{sid}.jsonl") if tdir else f"{sid}.jsonl"
+        SESSION_REGISTRY.get_or_create(sid, jsonl_path=jsonl_path)
+        SESSION_REGISTRY.release(sid)
+        self._json(200, {"status": "released"})
 
     def _compose_multimodal_blocks(self, text: str, images: list, files: list):
         """Validate + assemble a stream-json content array from a composer
