@@ -114,7 +114,9 @@ Wrap every subprocess call with `timeout <T>s` where `<T>` is `<phase>.timeout_s
   ```bash
   timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | codex exec --skip-git-repo-check -m <phase.model> --config model_reasoning_effort="<phase.reasoning_effort>" -C <absolute project path> 2>/dev/null'
   ```
-  `<phase.reasoning_effort>` ∈ {`xhigh`, `high`, `medium`, `low`} from `.ai/models.yaml`; default `medium` if absent. Codex does NOT accept `max` — only claude does. The `execute` phase additionally appends `--dangerously-bypass-approvals-and-sandbox` — without it, sandbox approval prompts stall the subprocess silently. Other phases run read-only.
+  `<phase.reasoning_effort>` ∈ {`xhigh`, `high`, `medium`, `low`} from `.ai/models.yaml`; default `medium` if absent. Codex does NOT accept `max` — only claude does. **Any write-capable codex phase** (a phase whose packet edits repo files — `execute`, `rescue`, `maintenance`, `bootstrap`) additionally appends `--dangerously-bypass-approvals-and-sandbox` — without it, codex's own sandbox raises approval prompts that stall the subprocess silently. Read-only phases (`plan`, `review`) omit the flag.
+
+  **Controller sandbox bypass.** The bypass flag only disables *codex's* sandbox. When the controller is Claude Code with its own sandbox enabled, the dispatched codex subprocess still runs inside the controller's sandbox, which blocks codex's writes/network even though the command is permission-allowed. A write-capable codex dispatch MUST therefore run outside the controller's sandbox: either via `sandbox.excludedCommands` (declarative, in `.claude/settings.json`) or by issuing the dispatch `Bash` call with `dangerouslyDisableSandbox: true`. Both require `sandbox.allowUnsandboxedCommands` to stay `true` (the default).
 
 Subprocess exit handling lives in the dispatch error table below (exit 0, non-zero ± `## Escalation`, exit 124 timeout, empty-output exit 0).
 

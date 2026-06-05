@@ -13,7 +13,7 @@ tools: Read, Bash, AskUserQuestion
 
 ## Controller mode (called by orchestrator)
 
-1. Required flags: `-m <model>`, `--config model_reasoning_effort="<level>"`, `--dangerously-bypass-approvals-and-sandbox` (for execute), `--skip-git-repo-check`, `-C <project-root>`, append `2>/dev/null` to suppress thinking tokens.
+1. Required flags: `-m <model>`, `--config model_reasoning_effort="<level>"`, `--dangerously-bypass-approvals-and-sandbox` (for any write-capable phase — `execute`, `rescue`, `maintenance`, `bootstrap`; read-only `plan`/`review` omit it), `--skip-git-repo-check`, `-C <project-root>`, append `2>/dev/null` to suppress thinking tokens. When the controller (Claude Code) runs sandboxed, this write-capable dispatch must also run outside the controller's sandbox — see `.ai/workflow/dispatch.md` "Controller sandbox bypass".
 2. Prompt arrives via stdin from a temp file; do not pass as positional argument.
 3. Resume: `cat /tmp/codex-resume.md | codex exec --skip-git-repo-check resume --last 2>/dev/null && rm -f /tmp/codex-resume.md`. No config flags on resume.
 4. On any blocker emit a final `## Escalation` block (`reason:`, `needed:`, `suggested-next:`, `partial-output:`) and exit non-zero. See `.ai/packets/README.md` "Escalation block format" for the canonical shape.
