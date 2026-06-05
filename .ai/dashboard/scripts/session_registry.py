@@ -1,6 +1,20 @@
 # .ai/dashboard/scripts/session_registry.py
+"""Per-session state machine for the dashboard unified-chat feature.
+
+SessionRegistry tracks active sessions by sid (the Claude .jsonl stem). Each
+Session moves through three states:
+  mirror    – server tails the .jsonl; no dashboard engine running.
+  acquiring – engine is starting; the first turn is buffered.
+  engine    – engine is live; turns are submitted directly.
+FOREIGN is reserved for Phase 2.
+
+Thread-safety: a registry-level RLock guards the sessions dict; a per-Session
+RLock guards individual state transitions. The engine is injected via
+engine_factory so the registry stays free of HTTP / CLI concerns.
+"""
 from __future__ import annotations
-import enum, threading
+import enum
+import threading
 
 
 class SessionState(enum.Enum):
@@ -38,3 +52,13 @@ class SessionRegistry:
                 s = Session(sid, jsonl_path)
                 self._sessions[sid] = s
             return s
+
+    def writing_ours(self, s: Session) -> bool:
+        """Verdadeiro sse state==ACQUIRING, OU state==ENGINE e (turno em voo
+        OU ainda a drenar a própria resposta: last_rendered_offset < last_size).
+        Falso em qualquer outro caso (MIRROR, ou ENGINE ocioso e drenado)."""
+        if s.state == SessionState.ACQUIRING:
+            return True
+        if s.state == SessionState.ENGINE:
+            return s.turn_in_flight or s.last_rendered_offset < s.last_size
+        return False
