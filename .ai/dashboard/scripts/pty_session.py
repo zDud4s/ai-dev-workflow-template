@@ -438,14 +438,26 @@ class Pty(ABC):
         # Hard cap to prevent fd exhaustion from runaway dashboard JS or
         # an adversary spamming spawn. serve.py maps this RuntimeError to
         # HTTP 503.
-        if cls.active_count() >= MAX_PTY_SESSIONS:
-            raise RuntimeError("max PTY sessions reached")
+        #
+        # Hold _registry_lock across the cap check, construction, AND
+        # registration. A previous version checked active_count() (which
+        # released the lock), then constructed, then _register()'d (re-
+        # acquiring) — a TOCTOU window where two concurrent spawns could
+        # both pass the cap and exceed MAX_PTY_SESSIONS, each having already
+        # launched a real child before enforcement. Spawns are user-
+        # initiated and infrequent, so serializing them under the lock for
+        # the duration of child creation is an acceptable cost for a cap
+        # that can never be exceeded and never launches an over-limit child.
         _log.info("PTY spawn: argv=%s cwd=%s", argv, cwd)
-        if sys.platform == "win32":
-            pty = _WindowsPty(argv, cwd=cwd, env=env, cols=cols, rows=rows)
-        else:
-            pty = _PosixPty(argv, cwd=cwd, env=env, cols=cols, rows=rows)
-        cls._register(pty)
+        with cls._registry_lock:
+            if len(cls._registry) >= MAX_PTY_SESSIONS:
+                raise RuntimeError("max PTY sessions reached")
+            if sys.platform == "win32":
+                pty = _WindowsPty(argv, cwd=cwd, env=env, cols=cols, rows=rows)
+            else:
+                pty = _PosixPty(argv, cwd=cwd, env=env, cols=cols, rows=rows)
+            cls._registry[id(pty)] = pty
+            pty._last_io = _time_mod.monotonic()
         return pty
 
 
@@ -817,10 +829,20 @@ class _WindowsPty(Pty):
                 text = self._decoder.decode(bytes(data), final=False)
             else:
                 text = data
-            self._proc.write(text)
+            # Hold _io_lock across the pywinpty write so a concurrent
+            # kill() can't free/terminate _proc mid-syscall — mirroring
+            # read()/kill(). Re-check _closed inside the lock since kill()
+            # may have flipped it while we were decoding above.
+            with self._io_lock:
+                if self._closed:
+                    return 0
+                self._proc.write(text)
             Pty._touch(self)
             return len(data)
-        except OSError:
+        except (EOFError, OSError):
+            # pywinpty surfaces a terminated/closed child as EOFError
+            # (not an OSError subclass), same as read(); treat both as
+            # "pty closed" rather than letting EOFError escape uncaught.
             self._closed = True
             return 0
 
