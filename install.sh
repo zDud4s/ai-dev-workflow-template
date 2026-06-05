@@ -20,6 +20,7 @@ mkdir -p "$TARGET_DIR/.claude/skills/rescue"
 mkdir -p "$TARGET_DIR/.claude/skills/codex"
 mkdir -p "$TARGET_DIR/.claude/skills/orchestrate"
 mkdir -p "$TARGET_DIR/.claude/skills/orchestrate-agents"
+mkdir -p "$TARGET_DIR/.claude/skills/orchestrate-tdd"
 mkdir -p "$TARGET_DIR/.claude/skills/run-pipeline"
 mkdir -p "$TARGET_DIR/.claude/skills/synthesizer"
 mkdir -p "$TARGET_DIR/.claude/skills/agent-improver/references"
@@ -32,6 +33,7 @@ mkdir -p "$TARGET_DIR/.agents/skills/maintenance"
 mkdir -p "$TARGET_DIR/.agents/skills/rescue"
 mkdir -p "$TARGET_DIR/.agents/skills/orchestrate"
 mkdir -p "$TARGET_DIR/.agents/skills/orchestrate-agents"
+mkdir -p "$TARGET_DIR/.agents/skills/orchestrate-tdd"
 mkdir -p "$TARGET_DIR/.agents/skills/run-pipeline"
 mkdir -p "$TARGET_DIR/.agents/skills/synthesizer"
 mkdir -p "$TARGET_DIR/.agents/skills/claude"
@@ -85,6 +87,7 @@ copy_if_missing "$SCRIPT_DIR/.claude/skills/orchestrate/SKILL.md" "$TARGET_DIR/.
 # synthesizer folds agent outputs into a Handoff. Like the phase skills these are
 # mirrored into .agents/skills/ (project + global) below for Codex discovery.
 copy_if_missing "$SCRIPT_DIR/.claude/skills/orchestrate-agents/SKILL.md" "$TARGET_DIR/.claude/skills/orchestrate-agents/SKILL.md"
+copy_if_missing "$SCRIPT_DIR/.claude/skills/orchestrate-tdd/SKILL.md" "$TARGET_DIR/.claude/skills/orchestrate-tdd/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/run-pipeline/SKILL.md" "$TARGET_DIR/.claude/skills/run-pipeline/SKILL.md"
 copy_if_missing "$SCRIPT_DIR/.claude/skills/synthesizer/SKILL.md" "$TARGET_DIR/.claude/skills/synthesizer/SKILL.md"
 
@@ -110,7 +113,7 @@ copy_if_missing "$SCRIPT_DIR/.agents/skills/claude/SKILL.md" "$TARGET_DIR/.agent
 # `codex` is NOT mirrored: codex is the runner, it never invokes a "codex skill"
 # to call itself. `claude` is excluded for the symmetric reason and because it
 # has no .claude/skills/ counterpart (see copy_if_missing above).
-for skill in bootstrap planner reviewer maintenance rescue orchestrate orchestrate-agents run-pipeline synthesizer; do
+for skill in bootstrap planner reviewer maintenance rescue orchestrate orchestrate-agents orchestrate-tdd run-pipeline synthesizer; do
   copy_if_different "$TARGET_DIR/.claude/skills/$skill/SKILL.md" "$TARGET_DIR/.agents/skills/$skill/SKILL.md"
 done
 
@@ -496,7 +499,7 @@ mirror_skill_to_home() {
   copy_if_different "$src" "$dst_dir/SKILL.md"
 }
 
-for skill in bootstrap planner reviewer maintenance rescue orchestrate orchestrate-agents run-pipeline synthesizer claude; do
+for skill in bootstrap planner reviewer maintenance rescue orchestrate orchestrate-agents orchestrate-tdd run-pipeline synthesizer claude; do
   src="$TARGET_DIR/.agents/skills/$skill/SKILL.md"
   [ -f "$src" ] || { echo "Warning: missing $src — skipping mirror" >&2; continue; }
   mirror_skill_to_home "$src" "$skill"

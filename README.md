@@ -281,6 +281,7 @@ Skills are the unit of executable contract. Each one lives in `.claude/skills/<n
 | `bootstrap`      | One-time repo adaptation; fills `.ai/project.yaml`                |
 | `planner`        | Triage → spec (if needed) → execution packet                      |
 | `orchestrate`    | Controller; dispatches every phase per `models.yaml`              |
+| `orchestrate-tdd` | Controller variant; enforces RED → GREEN → REFACTOR, runs the gate command itself |
 | `reviewer`       | Checks Handoff against packet, files verdict                      |
 | `rescue`         | Recovery packet after a failed `execute`                          |
 | `maintenance`    | Updates `memory.md`, `decisions.md`, `project.yaml`               |
