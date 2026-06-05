@@ -124,3 +124,48 @@ def test_sessions_list_merges_ide_transcripts_and_dashboard(running_server, serv
     assert item, data
     assert item[0]["state"] in ("mirror", "acquiring", "engine")
     assert item[0]["session_id"] == item[0]["sid"]
+
+
+def _read_sse(base_url, path, until: bytes, timeout=4):
+    """Open the SSE via a raw socket and read until `until` is seen (or timeout)."""
+    from urllib.parse import urlparse
+    import socket, time as _t
+    p = urlparse(base_url + path)
+    sock = socket.create_connection((p.hostname, p.port), timeout=5)
+    try:
+        sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {p.hostname}:{p.port}\r\n"
+                      f"Accept: text/event-stream\r\n\r\n").encode("utf-8"))
+        sock.settimeout(timeout)
+        buf = b""; deadline = _t.time() + timeout
+        while _t.time() < deadline:
+            try: chunk = sock.recv(4096)
+            except socket.timeout: break
+            if not chunk: break
+            buf += chunk
+            if until in buf: break
+        return buf
+    finally:
+        sock.close()
+
+
+def test_session_stream_tails_jsonl_in_mirror(running_server, serve_module, tmp_path, monkeypatch):
+    projects = tmp_path / ".claude" / "projects"
+    slug = str(serve_module.ROOT).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
+    (projects / slug).mkdir(parents=True)
+    sid = "12345678-1234-1234-1234-1234abcd0007"
+    (projects / slug / f"{sid}.jsonl").write_text(
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ola do IDE"}]}}\n',
+        encoding="utf-8")
+    monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    buf = _read_sse(running_server, f"/api/sessions/{sid}/stream", until=b"ola do IDE")
+    assert b"text/event-stream" in buf.lower()
+    assert b"ola do IDE" in buf
+    _, _, body = buf.partition(b"\r\n\r\n")
+    frames = [ln[len(b"data:"):].strip() for ln in body.split(b"\n") if ln.startswith(b"data:")]
+    assert frames, body
+    first = serve_module.json.loads(frames[0])
+    assert first["kind"] == "state_change" and first["state"] == "mirror"
+
+def test_session_stream_404_unknown(running_server):
+    status, body, _ = _http("GET", f"{running_server}/api/sessions/00000000-0000-0000-0000-000000000000/stream")
+    assert status == 404, body

@@ -98,6 +98,7 @@ BOUND_PORT = PORT
 # once at import time drops the routing overhead to a single dispatch
 # table lookup + a hashed regex execution.
 _RE_TRANSCRIPT_STREAM = re.compile(r"/api/transcripts/([0-9a-fA-F-]+)/stream")
+_RE_SESSION_STREAM = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/stream")
 _RE_AGENT_PROPOSAL_GET = re.compile(r"/api/agents/proposals/([A-Za-z0-9_\-]+)")
 _RE_SKILL_PROPOSAL_GET = re.compile(r"/api/skills/proposals/([A-Za-z0-9_\-]+)")
 _RE_JOB_STREAM = re.compile(r"/api/jobs/([0-9a-f-]+)/stream")
@@ -379,6 +380,105 @@ MAX_SSE_SESSION_S = 1800  # 30 minutes
 # at 4 MiB and tail from the last line boundary inside that window — live tail
 # then picks up from EOF so new records still arrive.
 MAX_TRANSCRIPT_CATCHUP_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+
+def _jsonl_line_to_session_event(line: str, seq: int) -> "dict | None":
+    """Normalize one JSONL line from a Claude transcript into a SessionEvent dict.
+
+    Returns None for lines that should be skipped (empty, parse errors, unknown
+    types). The seq counter is supplied by the caller and incremented externally.
+
+    SessionEvent schema:
+      {"seq": int, "kind": str, "role": str|null, "text": str|null,
+       "partial": bool, "state": str|null}
+    """
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+
+    msg_type = obj.get("type")
+    message = obj.get("message") or {}
+    role = message.get("role") or obj.get("role")
+
+    # user / assistant message lines
+    if msg_type in ("user", "assistant"):
+        content = message.get("content")
+        text: "str | None" = None
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            # Concatenate all text blocks; handle tool_use / tool_result blocks.
+            text_parts = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    text_parts.append(block.get("text") or "")
+                elif btype == "tool_use":
+                    # Emit a separate tool_use event.
+                    return {
+                        "seq": seq,
+                        "kind": "tool_use",
+                        "role": role,
+                        "text": block.get("name"),
+                        "partial": False,
+                        "state": None,
+                    }
+                elif btype == "tool_result":
+                    result_content = block.get("content")
+                    result_text: "str | None" = None
+                    if isinstance(result_content, str):
+                        result_text = result_content
+                    elif isinstance(result_content, list):
+                        result_text = " ".join(
+                            b.get("text") or "" for b in result_content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    return {
+                        "seq": seq,
+                        "kind": "tool_result",
+                        "role": role,
+                        "text": result_text,
+                        "partial": False,
+                        "state": None,
+                    }
+            text = "".join(text_parts) if text_parts else None
+        return {
+            "seq": seq,
+            "kind": "message",
+            "role": role or msg_type,
+            "text": text,
+            "partial": False,
+            "state": None,
+        }
+
+    # system / init lines
+    if msg_type in ("system", "init"):
+        content = obj.get("content") or message.get("content") or ""
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text") or "" for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        return {
+            "seq": seq,
+            "kind": "system",
+            "role": "system",
+            "text": content if isinstance(content, str) else None,
+            "partial": False,
+            "state": None,
+        }
+
+    # Unknown or empty type — skip
+    return None
+
 
 # Directories the fallback ``ROOT.rglob("*")`` walk in ``_handle_files_list``
 # must not descend into. Without this, the autocomplete endpoint walks the
@@ -5914,6 +6014,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if m:
             self._handle_transcript_stream(m.group(1))
             return
+        m = _RE_SESSION_STREAM.fullmatch(parsed.path)
+        if m:
+            self._handle_session_stream(m.group(1))
+            return
         if parsed.path == "/api/skills":
             self._handle_skills_list()
             return
@@ -8657,6 +8761,182 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 fh.close()
             except Exception as e:
                 print(f"[serve] transcript stream close failed: {e}", flush=True)
+
+    def _handle_session_stream(self, session_id: str) -> None:
+        """SSE: unified SessionEvent stream for a session.
+
+        Emits a leading state_change frame with the session's current registry
+        state, then tails the session's .jsonl normalizing each line via
+        _jsonl_line_to_session_event.
+
+        For Phase 1 both mirror/acquiring and engine states fall through to the
+        same .jsonl tail path — the engine writes to the same file, so the
+        stream stays consistent. The engine path is validated manually (Task 10).
+        """
+        if _browser_cross_origin_blocked(self.headers):
+            self._json(403, {"error": "origin not allowed"})
+            return
+
+        # Validate that session_id is a UUID.
+        try:
+            uuid.UUID(session_id)
+        except ValueError:
+            self._json(404, {"error": "session not found", "session_id": session_id})
+            return
+
+        # Discover the .jsonl file the same way _handle_transcript_stream does.
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        path = (tdir / f"{session_id}.jsonl") if tdir else None
+
+        # Also accept a session that is only in the registry (engine-started, no
+        # file yet) — fall back to a 404 only when neither source is available.
+        with SESSION_REGISTRY._lock:
+            reg_session = SESSION_REGISTRY._sessions.get(session_id)
+            reg_state = reg_session.state.value if reg_session is not None else None
+
+        if (path is None or not path.is_file()) and reg_state is None:
+            self._json(404, {"error": "session not found", "session_id": session_id})
+            return
+
+        # Use registry state when available; default to "mirror".
+        state_label = reg_state if reg_state is not None else "mirror"
+
+        # If we have a registry entry but no file yet, try again via registry.
+        if path is None or not path.is_file():
+            if reg_session is not None and reg_session.jsonl_path:
+                path = Path(reg_session.jsonl_path)
+            if path is None or not path.is_file():
+                self._json(404, {"error": "session not found", "session_id": session_id})
+                return
+
+        try:
+            fh = path.open("rb")
+        except OSError as e:
+            self._json(500, {"error": str(e)})
+            return
+
+        def _open_stream_file():
+            return path.open("rb")
+
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+        except OSError:
+            try:
+                fh.close()
+            except OSError:
+                pass
+            return
+
+        # Leading state_change frame — always emitted first.
+        state_event = json.dumps({
+            "seq": 0,
+            "kind": "state_change",
+            "role": None,
+            "text": None,
+            "partial": False,
+            "state": state_label,
+        })
+        if not self._write_sse_frame(state_event):
+            try:
+                fh.close()
+            except OSError:
+                pass
+            return
+
+        # Catch-up: flush existing content, capped to avoid large memory use.
+        try:
+            fh.seek(0, 2)  # SEEK_END
+            size = fh.tell()
+            truncated = size > MAX_TRANSCRIPT_CATCHUP_BYTES
+            if truncated:
+                fh.seek(size - MAX_TRANSCRIPT_CATCHUP_BYTES)
+                fh.readline()  # discard partial first line
+            else:
+                fh.seek(0)
+            existing = fh.read()
+            pos = fh.tell()
+        except OSError:
+            try:
+                fh.close()
+            except Exception as e:
+                print(f"[serve] session stream close failed: {e}", flush=True)
+            return
+
+        seq = 1
+        if existing:
+            for raw_line in existing.decode("utf-8", "replace").replace("\r\n", "\n").split("\n"):
+                evt = _jsonl_line_to_session_event(raw_line, seq)
+                if evt is None:
+                    continue
+                if not self._write_sse_frame(json.dumps(evt)):
+                    try:
+                        fh.close()
+                    except Exception as e:
+                        print(f"[serve] session stream close failed: {e}", flush=True)
+                    return
+                seq += 1
+
+        # Live tail: poll for appended bytes, normalize each new line.
+        session_start = time.monotonic()
+        last_size = pos
+        idle_ticks = 0
+        max_idle_ticks = 240  # ~4 minutes at 1 s; client will reconnect
+        try:
+            while idle_ticks < max_idle_ticks:
+                if time.monotonic() - session_start > MAX_SSE_SESSION_S:
+                    self._write_sse_event("end", '{"reason":"max_session"}')
+                    return
+                try:
+                    readable, _, _ = select.select([self.connection], [], [], 1.0)
+                except (OSError, ValueError):
+                    return
+                if readable and self._sse_client_gone():
+                    return
+                try:
+                    st = path.stat()
+                except OSError:
+                    break
+                if st.st_size < last_size:
+                    try:
+                        fh.close()
+                        fh = _open_stream_file()
+                    except OSError:
+                        break
+                    last_size = 0
+                if st.st_size > last_size:
+                    idle_ticks = 0
+                    try:
+                        fh.seek(last_size)
+                        chunk = fh.read(st.st_size - last_size)
+                    except OSError:
+                        break
+                    text = chunk.decode("utf-8", "replace").replace("\r\n", "\n")
+                    for raw_line in text.split("\n"):
+                        evt = _jsonl_line_to_session_event(raw_line, seq)
+                        if evt is None:
+                            continue
+                        if not self._write_sse_frame(json.dumps(evt)):
+                            return
+                        seq += 1
+                    last_size = st.st_size
+                else:
+                    idle_ticks += 1
+                    try:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        return
+            self._write_sse_event("end", "{}")
+        finally:
+            try:
+                fh.close()
+            except Exception as e:
+                print(f"[serve] session stream close failed: {e}", flush=True)
 
     def _handle_sessions_list(self) -> None:
         """Return a unified list merging IDE transcript sessions and in-memory
