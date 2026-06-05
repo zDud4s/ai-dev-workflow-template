@@ -313,12 +313,12 @@
       t.pane.classList.toggle("collapsed", !!collapsed);
       const btn = t.pane.querySelector(".expand-btn");
       if (btn) btn.textContent = collapsed ? "expand" : "collapse";
-      // Lazy transcript streaming: collapsed transcript panes don't hold
+      // Lazy streaming: collapsed transcript and session panes don't hold
       // an EventSource (which would consume one of the browser's ~6
       // HTTP/1.1 connection slots per origin). Expand attaches the
-      // stream; collapse releases it. See termOpenTranscript for the
-      // rationale.
-      if (t.kind === "transcript") {
+      // stream; collapse releases it. See termOpenTranscript and
+      // termOpenSession for the rationale.
+      if (t.kind === "transcript" || t.kind === "session") {
         if (collapsed) {
           if (typeof t.closeStream === "function") t.closeStream();
         } else {
@@ -3960,7 +3960,6 @@
         task: "session " + sid,
         kind: "session",
         state: "mirror",             // updated by the first state_change SSE frame
-        jsonBuf: [],
         currentAssistant: null,
         toolUseEls: new Map(),
       };
@@ -3999,41 +3998,69 @@
         }
       });
 
-      // Open the SSE stream immediately (session panes are never lazy —
-      // unlike transcript mirrors, they're opened intentionally and the
-      // operator expects to see live content straight away).
-      const es = new EventSource("/api/sessions/" + encodeURIComponent(sid) + "/stream");
-      t.source = es;
-
-      es.onopen = () => {
-        termSetPillState(statusPill, "running", "connecting");
-        termSetActivity(t, "connecting…", "busy");
+      // Lazy SSE streaming — mirrors the transcript pane pattern so session panes
+      // don't consume one of the browser's ~6 HTTP/1.1 connection slots while
+      // collapsed. The /api/sessions/<sid>/stream endpoint re-sends a leading
+      // state_change frame then re-tails the .jsonl from the start on every new
+      // connection, so a naive reopen would duplicate the conversation. We avoid
+      // that by clearing the rendered body and resetting currentAssistant / toolUseEls
+      // in openStream before subscribing — the fresh replay overwrites nothing.
+      // termSetCollapsed wires expand -> openStream / collapse -> closeStream.
+      t.openStream = () => {
+        if (t.source) return;
+        // Clear prior rendered content and reset accumulation state so the
+        // server's replay-from-start doesn't duplicate the conversation.
+        t.body.innerHTML = "";
+        t.currentAssistant = null;
+        t.toolUseEls = new Map();
+        // Reset auto-follow so the fresh replay scrolls from the top smoothly.
+        t.autoFollowBottom = true;
+        t.firstScroll = true;
+        const es = new EventSource("/api/sessions/" + encodeURIComponent(sid) + "/stream");
+        t.source = es;
+        es.onopen = () => {
+          termSetPillState(statusPill, "running", "connecting");
+          termSetActivity(t, "connecting…", "busy");
+        };
+        es.onmessage = (ev) => {
+          let obj;
+          try { obj = JSON.parse(ev.data); } catch (_) { return; }
+          termHandleSessionEvent(t, obj);
+        };
+        es.addEventListener("end", () => {
+          try { es.close(); } catch (_) {}
+          t.source = null;
+          termSetPillState(statusPill, "done", "ended");
+          termSetActivity(t, "ended", "ready");
+          // Keep composer enabled — operator can still send; backend will
+          // re-acquire / re-engine on the next /input call.
+        });
+        es.onerror = () => {
+          // Transient disconnect: don't mark the pane dead while the browser
+          // is still reconnecting (readyState === CONNECTING). Only surface
+          // the disconnect when the browser has given up (CLOSED).
+          if (es.readyState !== EventSource.CLOSED) return;
+          termSetPillState(statusPill, "warn", "disconnected");
+          termSetActivity(t, "disconnected", "ended");
+          t.source = null;
+        };
       };
-
-      es.onmessage = (ev) => {
-        let obj;
-        try { obj = JSON.parse(ev.data); } catch (_) { return; }
-        termHandleSessionEvent(t, obj);
-      };
-
-      es.addEventListener("end", () => {
-        try { es.close(); } catch (_) {}
+      t.closeStream = () => {
+        if (!t.source) return;
+        try { t.source.close(); } catch (_) {}
         t.source = null;
-        termSetPillState(statusPill, "done", "ended");
-        termSetActivity(t, "ended", "ready");
-        // Keep composer enabled — operator can still send; backend will
-        // re-acquire / re-engine on the next /input call.
-      });
-
-      es.onerror = () => {
-        // Transient disconnect: don't mark the pane dead while the browser
-        // is still reconnecting (readyState === CONNECTING). Only surface
-        // the disconnect when the browser has given up (CLOSED).
-        if (es.readyState !== EventSource.CLOSED) return;
-        termSetPillState(statusPill, "warn", "disconnected");
-        termSetActivity(t, "disconnected", "ended");
-        t.source = null;
+        termSetPillState(statusPill, "done", "paused");
+        termSetActivity(t, "paused (expand to resume)", "ready");
       };
+
+      // Open stream immediately only if the pane is NOT starting collapsed.
+      // Collapsed panes stay connection-free until expanded by the operator.
+      if (!pane.classList.contains("collapsed")) {
+        t.openStream();
+      } else {
+        termSetPillState(statusPill, "done", "paused");
+        termSetActivity(t, "paused (expand to resume)", "ready");
+      }
 
       termRenderEmptyState();
       persistOpenPanes();

@@ -41,3 +41,15 @@ def test_session_pane_send_is_wired():
     # composer always-on path: send goes through termSendSession, not the old fork gate
     assert "termSendSession" in src
     assert "termOpenSession" in src
+
+
+def test_session_pane_closes_stream_on_collapse():
+    src = js()
+    # session panes must participate in the lazy-stream collapse lifecycle
+    # (close EventSource on collapse) like transcript panes, to avoid leaking
+    # one of the browser's ~6 HTTP/1.1 connections per collapsed pane.
+    assert "closeStream" in src
+    # termSetCollapsed must handle the session kind, not only transcript
+    import re as _re
+    # crude but effective: the collapse handler references "session" alongside the stream toggle
+    assert _re.search(r'kind\s*===\s*"session"', src), "termSetCollapsed should handle kind === 'session'"
