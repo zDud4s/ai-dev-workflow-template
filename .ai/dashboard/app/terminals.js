@@ -3812,6 +3812,265 @@
       persistOpenPanes();
     }
 
+    // ----- Unified session panes (Tasks 5–9) -----
+    // A session pane connects directly to the new /api/sessions/<sid>/stream
+    // SSE endpoint and renders a live, writable conversation. Unlike the
+    // read-only IDE transcript mirror (termOpenTranscript), the composer is
+    // ALWAYS enabled — the whole point of the unified session API is that the
+    // operator can type at any time regardless of which process "owns" the
+    // session (mirror / acquiring / engine states from the backend).
+    //
+    // SessionEvent schema (one JSON object per SSE data: frame):
+    //   { seq, kind, role, text, partial, state }
+    //   kind values: "message" | "tool_use" | "tool_result" | "system" | "state_change"
+    //   The FIRST frame is always a state_change carrying the current state.
+    //   "message" frames carry role ("user" | "assistant" | "system") + text.
+
+    // Update the session-state chip in the pane header.
+    // State strings from the backend: "mirror" | "acquiring" | "engine".
+    // Map them to English labels and pill CSS state classes so the operator
+    // can see at a glance who is driving the session.
+    function termSessionChipUpdate(t) {
+      const pill = t.pane && t.pane.querySelector(".status-pill");
+      if (!pill) return;
+      const state = t.state || "mirror";
+      if (state === "mirror") {
+        termSetPillState(pill, "done", "mirror");
+        termSetActivity(t, "idle", "ready");
+      } else if (state === "acquiring") {
+        termSetPillState(pill, "running", "acquiring…");
+        termSetActivity(t, "acquiring…", "busy");
+      } else if (state === "engine") {
+        termSetPillState(pill, "running", "live");
+        termSetActivity(t, "live", "busy");
+      } else {
+        // Unknown future state — show it as-is with a neutral style.
+        termSetPillState(pill, "warn", state);
+        termSetActivity(t, state, "ready");
+      }
+    }
+
+    // Handle one parsed SessionEvent object from the SSE stream.
+    // Reuses the existing chat-pane rendering helpers so session bubbles
+    // look identical to regular chat turns.
+    function termHandleSessionEvent(t, ev) {
+      if (!ev || typeof ev !== "object") return;
+      const kind = ev.kind;
+      if (kind === "state_change") {
+        // Store current backend state and refresh the header chip.
+        // Do NOT render as a bubble — state transitions are metadata,
+        // not conversation content.
+        t.state = ev.state || t.state;
+        termSessionChipUpdate(t);
+        return;
+      }
+      if (kind === "message") {
+        const role = ev.role || "system";
+        const text = ev.text || "";
+        if (role === "user") {
+          termRenderUserMessage(t, text);
+        } else if (role === "assistant") {
+          // Partial frames arrive during streaming; accumulate them into
+          // the current assistant block exactly like the chat-pane path.
+          termAppendAssistantText(t, text);
+          if (!ev.partial) {
+            // Turn boundary: next assistant frame starts a fresh block.
+            t.currentAssistant = null;
+          }
+        } else {
+          // system / unknown roles get a neutral system note.
+          const note = document.createElement("div");
+          note.className = "msg system";
+          note.textContent = text;
+          t.body.appendChild(note);
+        }
+        termAutoScroll(t);
+        return;
+      }
+      if (kind === "tool_use") {
+        // Render a collapsible tool pill via the shared helper.
+        // ev.id / ev.name / ev.input mirror the transcript record shape.
+        termAddToolPill(t, ev.id || "", ev.name || "tool", ev.input || {});
+        termAutoScroll(t);
+        return;
+      }
+      if (kind === "tool_result") {
+        // Mark the matching pill done/error.
+        termMarkToolResult(t, ev.tool_use_id || ev.id || "", !!ev.is_error, ev.content || ev.output || "");
+        termAutoScroll(t);
+        return;
+      }
+      if (kind === "system") {
+        const note = document.createElement("div");
+        note.className = "msg system";
+        note.textContent = ev.text || "";
+        t.body.appendChild(note);
+        termAutoScroll(t);
+        return;
+      }
+      // Unknown event kinds: silently ignore to stay forward-compatible.
+    }
+
+    function termOpenSession(sid) {
+      const paneKey = "session:" + sid;
+      if (TERMS.has(paneKey)) return;
+      const grid = $("#terms-grid");
+      const pane = document.createElement("div");
+      pane.className = "term-pane focus";
+      pane.dataset.jobId = paneKey;
+      pane.innerHTML = `
+        <div class="term-head">
+          <span class="pill running status-pill" title="session ${escape(sid)}">connecting</span>
+          <span class="task" title="session ${escape(sid)}">session ${escape(sid.slice(0, 8))}…</span>
+          <span class="activity" title="current activity in this pane">connecting…</span>
+          <span class="id">${escape(sid.slice(0, 8))}</span>
+          <span class="actions">
+            <button class="expand-btn" title="Show or hide this pane">expand</button>
+            <button class="close-btn" title="Close this pane">close</button>
+          </span>
+        </div>
+        <div class="term-body chat" tabindex="0"></div>
+        <div class="term-foot">
+          <textarea class="stdin-input" rows="1" autocomplete="off" placeholder="type a message · Enter sends · Shift+Enter newline"></textarea>
+          <button class="send-btn">send</button>
+        </div>
+      `;
+      grid.appendChild(pane);
+
+      const body = pane.querySelector(".term-body");
+      const input = pane.querySelector(".stdin-input");
+      const sendBtn = pane.querySelector(".send-btn");
+      const statusPill = pane.querySelector(".status-pill");
+
+      // Auto-grow the textarea up to the shared cap so multi-line
+      // prompts don't get clipped (same pattern as chat / transcript).
+      const autosize = () => {
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, COMPOSER_AUTOSIZE_MAX_PX) + "px";
+      };
+      input.addEventListener("input", autosize);
+
+      // Build the term object. kind="session" so persistence and layout
+      // code distinguishes it from chat / transcript / terminal.
+      const t = {
+        jobId: paneKey,
+        sid,                         // raw session UUID (no "session:" prefix)
+        pane, body, input, sendBtn,
+        source: null,
+        task: "session " + sid,
+        kind: "session",
+        state: "mirror",             // updated by the first state_change SSE frame
+        jsonBuf: [],
+        currentAssistant: null,
+        toolUseEls: new Map(),
+      };
+      TERMS.set(paneKey, t);
+
+      // Start collapsed in list layout; expanded in others (matches chat-pane behaviour).
+      if (termGetLayout() === "list") pane.classList.add("collapsed");
+
+      termInitAutoFollow(t);
+
+      // Header click toggles expand/collapse.
+      pane.querySelector(".term-head").addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        termToggleCollapsed(t);
+      });
+      pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        termToggleCollapsed(t);
+      });
+      pane.querySelector(".close-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        termClose(paneKey);
+      });
+      pane.addEventListener("click", () => {
+        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
+        pane.classList.add("focus");
+      });
+
+      // Composer wiring — always enabled (no fork gate, no dead-pane check).
+      const doSend = () => termSendSession(t, t.input.value);
+      sendBtn.addEventListener("click", doSend);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          doSend();
+        }
+      });
+
+      // Open the SSE stream immediately (session panes are never lazy —
+      // unlike transcript mirrors, they're opened intentionally and the
+      // operator expects to see live content straight away).
+      const es = new EventSource("/api/sessions/" + encodeURIComponent(sid) + "/stream");
+      t.source = es;
+
+      es.onopen = () => {
+        termSetPillState(statusPill, "running", "connecting");
+        termSetActivity(t, "connecting…", "busy");
+      };
+
+      es.onmessage = (ev) => {
+        let obj;
+        try { obj = JSON.parse(ev.data); } catch (_) { return; }
+        termHandleSessionEvent(t, obj);
+      };
+
+      es.addEventListener("end", () => {
+        try { es.close(); } catch (_) {}
+        t.source = null;
+        termSetPillState(statusPill, "done", "ended");
+        termSetActivity(t, "ended", "ready");
+        // Keep composer enabled — operator can still send; backend will
+        // re-acquire / re-engine on the next /input call.
+      });
+
+      es.onerror = () => {
+        // Transient disconnect: don't mark the pane dead while the browser
+        // is still reconnecting (readyState === CONNECTING). Only surface
+        // the disconnect when the browser has given up (CLOSED).
+        if (es.readyState !== EventSource.CLOSED) return;
+        termSetPillState(statusPill, "warn", "disconnected");
+        termSetActivity(t, "disconnected", "ended");
+        t.source = null;
+      };
+
+      termRenderEmptyState();
+      persistOpenPanes();
+    }
+
+    // POST text to /api/sessions/<sid>/input. The SSE stream will echo back
+    // the user turn + the assistant reply, so we intentionally do NOT render
+    // the bubble here — the stream renders it. On error we surface a toast
+    // and an inline note (matches the termSend error path).
+    async function termSendSession(t, text) {
+      if (!t || !t.sid) return;
+      const trimmed = (text || "").trim();
+      if (!trimmed) return;
+      // In-flight latch: Enter keydown can race with a click; first one wins.
+      if (t._sessionSendInFlight) return;
+      t._sessionSendInFlight = true;
+      t.sendBtn.disabled = true;
+      try {
+        await postJson("/api/sessions/" + encodeURIComponent(t.sid) + "/input", { text: trimmed });
+        // Clear the composer on success. The SSE stream will render the turn.
+        t.input.value = "";
+        if (t.input.tagName === "TEXTAREA") t.input.style.height = "";
+      } catch (e) {
+        const err = document.createElement("div");
+        err.className = "msg system";
+        err.style.color = "var(--bad)";
+        err.textContent = "[send failed: " + e.message + "]";
+        t.body.appendChild(err);
+        termAutoScroll(t);
+        setMsg("#term-msg", "err", "Send failed: " + e.message, TERM_MSG_DURATION_MS);
+      } finally {
+        t._sessionSendInFlight = false;
+        t.sendBtn.disabled = false;
+        try { t.input.focus(); } catch (_) {}
+      }
+    }
+
     function termHandleTranscriptChunk(t, chunk) {
       // Same array buffer pattern as the codex/chat handlers — push the
       // delta and process completed lines in one pass instead of repeatedly
