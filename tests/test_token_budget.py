@@ -17,7 +17,8 @@ BUDGETS = [
     # orchestrate: original 130L/11000B. Bytes bumped for metrics logging section
     # (PR 2) which adds the JSONL schema (compact single-line) consumed by the
     # PR 3 adaptive scorer. Schema cannot be split without losing parser clarity.
-    (".claude/skills/orchestrate/SKILL.md", 130, 12000),
+    # and codex-dispatched token-capture clarification.
+    (".claude/skills/orchestrate/SKILL.md", 132, 12400),
     (".claude/skills/codex/SKILL.md",        60,  5000),
     # gemini SKILL.md never shipped — placeholder budget removed so the
     # test stops failing on a non-existent file. Restore the row when the

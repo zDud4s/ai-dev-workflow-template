@@ -117,7 +117,7 @@ Schema (one JSON object per line, compact, no pretty-print):
 {"ts":"<ISO 8601 UTC, Z suffix>","task_slug":"<slug>","phase":"<plan|execute|review|rescue|maintenance>","tool":"<tool>","model":"<model>","reasoning_effort":"<low|medium|high|xhigh|null>","size":"<trivial|small|medium|large|null>","risk":"<low|elevated|null>","budget":"<low|medium|high|null>","exit_code":<int>,"duration_ms":<int>,"handoff_complete":<bool|null>,"review_verdict":"<approve|request-changes|escalate|null>","retries":<int>,"tokens_in":<int|null>,"tokens_out":<int|null>}
 ```
 
-Field rules: `ts` at subprocess return (or inline completion); `task_slug` lowercased+hyphenated, same across phases; `tool`/`model`/`reasoning_effort` post-`auto_overrides`; `size`/`risk`/`budget` `null` for `plan`; `exit_code` `0` on inline success; `duration_ms` wall-clock from dispatch start; `handoff_complete` only for `execute` (else `null`); `review_verdict` only for `review` (else `null`); `retries` = recovery resumes + review send-backs; `tokens_*` `null` if the tool doesn't print them.
+Field rules: `ts` at subprocess return (or inline completion); `task_slug` lowercased+hyphenated, same across phases; `tool`/`model`/`reasoning_effort` post-`auto_overrides`; `size`/`risk`/`budget` `null` for `plan`; `exit_code` `0` on inline success; `duration_ms` wall-clock from dispatch start; `handoff_complete` only for `execute` (else `null`); `review_verdict` only for `review` (else `null`); `retries` = recovery resumes + review send-backs; `tokens_*` `null` if the tool doesn't print them — but codex-dispatched phases MUST populate both from codex's printed usage (already parseable).
 
 Append exactly one line per dispatched phase, never overwrite or reorder. Create the file on first append.
 
