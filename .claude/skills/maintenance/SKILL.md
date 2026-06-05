@@ -78,7 +78,7 @@ Append-only memory accumulates duplicates, contradictions, stale facts. Trigger 
    - both undated → surface for human; don't silently pick
 5. **Archive obsolete.** Subject gone from repo, or point-in-time claim now stale → MOVE to `.ai/memory-archive.md` (append ` (archived: <today> <reason>)`), NOT delete. List each.
 6. **Re-sort.** By topic alphabetically, then date within topic.
-7. **Cap.** If still > 150 lines, trim oldest within each topic — never conflict markers.
+7. **Cap.** If still > threshold, trim oldest **non-pinned** entries within each topic first — never a pinned entry for size alone, never conflict markers. **Pinned** = cross-cutting governance topics, exempt from this size-cap and removable only via step 5 (genuinely disproven/obsolete): `[git]`, `[boundaries]`, `[process]`, `[security]`, `[workflow]`, `[memory]`, `[dispatch]`.
 
 ### Output
 

@@ -32,8 +32,9 @@ BUDGETS = [
     # maintenance: Round 2 expanded the "Immutable core" enumeration to
     # cover all skills + future skills explicitly (closes D.P1-3). +1L
     # over the prior 175-line ceiling — bump by 5L + 600B for headroom
-    # against the next density pass.
-    (".claude/skills/maintenance/SKILL.md", 180, 9000),
+    # against the next density pass. Raised again for pinned-protection
+    # guidance guarding cross-cutting governance facts during size caps.
+    (".claude/skills/maintenance/SKILL.md", 185, 9600),
     # plan.md: bumped from 35L/1500B to 45L/2400B in Round 2 to declare the
     # `Problem summary`, `Memory tags`, `## Execution packet(s)`, and
     # `## Selected models` fields the planner emits but the template was
