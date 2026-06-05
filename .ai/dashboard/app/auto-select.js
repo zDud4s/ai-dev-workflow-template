@@ -89,7 +89,7 @@
           `<td class="as-tool">${escape(c.tool)}</td>` +
           `<td class="as-model">${escape(c.model)}</td>` +
           `<td class="as-effort">${eff}</td>` +
-          `<td class="as-num">${c.samples}</td>` +
+          `<td class="as-num">${escape(c.samples)}</td>` +
           `<td class="as-num ${srClass(c.success_rate)}">${sr}</td>` +
           `<td class="as-num">${formatMs(c.mean_duration_ms)}</td>` +
           `<td class="as-num"><span class="as-score">${scoreBar(c.score)}<span>${sc}</span></span></td>` +

@@ -3751,21 +3751,12 @@
       .split { grid-template-columns: 1fr; }
     }
 
-    /* ---------------- Portrait / orientation responsive ---------------- */
-    @media (max-width: 1100px) and (orientation: portrait) {
-      .split { grid-template-columns: 1fr; }
-
-      #toast-root {
-        left: 50%;
-        max-width: min(560px, calc(100vw - 32px));
-      }
-
-      .update-banner {
-        left: 50%;
-        transform: translateX(-50%);
-        max-width: calc(100vw - 32px);
-      }
-    }
+    /* ---------------- Portrait / orientation responsive ----------------
+       The portrait layout (.split → 1fr, recentred #toast-root / .update-banner)
+       is handled by the sidebar-collapse query above
+       (@media (max-width: 920px), (max-width: 1100px) and (orientation: portrait)),
+       whose portrait arm applies these exact rules with identical values. A
+       separate block here would be dead duplication / a second source of truth. */
 
     @media (max-width: 768px) {
       .terms-grid.layout-split,
@@ -4961,7 +4952,7 @@
     #view-agent-orchestrations .pill-pipeline {
       font-size: 11px;
       padding: 2px 6px;
-      background: var(--bg-soft);
+      background: var(--bg-inset);
       color: var(--text-dim);
     }
     #view-agent-orchestrations .agent-run-card[data-status="success"] {
@@ -5503,6 +5494,14 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
   fill: var(--surf-3);
   stroke: var(--accent);
   stroke-dasharray: 4 3;
+}
+/* Duplicate-id node: kept visible/editable but flagged as an error so the
+   operator can rename it to a unique id (it's isolated from the graph until
+   then). */
+#pipeline-editor-modal .dag-node-dup .dag-node-rect {
+  fill: var(--bad-bg);
+  stroke: var(--bad);
+  stroke-dasharray: 3 2;
 }
 #pipeline-editor-modal .dag-node-fixed-label {
   font-family: var(--ff-mono);

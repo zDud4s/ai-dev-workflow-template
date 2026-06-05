@@ -603,7 +603,14 @@
       </div>`;
     }
 
+    // Monotonic epoch for openProposalModal — like _skillDetailEpoch, it
+    // ensures the latest open wins when two opens for different ids race.
+    // _currentProposalId alone is insufficient: a slower fetch could resolve
+    // last and overwrite the modal body with an earlier proposal.
+    var _openProposalEpoch = 0;
+
     async function openProposalModal(id) {
+      const myEpoch = ++_openProposalEpoch;
       _currentProposalId = id;
       const modal = $("#proposal-modal");
       if (!modal) return;  // partial-DOM bail — modal scaffold missing
@@ -627,6 +634,9 @@
         const r = await fetch("/api/skills/proposals/" + encodeURIComponent(id), { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const p = await r.json();
+        // A newer openProposalModal won the race during our awaits — drop this
+        // stale response rather than overwriting the now-current modal body.
+        if (myEpoch !== _openProposalEpoch) return;
         const isDraft = (p.kind === "draft");
         if (titleEl) titleEl.textContent =
           (isDraft ? "Draft new skill · " : "Improve · ") + (p.skill || id);
@@ -731,6 +741,11 @@
         setMsg("#proposal-msg", "ok", `Proposal ${decision}ed`, 4000);
         await loadSkillProposals();
         await loadSkills();  // refresh metrics + summary in case a skill changed
+        // Re-check after the refresh awaits: the user may have opened a
+        // DIFFERENT proposal while loadSkillProposals/loadSkills were in
+        // flight. Without this, the scheduled close would tear down the
+        // now-current modal. Mirrors decideAgentProposal in agents.js.
+        if (epoch !== _decideProposalEpoch || propId !== _currentProposalId) return;
         setTimeout(closeProposalModal, PROPOSAL_AUTO_CLOSE_MS);
       } catch (e) {
         // Same guard on error path — don't flip a different modal's buttons.

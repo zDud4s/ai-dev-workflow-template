@@ -245,7 +245,7 @@
         + '</span>'
         + '<div class="update-banner-body">'
         +   '<strong class="update-banner-title">New workflow version available</strong>'
-        +   '<span class="update-banner-meta">upstream ' + shortUp + ' · installed ' + shortCur + '</span>'
+        +   '<span class="update-banner-meta">upstream ' + escape(shortUp) + ' · installed ' + escape(shortCur) + '</span>'
         + '</div>'
         + '<button type="button" class="update-banner-action">View update</button>'
         + '<button type="button" class="update-banner-close" aria-label="Dismiss until next version" title="Dismiss until next version">×</button>';

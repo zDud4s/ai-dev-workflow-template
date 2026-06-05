@@ -376,6 +376,10 @@
     }
 
     var _tokenUsageInFlight = false;
+    // Set when a refresh signal arrives mid-fetch; the finally re-arms a
+    // trailing refresh so a post-turn quota update isn't silently dropped
+    // until the next 60s poll (mirrors loadJobs' "pending" rerun pattern).
+    var _tokenUsageRerun = false;
     var _tokenUsageLastFetchAt = 0;
     var _tokenUsagePendingTimer = null;
     // Minimum gap between /api/usage/total fetches when refresh is
@@ -442,7 +446,7 @@
       // scheduleTokenUsageRefresh() on turn-complete. Without this guard a
       // slow /api/usage/total would stack callers and overwrite each
       // other's results.
-      if (_tokenUsageInFlight) return;
+      if (_tokenUsageInFlight) { _tokenUsageRerun = true; return; }
       _tokenUsageInFlight = true;
       _tokenUsageLastFetchAt = Date.now();
       const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
@@ -483,6 +487,13 @@
         const claudeModelsEl = document.getElementById("ov-rl-claude-models");
         const metaEl = document.getElementById("ov-rl-meta");
         const metaBits = [];
+        // Null-guarded setters for the #ov-rl-* strip, matching the null-guard
+        // convention used elsewhere in this file. If markup drops one of these
+        // nodes, skip that write rather than throwing into the outer catch,
+        // which would mask the real (missing-element) cause behind a generic
+        // "token usage failed" toast.
+        const setRLHtml = (el, html) => { if (el) el.innerHTML = html; };
+        const setRLText = (el, txt) => { if (el) el.textContent = txt; };
 
         // Topbar usage bars. The cards above show the full breakdown; the
         // header shows just the 5h utilization per tool as an at-a-glance
@@ -526,16 +537,16 @@
           const fh = d.five_hour;
           const sd = d.seven_day;
           if (fh) {
-            claude5hEl.innerHTML = `<strong>${formatPct(fh.utilization)}</strong> <span style="color:var(--fg-dim);font-size:11px">${formatResetIn(fh.resets_at)}</span>`;
+            setRLHtml(claude5hEl, `<strong>${formatPct(fh.utilization)}</strong> <span style="color:var(--fg-dim);font-size:11px">${formatResetIn(fh.resets_at)}</span>`);
             setHeaderUsage("claude", fh.utilization, fh.resets_at);
           } else {
-            claude5hEl.textContent = "—";
+            setRLText(claude5hEl, "—");
             setHeaderUsage("claude", null);
           }
           if (sd) {
-            claudeWeekEl.innerHTML = `<strong>${formatPct(sd.utilization)}</strong> <span style="color:var(--fg-dim);font-size:11px">${formatResetIn(sd.resets_at)}</span>`;
+            setRLHtml(claudeWeekEl, `<strong>${formatPct(sd.utilization)}</strong> <span style="color:var(--fg-dim);font-size:11px">${formatResetIn(sd.resets_at)}</span>`);
           } else {
-            claudeWeekEl.textContent = "—";
+            setRLText(claudeWeekEl, "—");
           }
           const perModel = [];
           if (d.seven_day_opus && d.seven_day_opus.utilization != null) {
@@ -544,14 +555,14 @@
           if (d.seven_day_sonnet && d.seven_day_sonnet.utilization != null) {
             perModel.push(`sonnet ${formatPct(d.seven_day_sonnet.utilization)}`);
           }
-          claudeModelsEl.textContent = perModel.length ? `weekly per-model: ${perModel.join(" · ")}` : "";
+          setRLText(claudeModelsEl, perModel.length ? `weekly per-model: ${perModel.join(" · ")}` : "");
           if (claudeRL.tier) metaBits.push(`Claude tier: ${claudeRL.tier.replace(/^default_claude_/, "")}`);
         } else {
           const reason = claudeRL && claudeRL.error ? claudeRL.error : "no claude oauth data";
           const errMarkup = `<span style="opacity:0.55" title="${escape(reason)}">n/a</span>`;
-          claude5hEl.innerHTML = errMarkup;
-          claudeWeekEl.innerHTML = errMarkup;
-          claudeModelsEl.textContent = "";
+          setRLHtml(claude5hEl, errMarkup);
+          setRLHtml(claudeWeekEl, errMarkup);
+          setRLText(claudeModelsEl, "");
           setHeaderUsage("claude", null);
         }
 
@@ -571,13 +582,13 @@
           return `<strong>${pct}</strong> <span style="color:var(--fg-dim);font-size:11px">${reset}</span>`;
         }
         if (!codexRL) {
-          codex5hEl.textContent = "no data";
-          codexWeekEl.textContent = "no data";
+          setRLText(codex5hEl, "no data");
+          setRLText(codexWeekEl, "no data");
           metaBits.push("run codex once to populate");
           setHeaderUsage("codex", null);
         } else {
-          codex5hEl.innerHTML   = renderCodexWindow(codexRL.primary);
-          codexWeekEl.innerHTML = renderCodexWindow(codexRL.secondary);
+          setRLHtml(codex5hEl, renderCodexWindow(codexRL.primary));
+          setRLHtml(codexWeekEl, renderCodexWindow(codexRL.secondary));
           const p = codexRL.primary;
           // Stale snapshots (resets_at in the past) are dimmed in the card
           // strip; mirror that here by treating them as no-data rather than
@@ -595,7 +606,7 @@
             }
           }
         }
-        metaEl.textContent = metaBits.join(" · ");
+        setRLText(metaEl, metaBits.join(" · "));
 
         // Reflect the actual usage-refresh time in the topbar "UPDATED"
         // label. main.js writes this once on loadAll() boot, so without
@@ -631,6 +642,15 @@
       } finally {
         if (timer) clearTimeout(timer);
         _tokenUsageInFlight = false;
+        // A refresh signal arrived while this fetch was in flight — honour it
+        // now (rate-limited via scheduleTokenUsageRefresh) so the post-turn
+        // quota update isn't lost until the next poll tick. scheduleToken-
+        // UsageRefresh is guard-only and cannot throw, so no try/catch (which
+        // would also become a stray trailing catch in this function).
+        if (_tokenUsageRerun) {
+          _tokenUsageRerun = false;
+          scheduleTokenUsageRefresh();
+        }
       }
     }
 

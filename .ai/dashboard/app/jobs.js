@@ -24,7 +24,15 @@
         if (meta) meta.textContent = "clear failed: " + e.message;
         setMsg("#events-clear", "err", "Clear failed: " + e.message);
       } finally {
-        if (wasTimer) _eventsTimer = setInterval(loadEvents, EVENTS_AUTOREFRESH_MS);
+        // Only re-arm if (a) we were the ones who paused a timer, (b) the
+        // user still wants auto-refresh, and (c) no handler created a fresh
+        // timer during our awaits. Without (c) we'd overwrite (and orphan) a
+        // live interval created by the visibilitychange/checkbox handlers;
+        // without (b) we'd re-arm against the user's mid-clear opt-out.
+        const cb = $("#events-autorefresh");
+        if (wasTimer && cb && cb.checked && !_eventsTimer) {
+          _eventsTimer = setInterval(loadEvents, EVENTS_AUTOREFRESH_MS);
+        }
       }
     }
 
@@ -997,6 +1005,10 @@
 
     // ----- Events state -----
     var _eventsCache = [];
+    // Identity of the newest event seen last poll. Used to detect new rows
+    // even once the server tail cap pins events.length steady — comparing
+    // lengths would stop firing the token-usage nudge on busy ledgers.
+    var _eventsNewestKey = null;
     // `expanded` is a Set keyed by `${ts}|${session_id}|${phase}` (see
     // _evRenderFlat). The previous shape initialised it to null then ran a
     // typeof-object || === null check that was always true — dead branch.
@@ -1261,9 +1273,17 @@
         // completed somewhere (typically an external Claude/Codex session
         // outside the dashboard's terminals view). Nudge the topbar usage
         // bars; the schedule helper rate-limits the actual fetch.
-        if (events.length > _eventsCache.length) {
+        // Compare newest-event identity (+ server total) rather than array
+        // length: once the tail cap is hit, length stays pinned at the cap
+        // even as brand-new rows arrive, so a length check would stop nudging.
+        const _newest = events[0];
+        const _newestKey = _newest
+          ? `${_newest.ts || ""}|${_newest.session_id || ""}|${_newest.phase || ""}|${data.total ?? events.length}`
+          : null;
+        if (_newestKey && _newestKey !== _eventsNewestKey) {
           try { window.scheduleTokenUsageRefresh?.(); } catch (_) {}
         }
+        _eventsNewestKey = _newestKey;
         _eventsCache = events;
         const totalCount = (typeof data.total === "number") ? data.total : events.length;
         const countEvEl = $("#count-events");

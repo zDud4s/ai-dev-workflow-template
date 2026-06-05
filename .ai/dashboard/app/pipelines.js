@@ -501,8 +501,21 @@
   // Topo-sort via Kahn's algorithm; returns {cycle:true} or layered layout.
   function computeCanvasLayout(rawNodes) {
     var byId = Object.create(null), nodes = [], refsById = Object.create(null);
-    (rawNodes || []).forEach(function (ref) {
-      if (!ref || typeof ref.id !== "string" || !ref.id || byId[ref.id]) return;
+    (rawNodes || []).forEach(function (ref, idx) {
+      if (!ref || typeof ref.id !== "string" || !ref.id) return;
+      if (byId[ref.id]) {
+        // Duplicate id: keep the node VISIBLE and EDITABLE under a synthetic
+        // layout key rather than dropping it. Dropping made it vanish from the
+        // canvas while it persisted in state and blocked Save — unrecoverable
+        // via the UI. It's isolated (no edges) and flagged `dup` so it renders
+        // with error styling; the user can rename it to a unique id to clear
+        // the validation error and rejoin the graph.
+        var dupKey = " dup:" + idx + ":" + ref.id;
+        var dnode = { id: dupKey, dup: true, agent: ref.agent || "",
+          depends_on: [], ref: ref };
+        byId[dupKey] = dnode; refsById[dupKey] = ref; nodes.push(dnode);
+        return;
+      }
       var copy = { id: ref.id, agent: ref.agent || "",
         depends_on: Array.isArray(ref.depends_on) ? ref.depends_on.map(String) : [],
         ref: ref };
@@ -697,7 +710,7 @@
       var p = pos[n.id];
       var node = p.node;
       var g = svgEl("g", {
-        class: "dag-node" + (node.kind ? " dag-node-flow" : ""), "data-id": node.id,
+        class: "dag-node" + (node.kind ? " dag-node-flow" : "") + (n.dup ? " dag-node-dup" : ""), "data-id": node.id,
         tabindex: "0",
         transform: "translate(" + p.x + " " + p.y + ")",
         "aria-label": "Pipeline node " + node.id,
@@ -908,10 +921,10 @@
   function onCanvasPointerDown(e, group, node) {
     var svg = _canvasSvgRef, pos = _canvasPos || {};
     if (!svg) return;
+    var nodeId = node && node.id;
     var target = e.target;
     if (target && target.classList && target.classList.contains("dag-port")) {
       if (target.getAttribute("data-kind") !== "out") return;
-      var nodeId = node && node.id;
       var src = pos[nodeId]; if (!src) return;
       var draft = svgEl("path", {
         class: "dag-edge dag-edge-draft",
@@ -927,7 +940,6 @@
       e.preventDefault(); return;
     }
     if (target && target.closest && target.closest(".dag-node-control")) return;
-    var nodeId = node && node.id;
     var p = svgPointFromEvent(svg, e), cur = pos[nodeId];
     if (!cur) return;
     _canvasDrag = { id: nodeId, node: node, group: group, svg: svg,

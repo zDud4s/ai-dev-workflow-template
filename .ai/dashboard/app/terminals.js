@@ -27,13 +27,16 @@
       if (_transcriptsListPromise) return _transcriptsListPromise;
       _transcriptsListPromise = fetch("/api/transcripts", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : { transcripts: [] }))
-        .catch(() => ({ transcripts: [] }));
-      // Hold the cached promise for a short window so concurrent callers
-      // share it, then drop it so a later open sees fresh data. 2s is
-      // long enough to cover a restoreOpenPanes burst (which fires N
-      // termOpenTranscript synchronously) and short enough that the
-      // picker's next refresh re-fetches.
-      setTimeout(() => { _transcriptsListPromise = null; }, 2000);
+        .catch(() => ({ transcripts: [] }))
+        .finally(() => {
+          // Drop the cached promise a short grace window AFTER the fetch
+          // settles — not on a wall-clock timer started at dispatch. A
+          // dispatch-time timer could clear the cache while the request is
+          // still in flight (fetch slower than the window), letting a second
+          // caller spawn a duplicate concurrent fetch. The grace window still
+          // lets a restoreOpenPanes burst coalesce onto one request.
+          setTimeout(() => { _transcriptsListPromise = null; }, 250);
+        });
       return _transcriptsListPromise;
     }
 
@@ -515,7 +518,10 @@
       sel.disabled = false;
       const termOpenBtn = $("#term-open");
       if (termOpenBtn) termOpenBtn.disabled = false;
-      if (sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
+      // Restore by value comparison, not a data-built CSS selector: a `prev`
+      // containing selector metacharacters would make querySelector throw a
+      // SyntaxError and abort the picker refresh.
+      if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
     }
 
     // Back-compat shim so existing call sites that only refresh the
@@ -1644,7 +1650,11 @@
           const name = payload.name || "(tool)";
           let args = {};
           try { args = JSON.parse(payload.arguments || "{}"); } catch (e) { console.warn("[terminals] codex function_call args parse failed: " + (e && e.message ? e.message : e)); }
-          const callId = payload.call_id || payload.id || ("codex_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8));
+          // No synthetic fallback id: a function_call_output keys off the real
+          // call_id/id only, so a synthetic id could never be matched back
+          // (and two within the same ms could collide). Pass null → the pill
+          // renders but isn't registered for result-matching it can't receive.
+          const callId = payload.call_id || payload.id || null;
           termAddToolPill(t, callId, name, args);
           return;
         }
@@ -1990,7 +2000,6 @@
       const remnant = joined.slice(lastNl + 1);
       t.jsonBuf = remnant ? [remnant] : [];
       const carry = [];
-      for (let i = 0; i < complete.split("\n").length; i++) {}
       const lines = complete.split("\n");
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -2248,7 +2257,10 @@
       wrap.appendChild(pill);
       wrap.appendChild(detail);
       textEl.appendChild(wrap);
-      t.toolUseEls.set(toolUseId, { pill, detail });
+      // Only register interactive pills that carry a real id — an id-less call
+      // (e.g. a codex function_call with no call_id) can never be matched by a
+      // result, and registering under a falsy key would collide across calls.
+      if (toolUseId) t.toolUseEls.set(toolUseId, { pill, detail });
 
       // If this is a Bash invocation that boots ANOTHER LLM (codex exec /
       // claude -p / claude --print), the dispatched subprocess is what the
@@ -3209,6 +3221,11 @@
       try { t._term && t._term.dispose(); } catch (_) {}
       t.pane.remove();
       TERMS.delete(ptyId);
+      // Prune the in-memory PTY token so the runtime cache mirrors the
+      // localStorage pruning (persistOpenPanes rebuilds tokens from open
+      // panes only). Otherwise closed-shell secrets linger in
+      // window._PTY_TOKENS for the life of the session.
+      if (window._PTY_TOKENS) delete window._PTY_TOKENS[ptyId];
       // Same suppression as termClose — a PTY pane the operator closed
       // should stay closed across reloads, even if the shell is still
       // running on the server side.
