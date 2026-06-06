@@ -5118,7 +5118,13 @@ def _session_engine_factory(sid: str, model: str) -> _ResumeEngineAdapter:
     starts the ``claude --resume <sid>`` subprocess in the background.
     """
     job_id = str(uuid.uuid4())
-    argv = _build_chat_argv(model=model, session_id=sid, resume=True)
+    # Resume an existing transcript; if the .jsonl does not exist yet this is a
+    # brand-new session, so create it with --session-id instead of --resume
+    # (a `claude --resume <unknown>` would fail). This lets dashboard-started
+    # chats run through the same baton state machine as resumed IDE chats.
+    tdir = _transcripts_dir_for_cwd(ROOT)
+    transcript_exists = bool(tdir and (tdir / f"{sid}.jsonl").exists())
+    argv = _build_chat_argv(model=model, session_id=sid, resume=transcript_exists)
 
     # Pre-populate JOBS with session_id before calling _start_subprocess_job
     # so the runner can determine log_path from the transcript.

@@ -97,13 +97,31 @@ def _reset_session_registry(serve_module):
     serve_module.SESSION_REGISTRY._sessions.clear()
 
 
-def test_engine_factory_builds_resume_argv(serve_module, monkeypatch):
+def _arm_argv_capture(serve_module, monkeypatch):
     captured = {}
     real_popen = serve_module.subprocess.Popen
     def fake_popen(argv, **kw):
         captured["argv"] = list(argv)
         return real_popen([serve_module.sys.executable, "-c", "pass"], **kw)
     monkeypatch.setattr(serve_module.subprocess, "Popen", fake_popen)
+    return captured
+
+
+def _seed_projects_root(serve_module, monkeypatch, tmp_path):
+    """Point transcript discovery at a tmp projects root; return the slug dir."""
+    projects = tmp_path / ".claude" / "projects"
+    slug = str(serve_module.ROOT).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
+    sdir = projects / slug
+    sdir.mkdir(parents=True)
+    monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    return sdir
+
+
+def test_engine_factory_builds_resume_argv(serve_module, monkeypatch, tmp_path):
+    # Resume mode is used only when the transcript already exists, so seed it.
+    sdir = _seed_projects_root(serve_module, monkeypatch, tmp_path)
+    (sdir / "sid-xyz.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+    captured = _arm_argv_capture(serve_module, monkeypatch)
 
     assert hasattr(serve_module, "SESSION_REGISTRY")
     eng = serve_module._session_engine_factory("sid-xyz", "claude-sonnet-4-6")
@@ -114,6 +132,21 @@ def test_engine_factory_builds_resume_argv(serve_module, monkeypatch):
         serve_module.time.sleep(0.05)
     assert "--resume" in captured["argv"] and "sid-xyz" in captured["argv"]
     eng.submit({"text": "oi"})
+
+
+def test_engine_factory_creates_new_session_when_no_transcript(serve_module, monkeypatch, tmp_path):
+    # No <sid>.jsonl on disk -> the engine must CREATE the session (--session-id),
+    # not --resume a transcript that does not exist yet.
+    _seed_projects_root(serve_module, monkeypatch, tmp_path)
+    captured = _arm_argv_capture(serve_module, monkeypatch)
+
+    new_sid = "12345678-1234-1234-1234-1234abcd00f1"  # intentionally no .jsonl seeded
+    serve_module._session_engine_factory(new_sid, "claude-sonnet-4-6")
+    for _ in range(40):
+        if "argv" in captured: break
+        serve_module.time.sleep(0.05)
+    assert "--session-id" in captured["argv"] and new_sid in captured["argv"]
+    assert "--resume" not in captured["argv"]
 
 
 def test_sessions_list_merges_ide_transcripts_and_dashboard(running_server, serve_module, tmp_path, monkeypatch):
@@ -130,7 +163,9 @@ def test_sessions_list_merges_ide_transcripts_and_dashboard(running_server, serv
     data = serve_module.json.loads(body)
     item = [x for x in data["sessions"] if x["sid"].endswith("abcd0001")]
     assert item, data
-    assert item[0]["state"] in ("mirror", "acquiring", "engine")
+    # This IDE row has no registry entry, so its state must be the explicit
+    # default ("mirror"), not just any valid state — pins the default-case branch.
+    assert item[0]["state"] == "mirror"
     assert item[0]["session_id"] == item[0]["sid"]
 
 
