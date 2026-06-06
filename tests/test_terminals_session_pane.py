@@ -230,3 +230,26 @@ def test_codex_chat_still_opens_via_term_open():
     assert "termOpen(res.id" in body, (
         "chat-codex should still open via termOpen, not termOpenSession"
     )
+
+
+# ------------------------------------------------------------------
+# Task 6: branch control in the session pane header
+# ------------------------------------------------------------------
+
+def test_open_session_has_branch_control():
+    src = js()
+    body = _slice_function(src, "function termOpenSession(")
+    # A Branch button must POST to /api/sessions/<sid>/branch.
+    assert "/branch" in body, (
+        "termOpenSession should wire a /branch fetch"
+    )
+    # On success it opens the forked sid as a fresh session pane.
+    assert "termOpenSession(" in body, (
+        "the branch handler should open the returned sid via termOpenSession"
+    )
+
+
+def test_branch_button_present_in_header():
+    src = js()
+    body = _slice_function(src, "function termOpenSession(")
+    assert "branch-btn" in body, "the session header should render a branch button"

@@ -3777,6 +3777,7 @@
           <span class="activity" title="current activity in this pane">connecting…</span>
           <span class="id">${escape(sid.slice(0, 8))}</span>
           <span class="actions">
+            <button class="branch-btn" title="create a copy to explore an alternative without touching this one">branch</button>
             <button class="release-btn" title="Release session control back to the engine">release</button>
             <button class="interrupt-btn" title="Interrupt the current session turn">interrupt</button>
             <button class="expand-btn" title="Show or hide this pane">expand</button>
@@ -3858,6 +3859,40 @@
         }).catch((err) => {
           setMsg("#term-msg", "err", "Interrupt failed: " + err.message, TERM_MSG_DURATION_MS);
         });
+      });
+      // Branch: fork this session into an independent copy. The backend
+      // mints a new sid (claude --fork-session); on success we open that sid
+      // as a fresh session pane so the operator can explore an alternative
+      // without disturbing this conversation.
+      pane.querySelector(".branch-btn")?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const btn = e.currentTarget;
+        if (btn._branchInFlight) return;
+        btn._branchInFlight = true;
+        btn.disabled = true;
+        try {
+          const r = await fetch("/api/sessions/" + encodeURIComponent(sid) + "/branch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          });
+          if (!r.ok) {
+            const body = await r.text().catch(() => "");
+            throw new Error("HTTP " + r.status + (body ? ": " + body.slice(0, 120) : ""));
+          }
+          const resp = await r.json();
+          if (resp && resp.sid) {
+            termOpenSession(resp.sid);
+            termFocusNewPane("session:" + resp.sid);
+          } else {
+            throw new Error("no sid in branch response");
+          }
+        } catch (err) {
+          setMsg("#term-msg", "err", "Branch failed: " + err.message, TERM_MSG_DURATION_MS);
+        } finally {
+          btn._branchInFlight = false;
+          btn.disabled = false;
+        }
       });
       pane.addEventListener("click", () => {
         document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
