@@ -253,3 +253,37 @@ def test_branch_button_present_in_header():
     src = js()
     body = _slice_function(src, "function termOpenSession(")
     assert "branch-btn" in body, "the session header should render a branch button"
+
+
+# ------------------------------------------------------------------
+# Task 7: open-panes persistence migration v1 -> v2
+# ------------------------------------------------------------------
+
+def test_persist_key_is_v2():
+    src = js()
+    assert "dash.openPanes.v2" in src, "the persistence key constant should be bumped to v2"
+
+
+def test_migration_path_references_both_keys():
+    src = js()
+    # A one-shot migration must read v1 when v2 is absent, then persist v2.
+    assert "dash.openPanes.v1" in src, "migration must still reference the legacy v1 key"
+    assert "dash.openPanes.v2" in src, "migration must write under the v2 key"
+
+
+def test_migration_maps_transcript_and_chat_to_session():
+    src = js()
+    # Migrated entries become session panes: transcript ide:<sid> and Claude
+    # chat both convert to {kind:"session", id:"session:"+sid}.
+    assert "session:" in src
+    assert 'kind: "session"' in src or 'kind:"session"' in src, (
+        "migration should produce session-kind entries"
+    )
+
+
+def test_restore_opens_session_ids():
+    src = js()
+    body = _slice_function(src, "async function restoreOpenPanes(")
+    assert "termOpenSession(" in body, (
+        "restore should open session-kind panes via termOpenSession"
+    )

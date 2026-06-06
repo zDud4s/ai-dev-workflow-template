@@ -14,7 +14,11 @@
     // the server process and outlives the browser tab. Drafts (work-in-
     // progress, not yet POSTed) and dispatch trackers (re-spawned by
     // their parent stream) are intentionally excluded.
-    var PERSIST_KEY = "dash.openPanes.v1";
+    // v2 folds Claude chat / IDE transcript panes into unified "session"
+    // panes. The legacy v1 key is read once on restore and migrated forward
+    // (see migrateOpenPanesV1ToV2), then deleted.
+    var PERSIST_KEY = "dash.openPanes.v2";
+    var LEGACY_PERSIST_KEY = "dash.openPanes.v1";
     var _persistTimer = null;
 
     // Shared, short-lived /api/transcripts fetch so a burst of pane opens
@@ -169,12 +173,64 @@
       }, 250);
     }
 
+    // One-shot migration of the persisted open-panes store from v1 to v2.
+    // v1 logged Claude conversations as either ``transcript`` (id "ide:"+sid)
+    // or ``chat`` (id = JOB id) panes; v2 folds both into ``session`` panes
+    // (id "session:"+sid). Returns the migrated saved object (or null).
+    //
+    //   - transcript: sid is in the key -> convert synchronously.
+    //   - chat (Claude): the persisted id is the JOB id, not the sid; the sid
+    //     is only recoverable via /api/jobs/<id>. Convert only if that fetch
+    //     yields a session_id; if the job is gone (common right after the
+    //     server restart that triggers migration), DROP the entry rather than
+    //     promise reachability.
+    //   - chat-codex, terminal: carried over unchanged.
+    async function migrateOpenPanesV1ToV2() {
+      let legacy;
+      try {
+        const raw = localStorage.getItem(LEGACY_PERSIST_KEY);
+        legacy = raw ? JSON.parse(raw) : null;
+      } catch (_) { return null; }
+      if (!legacy || !Array.isArray(legacy.panes)) return null;
+      const mapped = await Promise.all(legacy.panes.map(async (entry) => {
+        if (!entry || !entry.id || !entry.kind) return null;
+        if (entry.kind === "transcript") {
+          const sid = String(entry.id).replace(/^ide:/, "");
+          if (!sid) return null;
+          return { id: "session:" + sid, kind: "session", collapsed: !!entry.collapsed, pinned: !!entry.pinned };
+        }
+        if (entry.kind === "chat") {
+          // Recover the sid from the job record; drop if the job is gone.
+          try {
+            const r = await fetch("/api/jobs/" + encodeURIComponent(entry.id), { cache: "no-store" });
+            if (!r.ok) return null;
+            const meta = await r.json();
+            if (!meta || !meta.session_id) return null;
+            return { id: "session:" + meta.session_id, kind: "session", collapsed: !!entry.collapsed, pinned: !!entry.pinned };
+          } catch (_) { return null; }
+        }
+        if (entry.kind === "chat-codex" || entry.kind === "terminal") {
+          return { id: entry.id, kind: entry.kind, collapsed: !!entry.collapsed, pinned: !!entry.pinned };
+        }
+        return null;
+      }));
+      const panes = mapped.filter(Boolean);
+      const migrated = { panes, tokens: (legacy.tokens && typeof legacy.tokens === "object") ? legacy.tokens : {} };
+      try { localStorage.setItem(PERSIST_KEY, JSON.stringify(migrated)); } catch (_) { /* quota */ }
+      try { localStorage.removeItem(LEGACY_PERSIST_KEY); } catch (_) { /* ignore */ }
+      return migrated;
+    }
+
     async function restoreOpenPanes() {
       let saved;
       try {
         const raw = localStorage.getItem(PERSIST_KEY);
         saved = raw ? JSON.parse(raw) : null;
       } catch (_) { return; }
+      // No v2 store yet: migrate a v1 store forward (best-effort) before restoring.
+      if (!saved) {
+        saved = await migrateOpenPanesV1ToV2();
+      }
       if (!saved || !Array.isArray(saved.panes) || !saved.panes.length) return;
       // Rehydrate the per-PTY token cache from the previous session so
       // restored terminal panes can pass the WS auth check.
@@ -192,10 +248,17 @@
         if (!entry || !entry.id || !entry.kind) return null;
         if (TERMS.has(entry.id)) return null;
         try {
+          if (entry.kind === "session") {
+            // sid is in the key — no metadata fetch needed.
+            const sid = String(entry.id).replace(/^session:/, "");
+            if (!sid) return null;
+            return { entry, ready: { kind: "session", sid } };
+          }
           if (entry.kind === "transcript") {
+            // Legacy v1 entry still in a v2 store (defensive): open as session.
             const sid = String(entry.id).replace(/^ide:/, "");
             if (!sid) return null;
-            return { entry, ready: { kind: "transcript", sid } };
+            return { entry, ready: { kind: "session", sid } };
           }
           if (entry.kind === "terminal") {
             const r = await fetch("/api/ptys/" + encodeURIComponent(entry.id), { cache: "no-store" });
@@ -218,18 +281,20 @@
         if (res.status !== "fulfilled" || !res.value) continue;
         const { entry, ready } = res.value;
         try {
-          if (ready.kind === "transcript") {
-            // Restore a Claude transcript as a session pane; suppress under
-            // the real pane key so the auto-opener doesn't re-spawn it.
+          let paneKey = entry.id;
+          if (ready.kind === "session") {
+            // Open the unified session pane; suppress under the real pane key
+            // so the auto-opener doesn't re-spawn it.
             termOpenSession(ready.sid);
             suppressAutoOpen("session:" + ready.sid);
+            paneKey = "session:" + ready.sid;
           } else if (ready.kind === "terminal") {
             termOpenPty(entry.id, ready.meta, null);
           } else if (ready.kind === "chat") {
             termOpen(entry.id, ready.meta);
             suppressAutoOpen(entry.id);
           }
-          const t = TERMS.get(entry.id);
+          const t = TERMS.get(paneKey);
           if (t && t.pane) {
             if (entry.pinned) {
               t.pane.classList.add("pinned");
