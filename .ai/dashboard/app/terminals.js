@@ -4112,6 +4112,31 @@
       persistOpenPanes();
     }
 
+    // Stable per-tab id sent as the `owner` of session turns so the backend
+    // registry can tell turns from different browser tabs apart. sessionStorage
+    // is per-tab and survives reloads, which is exactly the lifetime we want.
+    // Memoized so every send in this tab reuses the same id.
+    function termClientId() {
+      if (termClientId._id) return termClientId._id;
+      let id = null;
+      try { id = sessionStorage.getItem("dash.sessionOwnerId"); } catch (_) {}
+      if (!id) {
+        id = (window.crypto && crypto.randomUUID)
+          ? crypto.randomUUID()
+          // Fallback for very old browsers without crypto.randomUUID. This is
+          // only a tab discriminator, not a security token, so Math.random is
+          // fine here.
+          : ("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+              const r = Math.random() * 16 | 0;
+              const v = c === "x" ? r : (r & 0x3 | 0x8);
+              return v.toString(16);
+            }));
+        try { sessionStorage.setItem("dash.sessionOwnerId", id); } catch (_) {}
+      }
+      termClientId._id = id;
+      return id;
+    }
+
     // POST text to /api/sessions/<sid>/input. The SSE stream will echo back
     // the user turn + the assistant reply, so we intentionally do NOT render
     // the bubble here — the stream renders it. On error we surface a toast
@@ -4132,7 +4157,7 @@
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: trimmed }),
+            body: JSON.stringify({ text: trimmed, owner: termClientId() }),
           }
         );
         if (r.status === 202) {

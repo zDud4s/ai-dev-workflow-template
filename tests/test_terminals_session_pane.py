@@ -117,3 +117,21 @@ def test_open_session_has_interrupt_control():
     assert '"/interrupt"' in src or "'/interrupt'" in src or "/interrupt" in src, (
         "termOpenSession should wire an interrupt fetch to /api/sessions/<sid>/interrupt"
     )
+
+
+# ------------------------------------------------------------------
+# Task D: per-tab owner id so the registry can track multi-tab ownership
+# ------------------------------------------------------------------
+
+def test_send_session_includes_owner():
+    src = js()
+    # The /input POST body must carry an owner field so the backend can tell
+    # turns from different tabs apart (registry already accepts owner).
+    assert "owner:" in src, "termSendSession should include an owner field in the /input body"
+
+
+def test_owner_id_is_per_tab_stable():
+    src = js()
+    # The owner id must be stable for the life of the tab (survives reloads,
+    # distinct per tab) — sessionStorage is per-tab, so it is the right store.
+    assert "sessionStorage" in src, "owner id should be persisted per-tab via sessionStorage"
