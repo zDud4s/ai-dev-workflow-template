@@ -5115,7 +5115,35 @@ def _session_engine_factory(sid: str, model: str) -> _ResumeEngineAdapter:
         argv=argv,
     )
 
-    return _ResumeEngineAdapter(job_id)
+    adapter = _ResumeEngineAdapter(job_id)
+
+    # The subprocess is launched on a worker thread, so it is almost never
+    # alive at the instant submit_turn() checks engine.is_ready(). Without a
+    # follow-up trigger the session would dwell in ACQUIRING forever and the
+    # buffered first turn would never reach the engine. Poll for readiness in
+    # the background and promote ACQUIRING -> ENGINE (which flushes the
+    # buffered turn into the engine stdin) as soon as the process is up.
+    def _await_engine_ready() -> None:
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if adapter.is_ready():
+                try:
+                    SESSION_REGISTRY.mark_engine_ready(sid)
+                except KeyError:
+                    # Session was released/removed before the engine came up —
+                    # nothing left to promote.
+                    print(f"[serve] engine-ready: session {sid} gone before promotion", flush=True)
+                return
+            time.sleep(0.05)
+        print(f"[serve] engine for session {sid} never reported ready (spawn failed?)", flush=True)
+
+    threading.Thread(
+        target=_await_engine_ready,
+        daemon=True,
+        name=f"engine-ready-{sid[:8]}",
+    ).start()
+
+    return adapter
 
 
 SESSION_REGISTRY = session_registry.SessionRegistry(
@@ -8894,6 +8922,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Live tail: poll for appended bytes, normalize each new line.
         session_start = time.monotonic()
         last_size = pos
+        last_emitted_state = state_label
         idle_ticks = 0
         max_idle_ticks = 240  # ~4 minutes at 1 s; client will reconnect
         try:
@@ -8907,6 +8936,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     return
                 if readable and self._sse_client_gone():
                     return
+                # Surface registry state transitions (mirror -> acquiring ->
+                # engine) so the pane chip updates live. The leading frame only
+                # captured the state at connect time; without this an open
+                # stream would never see the session go live.
+                with SESSION_REGISTRY._lock:
+                    _rs = SESSION_REGISTRY._sessions.get(session_id)
+                    _cur_state = _rs.state.value if _rs is not None else None
+                if _cur_state and _cur_state != last_emitted_state:
+                    last_emitted_state = _cur_state
+                    _sframe = json.dumps({
+                        "seq": seq, "kind": "state_change", "role": None,
+                        "text": None, "partial": False, "state": _cur_state,
+                    })
+                    if not self._write_sse_frame(_sframe):
+                        return
+                    seq += 1
                 try:
                     st = path.stat()
                 except OSError:

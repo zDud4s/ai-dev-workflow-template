@@ -8,6 +8,7 @@ backed by _start_subprocess_job / _build_chat_argv.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import os
 import socket
@@ -227,3 +228,38 @@ def test_session_input_rejects_bad_model(running_server):
                             data=b'{"text":"x","model":"--evil flag"}',
                             headers={"Content-Type": "application/json"})
     assert status == 400, body
+
+
+def test_session_input_promotes_to_engine(running_server, serve_module, monkeypatch):
+    """Regression (webapp-validation): the resume subprocess is launched on a
+    worker thread, so submit_turn()'s synchronous engine.is_ready() check
+    essentially never catches it. A background waiter in _session_engine_factory
+    must promote ACQUIRING -> ENGINE once the process is up (which flushes the
+    buffered first turn into the engine). Without it the session dwells in
+    ACQUIRING forever and the dashboard can never continue the conversation."""
+    _arm_fake_resume_engine(serve_module, monkeypatch)
+    sid = "aaaaaaaa-0000-1111-2222-f00000000001"
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/{sid}/input",
+                            data=b'{"text":"continue please"}',
+                            headers={"Content-Type": "application/json"})
+    assert status in (200, 202), body
+    s = serve_module.SESSION_REGISTRY.get_or_create(sid, jsonl_path="x")
+    engine_state = serve_module.session_registry.SessionState.ENGINE
+    deadline = serve_module.time.monotonic() + 8
+    while serve_module.time.monotonic() < deadline:
+        if s.state == engine_state:
+            break
+        serve_module.time.sleep(0.05)
+    assert s.state == engine_state, f"session stuck in {s.state}; promotion never fired"
+
+
+def test_session_stream_pushes_state_transitions(serve_module):
+    """Regression (webapp-validation): _handle_session_stream emitted only the
+    leading state_change frame, so an already-open stream never saw the session
+    go live (chip stuck on 'mirror'). Its tail loop must poll the registry and
+    emit a fresh state_change whenever the state changes."""
+    src = inspect.getsource(serve_module.Handler._handle_session_stream)
+    assert "last_emitted_state" in src
+    assert "SESSION_REGISTRY._lock" in src
+    assert "_cur_state != last_emitted_state" in src
+    assert '"kind": "state_change"' in src
