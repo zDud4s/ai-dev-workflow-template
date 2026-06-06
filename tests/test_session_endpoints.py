@@ -459,3 +459,161 @@ def test_probe_wired_after_submit_turn_acquire(serve_module, monkeypatch):
     assert s.engine_active_probe is not None
     assert callable(s.engine_active_probe)
     assert s.engine_active_probe() is True
+
+
+# ---------------------------------------------------------------------------
+# Part 1 — input result maps to 200 / 202 / 409
+# ---------------------------------------------------------------------------
+
+def test_session_input_accepted_returns_200(running_server, serve_module, monkeypatch):
+    """submit_turn returning 'accepted' must yield HTTP 200 with status=accepted."""
+    _arm_fake_resume_engine(serve_module, monkeypatch)
+    sid = "aaaaaaaa-1111-2222-3333-aaaaaaaaaaaa"
+    status, body, _ = _http(
+        "POST", f"{running_server}/api/sessions/{sid}/input",
+        data=b'{"text":"hello"}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert status == 200, body
+    assert serve_module.json.loads(body)["status"] == "accepted"
+
+
+def test_session_input_queued_returns_202(running_server, serve_module, monkeypatch):
+    """When the session already has a turn in-flight, submit_turn returns
+    'queued' — the endpoint must respond 202 with status=queued."""
+    _arm_fake_resume_engine(serve_module, monkeypatch)
+    sid = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
+    reg = serve_module.SESSION_REGISTRY
+    # Create the session and force it into ENGINE state with a turn in-flight.
+    s = reg.get_or_create(sid, jsonl_path="fake_q.jsonl")
+    with s.lock:
+        s.state = serve_module.session_registry.SessionState.ENGINE
+        s.turn_in_flight = True   # keeps next submit_turn in the 'queued' branch
+        # Give it a minimal fake engine so submit() doesn't crash.
+        class _FakeEngQ:
+            def submit(self, t): pass
+            def is_ready(self): return True
+            def kill(self): pass
+        s.engine = _FakeEngQ()
+    status, body, _ = _http(
+        "POST", f"{running_server}/api/sessions/{sid}/input",
+        data=b'{"text":"second turn"}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert status == 202, body
+    assert serve_module.json.loads(body)["status"] == "queued"
+
+
+def test_session_input_rejected_returns_409(running_server, serve_module, monkeypatch):
+    """When the pending slot is already occupied, submit_turn returns 'rejected'
+    — the endpoint must respond 409 with status=already_queued."""
+    _arm_fake_resume_engine(serve_module, monkeypatch)
+    sid = "aaaaaaaa-1111-2222-3333-cccccccccccc"
+    reg = serve_module.SESSION_REGISTRY
+    # Create the session and pre-fill the pending slot so submit_turn rejects.
+    s = reg.get_or_create(sid, jsonl_path="fake_r.jsonl")
+    with s.lock:
+        s.state = serve_module.session_registry.SessionState.ENGINE
+        s.turn_in_flight = True
+        s.pending_turn = {"text": "already queued"}  # slot occupied → rejected
+        class _FakeEngR:
+            def submit(self, t): pass
+            def is_ready(self): return True
+            def kill(self): pass
+        s.engine = _FakeEngR()
+    status, body, _ = _http(
+        "POST", f"{running_server}/api/sessions/{sid}/input",
+        data=b'{"text":"overflow turn"}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert status == 409, body
+    assert serve_module.json.loads(body)["status"] == "already_queued"
+
+
+def test_session_input_owner_forwarded(running_server, serve_module, monkeypatch):
+    """An 'owner' field in the body must be accepted and passed through without
+    causing an error (forward-compat for multi-tab; registry ignores unknown
+    owners when no conflict exists)."""
+    _arm_fake_resume_engine(serve_module, monkeypatch)
+    sid = "aaaaaaaa-1111-2222-3333-dddddddddddd"
+    status, body, _ = _http(
+        "POST", f"{running_server}/api/sessions/{sid}/input",
+        data=b'{"text":"hi","owner":"tab-abc-1"}',
+        headers={"Content-Type": "application/json"},
+    )
+    # 200 or 202 are both fine (accepted or queued); not an error.
+    assert status in (200, 202), body
+
+
+def test_session_input_owner_invalid_rejected(running_server, serve_module, monkeypatch):
+    """An 'owner' value that fails the short-id guard must be rejected with 400."""
+    sid = "aaaaaaaa-1111-2222-3333-eeeeeeeeeeee"
+    status, body, _ = _http(
+        "POST", f"{running_server}/api/sessions/{sid}/input",
+        data=b'{"text":"hi","owner":"bad owner with spaces!"}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert status == 400, body
+
+
+# ---------------------------------------------------------------------------
+# Part 2 — interrupt endpoint
+# ---------------------------------------------------------------------------
+
+def test_session_interrupt_returns_200_unknown_sid(running_server, serve_module):
+    """POST /api/sessions/<uuid>/interrupt on an unknown session must respond
+    200 (idempotent) rather than 404 — interrupting a gone session is a no-op."""
+    sid = "ffffffff-0000-0000-0000-000000000001"
+    status, body, _ = _http(
+        "POST", f"{running_server}/api/sessions/{sid}/interrupt",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+    )
+    assert status == 200, body
+    assert serve_module.json.loads(body)["status"] == "interrupted"
+
+
+def test_session_interrupt_bad_sid_returns_400(running_server, serve_module):
+    """A non-UUID sid on the interrupt endpoint must return 400."""
+    status, body, _ = _http(
+        "POST", f"{running_server}/api/sessions/not-a-uuid/interrupt",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+    )
+    assert status == 400, body
+
+
+def test_session_interrupt_calls_engine_interrupt(running_server, serve_module, monkeypatch):
+    """When a session has a live engine, interrupt() must be called on it and
+    SESSION_REGISTRY.interrupt(sid) must reconcile state."""
+    _arm_fake_resume_engine(serve_module, monkeypatch)
+    sid = "ffffffff-0000-0000-0000-000000000002"
+    reg = serve_module.SESSION_REGISTRY
+
+    # Track engine.interrupt() calls via a fake engine attached to the session.
+    interrupted = []
+
+    class _FakeEngInt:
+        def interrupt(self):
+            interrupted.append(True)
+        def submit(self, t): pass
+        def is_ready(self): return True
+        def kill(self): pass
+
+    s = reg.get_or_create(sid, jsonl_path="fake_int.jsonl")
+    with s.lock:
+        s.state = serve_module.session_registry.SessionState.ENGINE
+        s.turn_in_flight = True
+        s.engine = _FakeEngInt()
+
+    status, body, _ = _http(
+        "POST", f"{running_server}/api/sessions/{sid}/interrupt",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+    )
+    assert status == 200, body
+    assert serve_module.json.loads(body)["status"] == "interrupted"
+    # engine.interrupt() must have been invoked.
+    assert interrupted, "engine.interrupt() was not called"
+    # Registry reconcile must have cleared turn_in_flight.
+    assert s.turn_in_flight is False, "registry.interrupt() did not reconcile state"

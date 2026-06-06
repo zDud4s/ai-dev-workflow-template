@@ -101,6 +101,7 @@ _RE_TRANSCRIPT_STREAM = re.compile(r"/api/transcripts/([0-9a-fA-F-]+)/stream")
 _RE_SESSION_STREAM = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/stream")
 _RE_SESSION_INPUT = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/input")
 _RE_SESSION_RELEASE = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/release")
+_RE_SESSION_INTERRUPT = re.compile(r"/api/sessions/([^/]+)/interrupt")
 _RE_AGENT_PROPOSAL_GET = re.compile(r"/api/agents/proposals/([A-Za-z0-9_\-]+)")
 _RE_SKILL_PROPOSAL_GET = re.compile(r"/api/skills/proposals/([A-Za-z0-9_\-]+)")
 _RE_JOB_STREAM = re.compile(r"/api/jobs/([0-9a-f-]+)/stream")
@@ -6273,6 +6274,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if m:
                 self._handle_session_release(m.group(1))
                 return
+            m = _RE_SESSION_INTERRUPT.fullmatch(parsed.path)
+            if m:
+                self._handle_session_interrupt(m.group(1))
+                return
             self._json(404, {"error": "unknown endpoint", "path": parsed.path})
 
     def do_PUT(self):  # noqa: N802
@@ -9499,11 +9504,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     )
 
     def _handle_session_input(self, sid: str, body: dict) -> None:
-        """POST /api/sessions/<sid>/input {text, model?}
+        """POST /api/sessions/<sid>/input {text, model?, owner?}
 
         Validates that ``sid`` is a UUID and ``text`` is non-empty, then calls
-        SESSION_REGISTRY.get_or_create + submit_turn.  Responds 200 {"status":
-        "accepted"} on success.
+        SESSION_REGISTRY.get_or_create + submit_turn.  Maps the registry result
+        to an HTTP status:
+          "accepted" -> 200 {"status": "accepted"}
+          "queued"   -> 202 {"status": "queued"}
+          "rejected" -> 409 {"status": "already_queued"}
+
+        An optional ``owner`` field (client/tab id) is validated against the
+        same short-id pattern used elsewhere and forwarded to submit_turn for
+        multi-tab ownership tracking.  Defaults to None when absent.
         """
         # Validate sid is a canonical UUID before doing anything else.
         if not self._UUID_RE.match(sid):
@@ -9514,6 +9526,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not isinstance(text, str) or not text.strip():
             self._json(400, {"error": "text is required and must be non-empty"})
             return
+        # Validate optional owner field: must match [A-Za-z0-9._-], max 64 chars.
+        owner = body.get("owner") or None
+        if owner is not None:
+            if not isinstance(owner, str) or len(owner) > 64 or not re.fullmatch(r"[A-Za-z0-9._-]+", owner):
+                self._json(400, {"error": "owner must be a short id matching [A-Za-z0-9._-]{1,64}"})
+                return
         # Resolve the session transcript path (may be None if no .claude/projects dir).
         tdir = _transcripts_dir_for_cwd(ROOT)
         jsonl_path = str(tdir / f"{sid}.jsonl") if tdir else f"{sid}.jsonl"
@@ -9532,8 +9550,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             session_cfg = _read_yaml_field(ROOT / ".ai" / "models.yaml", "session")
             model_override = (session_cfg.get("model") if isinstance(session_cfg, dict) else None) or "claude-sonnet-4-6"
         SESSION_REGISTRY.get_or_create(sid, jsonl_path=jsonl_path)
-        result = SESSION_REGISTRY.submit_turn(sid, {"text": text}, model_override)
-        self._json(200, {"status": result})
+        result = SESSION_REGISTRY.submit_turn(sid, {"text": text}, model_override, owner=owner)
+        # Map the registry result to the appropriate HTTP status code.
+        if result == "accepted":
+            self._json(200, {"status": "accepted"})
+        elif result == "queued":
+            self._json(202, {"status": "queued"})
+        else:
+            # "rejected" means the pending slot was already occupied.
+            self._json(409, {"status": "already_queued"})
 
     def _handle_session_release(self, sid: str) -> None:
         """POST /api/sessions/<sid>/release
@@ -9552,6 +9577,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         SESSION_REGISTRY.get_or_create(sid, jsonl_path=jsonl_path)
         SESSION_REGISTRY.release(sid)
         self._json(200, {"status": "released"})
+
+    def _handle_session_interrupt(self, sid: str) -> None:
+        """POST /api/sessions/<sid>/interrupt
+
+        Signals the running engine to stop mid-turn and reconciles registry
+        state so writing_ours() returns False immediately.
+
+        Design choice: responds 200 even when the sid is not in the registry
+        (idempotent — interrupting a gone or never-started session is a no-op).
+        """
+        # Validate sid is a canonical UUID.
+        if not self._UUID_RE.match(sid):
+            self._json(400, {"error": "sid must be a UUID"})
+            return
+        with SESSION_REGISTRY._lock:
+            session = SESSION_REGISTRY._sessions.get(sid)
+            if session is not None and session.engine is not None:
+                # Signal the subprocess to stop generating output.
+                session.engine.interrupt()
+        # State reconcile: clears turn_in_flight and last_rendered_offset offset.
+        # Safe to call even when the session is absent — KeyError is swallowed below.
+        if sid in SESSION_REGISTRY._sessions:
+            try:
+                SESSION_REGISTRY.interrupt(sid)
+            except Exception as exc:
+                print(f"[serve] session interrupt reconcile failed for {sid}: {exc}", flush=True)
+        self._json(200, {"status": "interrupted"})
 
     def _compose_multimodal_blocks(self, text: str, images: list, files: list):
         """Validate + assemble a stream-json content array from a composer
