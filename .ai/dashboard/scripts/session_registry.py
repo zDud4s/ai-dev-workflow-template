@@ -14,8 +14,11 @@ engine_factory so the registry stays free of HTTP / CLI concerns.
 """
 from __future__ import annotations
 import enum
+import logging
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 
 # Minimum seconds without file growth before MIRROR → ACQUIRING is allowed.
 QUIESCENT_S = 2.5
@@ -43,6 +46,11 @@ class Session:
         self.pending_turn: dict | None = None
         # Model stored alongside pending_turn so auto-acquire knows which model to use.
         self.pending_model: str | None = None
+        # Owner stored alongside pending_turn so auto-acquire restores the correct owner.
+        self.pending_owner: str | None = None
+        # The turn currently running inside the engine (set when handed off, cleared on cede
+        # or when mark_turn_done finds nothing pending).  Used to rescue lost turns on cede.
+        self.in_flight_turn: dict | None = None
         # Write-timing fields for concurrency heuristics.
         self.last_mtime: float = 0.0        # last observed mtime of the .jsonl
         self.last_growth_ts: float = 0.0    # monotonic timestamp of last file growth
@@ -129,6 +137,7 @@ class SessionRegistry:
                     s.state = SessionState.ACQUIRING
                     s.pending_turn = turn
                     s.pending_model = model
+                    s.pending_owner = owner
                     s.owner = owner
                     if s.engine.is_ready():
                         self._promote_to_engine(s)
@@ -137,6 +146,7 @@ class SessionRegistry:
                     # File is still being written; buffer and wait.
                     s.pending_turn = turn
                     s.pending_model = model
+                    s.pending_owner = owner
                     return "queued"
 
             if s.state == SessionState.ENGINE:
@@ -144,21 +154,25 @@ class SessionRegistry:
                 if s.owner is not None and owner is not None and owner != s.owner:
                     s.pending_turn = turn
                     s.pending_model = model
+                    s.pending_owner = owner
                     return "queued"
                 # Our engine: submit if idle, buffer if busy.
                 if not s.turn_in_flight:
                     s.engine.submit(turn)
                     s.turn_in_flight = True
+                    s.in_flight_turn = turn  # record for rescue if we later cede
                     return "accepted"
                 else:
                     s.pending_turn = turn
                     s.pending_model = model
+                    s.pending_owner = owner
                     return "queued"
 
             if s.state == SessionState.FOREIGN:
                 # A foreign agent owns this session; buffer for later.
                 s.pending_turn = turn
                 s.pending_model = model
+                s.pending_owner = owner
                 return "queued"
 
             # ACQUIRING: pending slot is occupied by the buffered first turn,
@@ -171,6 +185,7 @@ class SessionRegistry:
         if first is not None:
             s.engine.submit(first)
             s.turn_in_flight = True
+            s.in_flight_turn = first  # record for rescue if we later cede
             s._pending_first_turn = None
 
     def mark_engine_ready(self, sid: str) -> None:
@@ -184,13 +199,26 @@ class SessionRegistry:
         with s.lock:
             s.turn_in_flight = False
             s.last_rendered_offset = s.last_size
+            if s.pending_turn is not None:
+                # Drain the queued turn into the engine; record it as the new in-flight turn.
+                next_turn = s.pending_turn
+                s.engine.submit(next_turn)
+                s.turn_in_flight = True
+                s.in_flight_turn = next_turn
+                s.pending_turn = None
+            else:
+                # Nothing pending; the engine is now fully idle.
+                s.in_flight_turn = None
 
     def release(self, sid: str) -> None:
         s = self._sessions[sid]
         with s.lock:
             if s.engine is not None:
-                try: s.engine.kill()
-                except Exception: pass
+                try:
+                    s.engine.kill()
+                except Exception:
+                    # Kill of an already-dead engine is expected; log for diagnostics.
+                    logger.debug("engine kill failed for %s", sid, exc_info=True)
             s.engine = None
             s.turn_in_flight = False
             s.last_rendered_offset = s.last_size   # de-dup on any engine exit
@@ -214,8 +242,8 @@ class SessionRegistry:
             try:
                 s.engine.kill()
             except Exception:
-                # Swallow kill errors — the engine may already be gone.
-                pass
+                # Kill of an already-dead engine is expected; log for diagnostics.
+                logger.debug("engine kill failed for %s", s.sid, exc_info=True)
         s.engine = None
         s.state = SessionState.MIRROR
         s.terminated = True
@@ -242,16 +270,18 @@ class SessionRegistry:
 
             # --- Growth: new bytes arrived. ---
             if size > s.last_size:
-                s.last_growth_ts = now
-                s.last_size = size
-                s.last_mtime = mtime
-
                 if s.state == SessionState.MIRROR:
                     # No engine running; any write must be the IDE.
+                    s.last_growth_ts = now
+                    s.last_size = size
+                    s.last_mtime = mtime
                     s.state = SessionState.FOREIGN
 
                 elif s.state == SessionState.ACQUIRING:
                     # Growth during startup: ours only if the engine is producing stdout.
+                    s.last_growth_ts = now
+                    s.last_size = size
+                    s.last_mtime = mtime
                     if self._engine_recently_active(s):
                         # Engine is initialising and writing — stay ACQUIRING.
                         pass
@@ -261,33 +291,56 @@ class SessionRegistry:
                             try:
                                 s.engine.kill()
                             except Exception:
-                                # Engine may already have exited.
-                                pass
+                                # Kill of an already-dead engine is expected; log for diagnostics.
+                                logger.debug("engine kill failed for %s", sid, exc_info=True)
                         s.engine = None
+                        s.turn_in_flight = False  # clear stale flag on abort
                         s.state = SessionState.FOREIGN
                         s.warnings.append("acquire aborted: foreign write")
                         # pending_turn is intentionally kept so auto-acquire can
                         # resubmit it once the session goes quiet again.
 
                 elif s.state == SessionState.ENGINE:
-                    # Growth is ours if a turn is in-flight OR the probe corroborates it.
-                    ours = s.turn_in_flight or self._engine_recently_active(s)
+                    # Determine ownership BEFORE updating last_size.
+                    # Growth is ours when a turn is in-flight, the engine's stdout
+                    # probe corroborates activity, OR we still have undrained bytes
+                    # from a reply that finished a moment ago (offset-drain term).
+                    ours = (
+                        s.turn_in_flight
+                        or self._engine_recently_active(s)
+                        or (s.last_rendered_offset < s.last_size)
+                    )
+                    # Now update the size fields.
+                    s.last_growth_ts = now
+                    s.last_size = size
+                    s.last_mtime = mtime
                     if ours:
                         # Account for our own output so we don't re-render it.
                         s.last_rendered_offset = s.last_size
                     else:
-                        # Idle engine, no recent stdout: the IDE wrote this — cede.
+                        # Idle engine, fully drained, no recent stdout: the IDE wrote
+                        # this — cede rather than risk overwriting the IDE's output.
+                        if s.pending_turn is None and s.in_flight_turn is not None:
+                            # Rescue the turn that was running in the engine so it is
+                            # not lost; it will be resubmitted once the session quiets.
+                            s.pending_turn = s.in_flight_turn
+                        s.in_flight_turn = None
+                        s.turn_in_flight = False  # clear stale flag on cede
                         if s.engine is not None:
                             try:
                                 s.engine.kill()
                             except Exception:
-                                # Engine may already have exited.
-                                pass
+                                # Kill of an already-dead engine is expected; log for diagnostics.
+                                logger.debug("engine kill failed for %s", sid, exc_info=True)
                         s.engine = None
                         s.state = SessionState.FOREIGN
                         s.warnings.append("ceded: foreign write during idle engine")
 
-                # FOREIGN: IDE is still writing; fields already updated above.
+                else:
+                    # FOREIGN: IDE is still writing; just update the size fields.
+                    s.last_growth_ts = now
+                    s.last_size = size
+                    s.last_mtime = mtime
 
                 return
 
@@ -299,7 +352,9 @@ class SessionRegistry:
                 if elapsed >= QUIESCENT_S:
                     if s.pending_turn is not None:
                         # Session has gone quiet and there is a buffered turn: acquire.
+                        # Restore the owner that submitted the pending turn.
                         model = s.pending_model or "claude-sonnet-4-6"
+                        s.owner = s.pending_owner
                         s.last_rendered_offset = s.last_size
                         s.engine = self._engine_factory(sid, model)
                         s.state = SessionState.ACQUIRING

@@ -581,3 +581,106 @@ def test_note_jsonl_gone_mirror_terminated():
     assert s.terminated is True
     assert eng.killed is True
     assert s.engine is None
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 (RED): offset-drain term in ENGINE growth attribution
+# ---------------------------------------------------------------------------
+
+def test_engine_offset_not_drained_growth_stays_engine():
+    """Fix 1 RED: ENGINE, turn_in_flight=False, probe=False, but last_rendered_offset < last_size
+    (reply bytes not yet drained from the previous turn) — growth must be treated as ours
+    and the session must STAY ENGINE with no warning and no engine kill.
+
+    Before Fix 1 this test FAILS because the code omits the offset-drain term and cedes.
+    """
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ENGINE,
+        last_size=200,
+        last_rendered_offset=100,   # 100 bytes still pending drain
+        turn_in_flight=False,
+        engine=eng,
+        engine_active_probe=lambda: False,
+    )
+    # File grows by another 100 bytes while the trailing reply bytes are still outstanding.
+    reg.note_jsonl_growth("s", size=300, mtime=2.0)
+    assert s.state == sr.SessionState.ENGINE, "must stay ENGINE — these are our own trailing bytes"
+    assert eng.killed is False, "engine must NOT be killed"
+    assert s.warnings == [], "no spurious cede warning"
+    # Offset should advance to the new size now that we confirmed ownership.
+    assert s.last_rendered_offset == 300
+
+
+def test_engine_idle_foreign_growth_cedes_with_drained_offset():
+    """Fix 1 companion: ENGINE, turn_in_flight=False, probe=False, AND offset==last_size
+    (fully drained) — growth IS foreign and must cede.  This mirrors the existing
+    test_engine_idle_foreign_growth_cedes but spells out the offset==size condition
+    explicitly so that Fix 1 does not accidentally suppress real cedes.
+    """
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ENGINE,
+        last_size=200,
+        last_rendered_offset=200,   # fully drained: no outstanding bytes
+        turn_in_flight=False,
+        engine=eng,
+        engine_active_probe=lambda: False,
+    )
+    reg.note_jsonl_growth("s", size=300, mtime=2.0)
+    assert s.state == sr.SessionState.FOREIGN, "must cede — truly foreign write"
+    assert eng.killed is True
+    assert len(s.warnings) >= 1
+    assert any("ceded" in w for w in s.warnings)
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 (RED): in-flight turn preserved when ENGINE cedes to FOREIGN
+# ---------------------------------------------------------------------------
+
+def test_cede_moves_in_flight_turn_to_pending():
+    """Fix 2 RED: when ENGINE cedes to FOREIGN while in_flight_turn is set and
+    pending_turn is None, the in-flight turn must be moved to pending_turn so it
+    is not lost.
+
+    Scenario: a turn was submitted and is in the engine (in_flight_turn set,
+    turn_in_flight was True), the turn finishes (turn_in_flight goes False,
+    offset advances to last_size so drain is complete), then a foreign write
+    arrives.  At cede time in_flight_turn is still set (mark_turn_done clears it
+    only when the next pending turn is promoted or there is nothing pending).
+    The cede must rescue it into pending_turn.
+
+    Before Fix 2 this test FAILS because in_flight_turn does not exist and no
+    rescue happens.
+    """
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ENGINE,
+        last_size=200,
+        last_rendered_offset=200,   # fully drained — cede path will be taken
+        turn_in_flight=False,
+        engine=eng,
+        engine_active_probe=lambda: False,
+    )
+    # Simulate: a turn was handed to the engine and is recorded as in-flight.
+    s.in_flight_turn = {"text": "x"}
+    s.pending_turn = None
+
+    # Foreign growth arrives — cede is triggered.
+    reg.note_jsonl_growth("s", size=300, mtime=2.0)
+
+    assert s.state == sr.SessionState.FOREIGN
+    # The in-flight turn must have been rescued into pending_turn.
+    assert s.pending_turn == {"text": "x"}, (
+        "in_flight_turn must be moved to pending_turn on cede so the turn is not lost"
+    )
+    # in_flight_turn must be cleared after rescue.
+    assert s.in_flight_turn is None
+
+
+def test_session_has_in_flight_turn_attribute():
+    """Fix 2 RED: Session must have an in_flight_turn attribute initialized to None."""
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: _FakeEngine())
+    s = reg.get_or_create("attr-check", jsonl_path="/tmp/attr.jsonl")
+    assert hasattr(s, "in_flight_turn"), "Session must define in_flight_turn"
+    assert s.in_flight_turn is None
