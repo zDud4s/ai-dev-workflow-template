@@ -201,3 +201,88 @@ def test_lock_dir_created_if_missing(tmp_path):
 
     assert result is True
     assert lock_dir.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: cross-process safe release (C2), atomic acquire (I1),
+# and heartbeat_ts type coercion (M1).
+# ---------------------------------------------------------------------------
+
+import os
+
+
+def test_release_does_not_delete_another_processs_lock(tmp_path):
+    """release() must only remove a lock written by THIS process. Deleting a
+    foreign process's lock would let a third process acquire while the first
+    still runs an engine — the corruption this lock exists to prevent."""
+    cell, clock = _make_clock()
+    sl = SessionLock(tmp_path, clock=clock)
+    path = tmp_path / "sess1.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A fresh lock held by a DIFFERENT process.
+    path.write_text(json.dumps({
+        "owner": "other-dash", "pid": os.getpid() + 100000,
+        "heartbeat_ts": clock(), "state": "engine",
+    }), encoding="utf-8")
+
+    sl.release("sess1")
+
+    assert path.exists(), "release must not delete a lock owned by another process"
+
+
+def test_release_deletes_own_lock(tmp_path):
+    """release() must still remove a lock this process owns (pid match)."""
+    cell, clock = _make_clock()
+    sl = SessionLock(tmp_path, clock=clock)
+    sl.try_acquire("sess1", "owner-a")  # writes pid=os.getpid()
+
+    sl.release("sess1")
+
+    assert not (tmp_path / "sess1.lock").exists()
+
+
+def _read_lock_once_empty(real):
+    """Wrap a bound _read_lock so the FIRST call returns None (the TOCTOU window
+    where the probe sees no lock yet) and later calls delegate to the real reader."""
+    state = {"first": True}
+
+    def wrapper(sid):
+        if state["first"]:
+            state["first"] = False
+            return None
+        return real(sid)
+
+    return wrapper
+
+
+def test_fresh_acquire_is_atomic_under_stale_read(tmp_path, monkeypatch):
+    """Two racers whose existence-probe both see 'no lock' (the TOCTOU window):
+    an exclusive create must let only ONE win. The loser's re-read then sees the
+    winner's fresh lock and is correctly blocked."""
+    cell, clock = _make_clock()
+    a = SessionLock(tmp_path, clock=clock)
+    b = SessionLock(tmp_path, clock=clock)
+    monkeypatch.setattr(a, "_read_lock", _read_lock_once_empty(a._read_lock))
+    monkeypatch.setattr(b, "_read_lock", _read_lock_once_empty(b._read_lock))
+
+    first = a.try_acquire("sess1", "A")
+    second = b.try_acquire("sess1", "B")
+
+    assert first is True
+    assert second is False, "exclusive create must reject the second racer"
+
+
+def test_read_lock_coerces_string_heartbeat_ts(tmp_path):
+    """A heartbeat_ts stored as a numeric string must not break staleness math
+    (TypeError float - str). It should be treated as a normal fresh lock."""
+    cell, clock = _make_clock()
+    sl = SessionLock(tmp_path, clock=clock)
+    path = tmp_path / "sess1.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "owner": "x", "pid": 1, "heartbeat_ts": "1000000.0", "state": "engine",
+    }), encoding="utf-8")
+
+    # Must not raise; fresh (same clock) + different owner -> blocked.
+    assert sl.try_acquire("sess1", "y") is False
+    assert sl.is_stale("sess1") is False

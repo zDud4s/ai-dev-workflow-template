@@ -56,13 +56,17 @@ class SessionLock:
         return self._lock_dir / f"{sid}.lock"
 
     def _read_lock(self, sid: str) -> dict | None:
-        """Return the parsed lock dict, or None if absent or corrupt."""
+        """Return the parsed lock dict, or None if absent or corrupt.
+
+        Coerces heartbeat_ts to float and owner to str so downstream arithmetic
+        and comparisons never blow up on a hand-edited or legacy lock file.
+        """
         path = self._lock_path(sid)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            # Ensure the fields we care about are present and typed correctly.
-            float(data["heartbeat_ts"])
-            str(data["owner"])
+            # Normalise the fields we rely on so callers get clean types.
+            data["heartbeat_ts"] = float(data["heartbeat_ts"])
+            data["owner"] = str(data["owner"])
             return data
         except FileNotFoundError:
             return None
@@ -71,16 +75,38 @@ class SessionLock:
             logger.warning("session lock file for %r is corrupt; treating as reclaimable", sid)
             return None
 
-    def _write_lock(self, sid: str, owner: str) -> None:
-        """Write (or overwrite) the lock file with current pid and timestamp."""
-        path = self._lock_path(sid)
-        payload = {
+    def _payload(self, owner: str) -> dict:
+        return {
             "owner": owner,
             "pid": os.getpid(),
             "heartbeat_ts": self._clock(),
             "state": "engine",
         }
-        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def _atomic_write(self, path: pathlib.Path, payload: dict) -> None:
+        """Write the lock file via a temp file + os.replace so a concurrent
+        reader never observes a half-written (corrupt) lock."""
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(str(tmp), str(path))
+
+    def _write_lock(self, sid: str, owner: str) -> None:
+        """Overwrite the lock file with current pid and timestamp (atomic)."""
+        self._atomic_write(self._lock_path(sid), self._payload(owner))
+
+    def _create_lock_exclusive(self, sid: str, owner: str) -> bool:
+        """Atomically create the lock file. Returns True if we created it,
+        False if it already exists (another racer won the create)."""
+        path = self._lock_path(sid)
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            return False
+        try:
+            os.write(fd, json.dumps(self._payload(owner)).encode("utf-8"))
+        finally:
+            os.close(fd)
+        return True
 
     # ------------------------------------------------------------------
     # Public API
@@ -101,9 +127,18 @@ class SessionLock:
         existing = self._read_lock(sid)
 
         if existing is None:
-            # No lock (or corrupt): acquire freely.
-            self._write_lock(sid, owner)
-            return True
+            # Empty slot (or a corrupt file). Try an atomic exclusive create so
+            # two racers cannot both win the same fresh lock.
+            if self._create_lock_exclusive(sid, owner):
+                return True
+            # Lost the create race, or a corrupt file blocks O_EXCL. Re-read to
+            # apply the contention rules against whatever is now on disk.
+            existing = self._read_lock(sid)
+            if existing is None:
+                # File exists but does not parse: corrupt and reclaimable per
+                # the documented contract — overwrite it.
+                self._write_lock(sid, owner)
+                return True
 
         # Same owner: re-acquire (idempotent).
         if existing.get("owner") == owner:
@@ -111,7 +146,7 @@ class SessionLock:
             return True
 
         # Different owner: check staleness.
-        if self._clock() - existing["heartbeat_ts"] > LOCK_STALE_S:
+        if self._clock() - float(existing["heartbeat_ts"]) > LOCK_STALE_S:
             # Lock has expired; reclaim it.
             logger.info(
                 "reclaiming stale session lock for %r from owner %r",
@@ -138,15 +173,30 @@ class SessionLock:
 
         # Preserve all fields except heartbeat_ts.
         existing["heartbeat_ts"] = self._clock()
-        path.write_text(json.dumps(existing), encoding="utf-8")
+        self._atomic_write(path, existing)
 
     def release(self, sid: str) -> None:
-        """Delete the lock file for *sid*.
+        """Delete the lock file for *sid*, but ONLY if this process owns it.
 
-        Safe to call even if the lock file does not exist (idempotent).
-        Logs a debug message rather than raising on a missing file.
+        Deleting a lock written by another process would let a third process
+        acquire while the first still runs an engine on the same session — the
+        concurrent-append corruption this lock exists to prevent. Ownership is
+        keyed on pid. A corrupt/foreign lock is left for stale-reclaim.
+        Idempotent: a missing lock is a no-op.
         """
         path = self._lock_path(sid)
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            logger.debug("session lock for %r was already absent on release", sid)
+            return
+        try:
+            owned = json.loads(raw).get("pid") == os.getpid()
+        except Exception:
+            owned = False  # corrupt: do not assume ours; leave for stale-reclaim
+        if not owned:
+            logger.debug("release skipped: session lock for %r not owned by this pid", sid)
+            return
         try:
             path.unlink()
             logger.debug("released session lock for %r", sid)
