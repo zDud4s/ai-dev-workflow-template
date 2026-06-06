@@ -2,7 +2,7 @@
 // the single window.SplitTree export at the end — keeps it node-extractable.
 function stEmpty() { return null; }
 function stInsertFirst(tree, key) {
-  if (tree) throw new Error("insertFirst on non-empty tree");
+  if (tree !== null && tree !== undefined) throw new Error("insertFirst on non-empty tree");
   return { leaf: key };
 }
 function stSplitLeaf(tree, targetKey, newKey, dir) {
@@ -10,7 +10,7 @@ function stSplitLeaf(tree, targetKey, newKey, dir) {
   var newLeaf = { leaf: newKey };
   var replace = function(node) {
     if (node.leaf !== undefined) {
-      if (node.leaf !== targetKey) return node;
+      if (node.leaf !== targetKey) return { leaf: node.leaf };
       var children = (dir === "left" || dir === "top")
         ? [newLeaf, { leaf: targetKey }]
         : [{ leaf: targetKey }, newLeaf];
@@ -27,7 +27,7 @@ function stNormalize(ratios) {
 }
 function stRemove(tree, key) {
   var rec = function(node) {
-    if (node.leaf !== undefined) return node.leaf === key ? null : node;
+    if (node.leaf !== undefined) return node.leaf === key ? null : { leaf: node.leaf };
     var kept = [], keptRatios = [];
     node.children.forEach(function(c, i) {
       var r = rec(c);
@@ -58,6 +58,8 @@ function stResize(tree, path, delta) {
   var root = clone(tree);
   var node = root;
   for (var i = 0; i < path.length; i++) { node = node.children[path[i]]; }
+  // Guard: if node is falsy, a leaf, or lacks ratios, return the cloned tree unchanged
+  if (!node || node.leaf !== undefined || !Array.isArray(node.ratios)) return root;
   // node is the addressed split — shift boundary between child[0] and child[1]
   var r0 = node.ratios[0], r1 = node.ratios[1];
   var newR0 = Math.min(Math.max(r0 + delta, ST_MIN_RATIO), r0 + r1 - ST_MIN_RATIO);
@@ -82,6 +84,7 @@ function stDeserialize(obj) {
   if (!Array.isArray(obj.children) || !Array.isArray(obj.ratios)) return null;
   if (obj.children.length !== obj.ratios.length) return null;
   if (obj.children.length === 0) return null;
+  if (obj.ratios.some(function (r) { return typeof r !== "number" || r <= 0; })) return null;
   var kids = [];
   for (var i = 0; i < obj.children.length; i++) {
     var k = stDeserialize(obj.children[i]);

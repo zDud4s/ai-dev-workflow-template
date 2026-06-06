@@ -75,3 +75,15 @@ def test_resize_clamps_to_min_ratio():
 def test_deserialize_rejects_malformed():
     assert call("deserialize", {"split": "row"}) is None     # missing children
     assert call("deserialize", {"leaf": "a"}) == {"leaf": "a"}
+
+@requires_node
+def test_resize_invalid_path_is_noop():
+    t = {"leaf": "a"}
+    assert call("resize", t, [], 0.3) == {"leaf": "a"}   # leaf root -> unchanged
+
+@requires_node
+def test_deserialize_rejects_nonpositive_ratios():
+    bad = {"split": "row", "ratios": [-0.5, 1.5], "children": [{"leaf": "a"}, {"leaf": "b"}]}
+    assert call("deserialize", bad) is None
+    bad2 = {"split": "row", "ratios": ["x", 0.5], "children": [{"leaf": "a"}, {"leaf": "b"}]}
+    assert call("deserialize", bad2) is None
