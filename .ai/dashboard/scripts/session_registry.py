@@ -58,7 +58,6 @@ class Session:
         # Write-timing fields for concurrency heuristics.
         self.last_mtime: float = 0.0        # last observed mtime of the .jsonl
         self.last_growth_ts: float = 0.0    # monotonic timestamp of last file growth
-        self.subscribers: set = set()
         self.lock = threading.RLock()
         # Callable () -> bool set by serve.py; returns True when the engine recently
         # produced stdout.  Tests set this per-session.  None means "unknown".
@@ -193,11 +192,14 @@ class SessionRegistry:
                     return "queued"
                 # Our engine: submit if idle, buffer if busy.
                 if not s.turn_in_flight:
-                    s.engine.submit(turn)
-                    s.turn_in_flight = True
-                    s.in_flight_turn = turn  # record for rescue if we later cede
-                    s.idle_since = 0.0       # timer reset: engine is now busy
-                    return "accepted"
+                    if self._deliver(s, turn):
+                        s.turn_in_flight = True
+                        s.in_flight_turn = turn  # record for rescue if we later cede
+                        s.idle_since = 0.0       # timer reset: engine is now busy
+                        return "accepted"
+                    # Delivery failed: engine reconciled to MIRROR. Report
+                    # rejected so the frontend keeps the text for a retry.
+                    return "rejected"
                 else:
                     s.pending_turn = turn
                     s.pending_model = model
@@ -215,15 +217,41 @@ class SessionRegistry:
             # so the guard above already catches a second attempt. Unreachable.
             return "rejected"  # pragma: no cover
 
+    def _deliver(self, s: Session, turn: dict) -> bool:
+        """Submit a turn to the engine, failing safe.
+
+        If the engine reports the write failed — submit() returns False or
+        raises (dead process / closed stdin) — reconcile the session to MIRROR
+        and record a warning rather than leaving a turn wedged in-flight
+        forever (which tick()'s idle reclaim, gated on ``not turn_in_flight``,
+        would never recover).  A submit() returning None keeps the historical
+        "success" contract.  Returns True on success, False on a reported failure.
+        Must be called with s.lock held.
+        """
+        try:
+            ok = s.engine.submit(turn)
+        except Exception:
+            logger.warning("engine submit raised for %s; reconciling to mirror", s.sid, exc_info=True)
+            ok = False
+        if ok is False:
+            s.warnings.append("engine write failed; turn not delivered")
+            self._reconcile_to_mirror(s)
+            if self._lock_release is not None:
+                self._lock_release(s.sid)
+            s.turn_in_flight = False
+            s.in_flight_turn = None
+            return False
+        return True
+
     def _promote_to_engine(self, s: Session) -> None:
         s.state = SessionState.ENGINE
         first = s._pending_first_turn
         if first is not None:
-            s.engine.submit(first)
-            s.turn_in_flight = True
-            s.in_flight_turn = first  # record for rescue if we later cede
-            s.idle_since = 0.0        # timer reset: turn is now in-flight
             s._pending_first_turn = None
+            if self._deliver(s, first):
+                s.turn_in_flight = True
+                s.in_flight_turn = first  # record for rescue if we later cede
+                s.idle_since = 0.0        # timer reset: turn is now in-flight
 
     def mark_engine_ready(self, sid: str) -> None:
         s = self._sessions[sid]
@@ -234,16 +262,24 @@ class SessionRegistry:
     def mark_turn_done(self, sid: str) -> None:
         s = self._sessions[sid]
         with s.lock:
+            # A terminal 'result' can arrive late — e.g. buffered in a
+            # subprocess we already killed during a cede or release. Act only
+            # while we still own a live engine; otherwise this would crash on a
+            # None engine and, worse, advance last_rendered_offset on a file
+            # the IDE now owns (letting the next foreign write slip through).
+            if s.state != SessionState.ENGINE or s.engine is None:
+                return
             s.turn_in_flight = False
             s.last_rendered_offset = s.last_size
             if s.pending_turn is not None:
                 # Drain the queued turn into the engine; record it as the new in-flight turn.
                 next_turn = s.pending_turn
-                s.engine.submit(next_turn)
-                s.turn_in_flight = True
-                s.in_flight_turn = next_turn
                 s.pending_turn = None
-                s.idle_since = 0.0  # re-armed: idle timer resets while a turn is running
+                if self._deliver(s, next_turn):
+                    s.turn_in_flight = True
+                    s.in_flight_turn = next_turn
+                    s.idle_since = 0.0  # re-armed: idle timer resets while a turn is running
+                # else: _deliver reconciled to MIRROR; nothing left in-flight.
             else:
                 # Nothing pending; the engine is now fully idle — start the idle timer.
                 s.in_flight_turn = None

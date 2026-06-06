@@ -849,3 +849,85 @@ def test_interrupt_closes_writing_ours_race():
     assert reg.writing_ours(s) is False, (
         "writing_ours must be False after interrupt so the self-cede race is closed"
     )
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: late-result-after-cede guard (C1), failed-submit no wedge
+# (I2), and removal of the dead `subscribers` attribute (M2).
+# ---------------------------------------------------------------------------
+
+class _FailingEngine(_FakeEngine):
+    """Engine whose submit() reports a write failure (dead/closed stdin)."""
+    def submit(self, turn):
+        return False
+
+
+def test_mark_turn_done_is_noop_after_cede():
+    """A late type=result from a killed subprocess must not touch a None engine
+    nor advance the rendered offset on the now foreign-owned file."""
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: _FakeEngine())
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    # Post-cede shape: FOREIGN, engine killed, the rescued turn left pending.
+    s.state = sr.SessionState.FOREIGN
+    s.engine = None
+    s.pending_turn = {"text": "rescued"}
+    s.last_size = 500
+    s.last_rendered_offset = 100
+
+    reg.mark_turn_done("s")  # must NOT raise
+
+    assert s.state == sr.SessionState.FOREIGN
+    assert s.pending_turn == {"text": "rescued"}, "pending turn must not be consumed by a stray result"
+    assert s.last_rendered_offset == 100, "offset must NOT advance on a foreign-owned file"
+
+
+def test_mark_turn_done_is_noop_after_release():
+    """A late result after release() (MIRROR, engine None) must be a safe no-op."""
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: _FakeEngine())
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    s.state = sr.SessionState.MIRROR
+    s.engine = None
+    s.last_size = 300
+    s.last_rendered_offset = 80
+
+    reg.mark_turn_done("s")  # must NOT raise
+
+    assert s.state == sr.SessionState.MIRROR
+    assert s.last_rendered_offset == 80
+
+
+def test_failed_submit_does_not_wedge_turn_in_flight():
+    """When the engine reports the write failed, the session must reconcile to
+    MIRROR with a warning instead of leaving turn_in_flight stuck True forever."""
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: _FailingEngine())
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    s.last_growth_ts = -10_000.0  # quiet long enough to acquire immediately
+
+    reg.submit_turn("s", {"text": "hi"}, model="m")
+
+    assert s.turn_in_flight is False, "a failed submit must not set turn_in_flight"
+    assert s.state == sr.SessionState.MIRROR, "an unusable engine must be reconciled to mirror"
+    assert any("write failed" in w for w in s.warnings), "a warning must record the failed delivery"
+
+
+def test_failed_drain_after_turn_done_does_not_wedge():
+    """If draining a queued turn into the engine fails, do not wedge turn_in_flight."""
+    eng = _FailingEngine()
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    s.state = sr.SessionState.ENGINE
+    s.engine = eng
+    s.turn_in_flight = True
+    s.pending_turn = {"text": "queued"}
+
+    reg.mark_turn_done("s")
+
+    assert s.turn_in_flight is False
+    assert s.state == sr.SessionState.MIRROR
+    assert any("write failed" in w for w in s.warnings)
+
+
+def test_session_has_no_dead_subscribers_attribute():
+    """The unused `subscribers` field was removed (M2); Session must not declare it."""
+    s = sr.Session("s", "/tmp/s.jsonl")
+    assert not hasattr(s, "subscribers"), "Session.subscribers was dead code and should be gone"
