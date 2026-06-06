@@ -849,3 +849,34 @@ def test_stream_emits_warning_frame(running_server, serve_module, tmp_path, monk
     assert any(warning_text in wf.get("text", "") for wf in warning_frames), (
         f"warning text not in any warning frame: {warning_frames}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: adapter reports send failures (I2), corroboration window
+# spans multiple watch ticks (I3), and warnings are not cleared from the shared
+# list so concurrent streams each receive them (I4).
+# ---------------------------------------------------------------------------
+
+def test_resume_adapter_submit_reports_send_failure(serve_module, monkeypatch):
+    """_ResumeEngineAdapter.submit must return False when the stdin write fails
+    and True when it succeeds, so the registry can fail safe instead of wedging."""
+    monkeypatch.setattr(serve_module, "_send_to_stdin", lambda j, t: (False, "job not running"))
+    assert serve_module._ResumeEngineAdapter("job-dead").submit({"text": "hi"}) is False
+
+    monkeypatch.setattr(serve_module, "_send_to_stdin", lambda j, t: (True, ""))
+    assert serve_module._ResumeEngineAdapter("job-live").submit({"text": "hi"}) is True
+
+
+def test_corroboration_window_covers_multiple_watch_ticks(serve_module):
+    """The stdout-corroboration window must span at least three watcher ticks so
+    normal scheduler jitter cannot make the engine mis-cede its own trailing bytes."""
+    assert serve_module.STDOUT_CORROBORATION_WINDOW_S >= 3 * serve_module.WATCH_INTERVAL_S
+
+
+def test_session_stream_does_not_clear_shared_warnings(serve_module):
+    """Warnings must be delivered via a per-stream cursor, never cleared from the
+    shared list — otherwise the first of two concurrent streams on the same
+    session consumes a warning and the second never sees it."""
+    src = inspect.getsource(serve_module.Handler)
+    assert ".warnings.clear()" not in src, "the SSE loop must not clear the shared warnings list"
+    assert "warn_seen" in src, "the SSE loop should track a per-stream warning cursor"

@@ -5046,8 +5046,10 @@ def _cancel_job(job_id: str) -> bool:
 # for Tasks 6-8 will call SESSION_REGISTRY.submit_turn() / .release().
 
 # Seconds after the last stdout chunk within which the engine is considered
-# "recently active" for the concurrency heuristic in the registry.
-STDOUT_CORROBORATION_WINDOW_S = 2.0
+# "recently active" for the concurrency heuristic in the registry. Kept at
+# >= 3x the watch interval so scheduler jitter or a slow tick cannot make the
+# engine mis-cede the trailing bytes of its own reply as a foreign write.
+STDOUT_CORROBORATION_WINDOW_S = 3.0
 # ---------------------------------------------------------------------------
 
 class _ResumeEngineAdapter:
@@ -5063,15 +5065,18 @@ class _ResumeEngineAdapter:
 
     # --- EngineProtocol -------------------------------------------------------
 
-    def submit(self, turn: dict) -> None:
+    def submit(self, turn: dict) -> bool:
         """Write a user turn to the stdin of the resume subprocess.
 
         turn is a dict such as {"text": "..."} (and eventually images/files;
-        for now only text is handled).
+        for now only text is handled). Returns True if the write succeeded,
+        False if the subprocess is gone or its stdin is closed — the registry
+        uses this to fail safe instead of leaving a turn wedged in-flight.
         """
         text = turn.get("text") or ""
         # Reuses _send_to_stdin which already handles JSON-wrapping for kind=chat.
-        _send_to_stdin(self._job_id, text)
+        ok, _err = _send_to_stdin(self._job_id, text)
+        return ok
 
     def interrupt(self) -> None:
         """Send an interrupt envelope to the resume subprocess."""
@@ -9038,6 +9043,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         last_size = pos
         last_emitted_state = state_label
         last_emitted_pending = _leading_pending  # track pending alongside state
+        # Per-stream cursor into the session's append-only warnings list. Seed
+        # at 0 so a freshly connected stream replays every warning raised so far
+        # (incl. ones recorded before connect), and — because we never clear the
+        # shared list — concurrent streams on the same session each get them all.
+        warn_seen = 0
         idle_ticks = 0
         max_idle_ticks = 240  # ~4 minutes at 1 s; client will reconnect
         try:
@@ -9060,10 +9070,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     _rs = SESSION_REGISTRY._sessions.get(session_id)
                     _cur_state = _rs.state.value if _rs is not None else None
                     _cur_pending = (_rs.pending_turn is not None) if _rs is not None else False
-                    # Drain warnings atomically under the lock so none are lost.
-                    _ws = list(_rs.warnings) if _rs is not None else []
+                    # Emit only the warnings appended since this stream last
+                    # looked, WITHOUT clearing the shared list — so multiple
+                    # concurrent streams on the same session each receive every
+                    # warning (no first-reader-wins drop). The list is
+                    # append-only and bounded by the rare anomaly count.
                     if _rs is not None:
-                        _rs.warnings.clear()
+                        _ws = _rs.warnings[warn_seen:]
+                        warn_seen = len(_rs.warnings)
+                    else:
+                        _ws = []
                 if _cur_state and (_cur_state != last_emitted_state or _cur_pending != last_emitted_pending):
                     last_emitted_state = _cur_state
                     last_emitted_pending = _cur_pending
