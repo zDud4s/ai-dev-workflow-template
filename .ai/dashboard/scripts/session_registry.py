@@ -163,7 +163,7 @@ class SessionRegistry:
                         s.pending_turn = turn
                         s.pending_model = model
                         s.pending_owner = owner
-                        s.warnings.append("engine lock held by another process")
+                        self._warn(s, "engine lock held by another process")
                         return "queued"
                     s.last_rendered_offset = s.last_size  # seed offset BEFORE writing
                     s.engine = self._engine_factory(sid, model)
@@ -217,6 +217,15 @@ class SessionRegistry:
             # so the guard above already catches a second attempt. Unreachable.
             return "rejected"  # pragma: no cover
 
+    def _warn(self, s: Session, msg: str) -> None:
+        """Record a warning, de-duplicating an immediately-repeated identical
+        message. The SSE loop delivers warnings via a per-stream cursor and no
+        longer clears the shared list, so a per-tick path (e.g. the quiet-tick
+        'lock held by another process' branch) must not append the same line
+        every second — that would grow the list without bound and spam panes."""
+        if not s.warnings or s.warnings[-1] != msg:
+            s.warnings.append(msg)
+
     def _deliver(self, s: Session, turn: dict) -> bool:
         """Submit a turn to the engine, failing safe.
 
@@ -234,7 +243,7 @@ class SessionRegistry:
             logger.warning("engine submit raised for %s; reconciling to mirror", s.sid, exc_info=True)
             ok = False
         if ok is False:
-            s.warnings.append("engine write failed; turn not delivered")
+            self._warn(s, "engine write failed; turn not delivered")
             self._reconcile_to_mirror(s)
             if self._lock_release is not None:
                 self._lock_release(s.sid)
@@ -410,7 +419,7 @@ class SessionRegistry:
                         s.engine = None
                         s.turn_in_flight = False  # clear stale flag on abort
                         s.state = SessionState.FOREIGN
-                        s.warnings.append("acquire aborted: foreign write")
+                        self._warn(s, "acquire aborted: foreign write")
                         # pending_turn is intentionally kept so auto-acquire can
                         # resubmit it once the session goes quiet again.
 
@@ -448,7 +457,7 @@ class SessionRegistry:
                                 logger.debug("engine kill failed for %s", sid, exc_info=True)
                         s.engine = None
                         s.state = SessionState.FOREIGN
-                        s.warnings.append("ceded: foreign write during idle engine")
+                        self._warn(s, "ceded: foreign write during idle engine")
 
                 else:
                     # FOREIGN: IDE is still writing; just update the size fields.
@@ -468,7 +477,7 @@ class SessionRegistry:
                         # Session has gone quiet and there is a buffered turn: acquire —
                         # unless the cross-process lock is held by another process.
                         if self._lock_acquire is not None and not self._lock_acquire(sid, s.pending_owner):
-                            s.warnings.append("engine lock held by another process")
+                            self._warn(s, "engine lock held by another process")
                             # Leave pending_turn in place; stay in FOREIGN and wait.
                         else:
                             # Restore the owner that submitted the pending turn.

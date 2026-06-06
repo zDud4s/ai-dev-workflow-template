@@ -931,3 +931,30 @@ def test_session_has_no_dead_subscribers_attribute():
     """The unused `subscribers` field was removed (M2); Session must not declare it."""
     s = sr.Session("s", "/tmp/s.jsonl")
     assert not hasattr(s, "subscribers"), "Session.subscribers was dead code and should be gone"
+
+
+def test_repeated_lock_held_warning_is_deduped():
+    """Under sustained cross-process lock contention the quiet-tick path must not
+    append the same warning every poll — that would grow s.warnings unboundedly
+    (the SSE loop no longer clears it). Consecutive identical warnings de-dup."""
+    clock_cell = [1000.0]
+    reg = sr.SessionRegistry(
+        engine_factory=lambda sid, model: _FakeEngine(),
+        clock=lambda: clock_cell[0],
+        lock_acquire=lambda sid, owner: False,  # another process always holds the lock
+    )
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    s.state = sr.SessionState.FOREIGN
+    s.pending_turn = {"text": "queued"}
+    s.pending_owner = "me"
+    s.last_size = 100
+    s.last_growth_ts = 1000.0
+
+    # Several quiet ticks (size unchanged) well past QUIESCENT_S, lock still held.
+    for i in range(5):
+        clock_cell[0] = 1000.0 + 3.0 + i
+        reg.note_jsonl_growth("s", 100, mtime=clock_cell[0])
+
+    held = [w for w in s.warnings if "lock held" in w]
+    assert len(held) == 1, f"lock-held warning must be de-duped under sustained contention, got {len(held)}"
+    assert s.state == sr.SessionState.FOREIGN  # still waiting for the lock
