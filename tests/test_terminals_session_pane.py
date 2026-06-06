@@ -142,3 +142,30 @@ def test_queued_chip_updates_immediately_on_202():
     # On a 202 (queued) the chip should flip to the queued state right away
     # rather than waiting ~1s for the next SSE state frame.
     assert "t.pending = true" in src, "the 202 branch should set t.pending = true"
+
+
+# ------------------------------------------------------------------
+# Fase 3 — Task 4: unified picker (Sessions from /api/sessions + Jobs section)
+# ------------------------------------------------------------------
+
+def test_picker_unified_sessions_group():
+    src = js()
+    # The picker's session list is fed by the unified endpoint and renders a
+    # state chip per row, with session:<sid> option values.
+    assert "/api/sessions" in src, "picker should fetch /api/sessions"
+    assert 'value="session:' in src, "picker should emit session:<sid> option values"
+    assert "s.state" in src or ".state" in src, "picker should show a per-session state chip"
+
+
+def test_picker_jobs_group_excludes_claude_chat():
+    src = js()
+    # Claude chats are sessions now; the Jobs group keeps only non-chat jobs
+    # (orchestrate / plan / codex).
+    assert 'kind !== "chat"' in src, "Jobs group should exclude kind=='chat' (now sessions)"
+
+
+def test_picker_open_routes_session_to_session_pane():
+    src = js()
+    assert 'source === "session"' in src, "open handler should route session: selections"
+    # and it opens the unified pane
+    assert "termOpenSession(" in src

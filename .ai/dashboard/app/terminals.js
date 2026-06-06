@@ -465,28 +465,30 @@
       const prev = sel.value;
       const openKeys = new Set(TERMS.keys());
 
-      // Jobs spawned by the dashboard (chat / orchestrate / plan / codex).
-      // ``/api/jobs`` already returns newest-first, so a simple .slice()
-      // gives us the freshest entries without re-sorting.
-      const jobChoices = (jobs || [])
-        .filter((j) => !openKeys.has(j.id))
-        .slice(0, PICKER_MAX_PER_GROUP);
-      const totalJobs = (jobs || []).filter((j) => !openKeys.has(j.id)).length;
-
-      // IDE transcripts that we can mirror live.
-      let transcripts = [];
-      let totalTranscripts = 0;
+      // Sessions: IDE + dashboard Claude chats, unified from /api/sessions
+      // (deduped by sid, each annotated with its baton state). This single
+      // group replaces the old "IDE chats" group AND the chat-kind dashboard
+      // jobs — every Claude conversation opens as one writable session pane.
+      let sessions = [];
+      let totalSessions = 0;
       try {
-        const r = await fetch("/api/transcripts", { cache: "no-store" });
+        const r = await fetch("/api/sessions", { cache: "no-store" });
         if (r.ok) {
           const data = await r.json();
-          const all = (data.transcripts || []).filter((t) => !openKeys.has("ide:" + t.session_id));
-          totalTranscripts = all.length;
-          transcripts = all.slice(0, PICKER_MAX_PER_GROUP);
+          const all = (data.sessions || []).filter((s) => !openKeys.has("session:" + s.sid));
+          totalSessions = all.length;
+          sessions = all.slice(0, PICKER_MAX_PER_GROUP);
         }
       } catch (_) { /* ignore — picker still works for jobs */ }
 
-      if (!jobChoices.length && !transcripts.length) {
+      // Jobs spawned by the dashboard that are NOT Claude chats: orchestrate /
+      // plan / codex. Claude chats (kind === "chat") are sessions now and live
+      // in the Sessions group above, so they are excluded here.
+      const nonChatJobs = (jobs || []).filter((j) => j.kind !== "chat" && !openKeys.has(j.id));
+      const jobChoices = nonChatJobs.slice(0, PICKER_MAX_PER_GROUP);
+      const totalJobs = nonChatJobs.length;
+
+      if (!sessions.length && !jobChoices.length) {
         sel.innerHTML = `<option value="">— nothing to open —</option>`;
         sel.disabled = true;
         const termOpenBtn = $("#term-open");
@@ -494,24 +496,27 @@
         return;
       }
       const parts = [];
+      if (sessions.length) {
+        // Label surfaces truncation ("N of M newest") so the cap is never silent.
+        const label = totalSessions > sessions.length
+          ? `Sessions (${sessions.length} of ${totalSessions} newest)`
+          : "Sessions";
+        parts.push(`<optgroup label="${escape(label)}">` + sessions.map((s) => {
+          const sid = s.sid;
+          const state = s.state || "mirror";
+          const title = (s.title || s.task || "").replace(/\s+/g, " ").slice(0, 50);
+          const when = (s.modified || s.started_at || "").slice(11, 16);
+          const shown = title || (sid.slice(0, 8) + "…");
+          return `<option value="session:${escape(sid)}">[${escape(state)}] ${escape(shown)}${when ? " (" + escape(when) + ")" : ""}</option>`;
+        }).join("") + `</optgroup>`);
+      }
       if (jobChoices.length) {
         const label = totalJobs > jobChoices.length
-          ? `Dashboard jobs (${jobChoices.length} of ${totalJobs} newest)`
-          : "Dashboard jobs";
+          ? `Jobs (${jobChoices.length} of ${totalJobs} newest)`
+          : "Jobs";
         parts.push(`<optgroup label="${escape(label)}">` + jobChoices.map((j) => {
           const preview = (j.task || "").replace(/\s+/g, " ").slice(0, 60);
           return `<option value="job:${escape(j.id)}">[${escape(j.status)}] ${escape(j.kind)} — ${escape(preview)}</option>`;
-        }).join("") + `</optgroup>`);
-      }
-      if (transcripts.length) {
-        const label = totalTranscripts > transcripts.length
-          ? `IDE chats (${transcripts.length} of ${totalTranscripts} newest, read-only)`
-          : "IDE chats (live read-only)";
-        parts.push(`<optgroup label="${escape(label)}">` + transcripts.map((t) => {
-          const sid = t.session_id;
-          const kb = Math.round(t.size_bytes / 1024);
-          const when = (t.modified || "").slice(11, 16);
-          return `<option value="ide:${escape(sid)}">[${escape(when)}] ${escape(sid.slice(0, 8))}… (${kb} KB)</option>`;
         }).join("") + `</optgroup>`);
       }
       sel.innerHTML = parts.join("");
@@ -4587,6 +4592,13 @@
         // Picker click = "I explicitly want this pane". Lift any prior
         // suppression so the pane behaves like a fresh open: re-closes
         // re-suppress, auto-open paths take the id back into account.
+        if (source === "session") {
+          unsuppressAutoOpen("session:" + id);
+          unsuppressAutoOpen("ide:" + id);  // a session may have been auto-suppressed under its ide key
+          termOpenSession(id);
+          termFocusNewPane("session:" + id);
+          return;
+        }
         if (source === "ide") {
           unsuppressAutoOpen("ide:" + id);
           termOpenTranscript(id);
