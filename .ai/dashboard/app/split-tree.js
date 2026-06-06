@@ -21,4 +21,22 @@ function stSplitLeaf(tree, targetKey, newKey, dir) {
   };
   return replace(tree);
 }
-window.SplitTree = { empty: stEmpty, insertFirst: stInsertFirst, splitLeaf: stSplitLeaf };
+function stNormalize(ratios) {
+  var sum = ratios.reduce(function(a, b) { return a + b; }, 0) || 1;
+  return ratios.map(function(r) { return r / sum; });
+}
+function stRemove(tree, key) {
+  var rec = function(node) {
+    if (node.leaf !== undefined) return node.leaf === key ? null : node;
+    var kept = [], keptRatios = [];
+    node.children.forEach(function(c, i) {
+      var r = rec(c);
+      if (r !== null) { kept.push(r); keptRatios.push(node.ratios[i]); }
+    });
+    if (kept.length === 0) return null;
+    if (kept.length === 1) return kept[0];
+    return { split: node.split, ratios: stNormalize(keptRatios), children: kept };
+  };
+  return rec(tree);
+}
+window.SplitTree = { empty: stEmpty, insertFirst: stInsertFirst, splitLeaf: stSplitLeaf, remove: stRemove };

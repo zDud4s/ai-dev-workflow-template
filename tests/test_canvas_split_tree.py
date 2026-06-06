@@ -43,3 +43,19 @@ def test_split_nested_leaf_only_touches_target():
     assert out["children"][0] == {"leaf": "a"}
     assert out["children"][1] == {"split": "col", "ratios": [0.5, 0.5],
                                   "children": [{"leaf": "b"}, {"leaf": "c"}]}
+
+@requires_node
+def test_remove_only_leaf_returns_null():
+    assert call("remove", {"leaf": "a"}, "a") is None
+
+@requires_node
+def test_remove_collapses_parent_to_sibling():
+    t = call("splitLeaf", {"leaf": "a"}, "a", "b", "right")
+    assert call("remove", t, "b") == {"leaf": "a"}
+
+@requires_node
+def test_remove_deep_keeps_other_branch():
+    t = call("splitLeaf", {"leaf": "a"}, "a", "b", "right")
+    t = call("splitLeaf", t, "b", "c", "bottom")
+    assert call("remove", t, "c") == {"split": "row", "ratios": [0.5, 0.5],
+        "children": [{"leaf": "a"}, {"leaf": "b"}]}
