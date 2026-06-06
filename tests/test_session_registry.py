@@ -347,3 +347,237 @@ def test_submit_turn_accepts_owner_kwarg():
     eng._ready = False
     result = reg.submit_turn("s", {"text": "x"}, model="m", owner="tab-Z")
     assert result in {"accepted", "queued", "rejected"}
+
+
+# ---------------------------------------------------------------------------
+# note_jsonl_growth tests — written first (TDD: all fail before implementation)
+# ---------------------------------------------------------------------------
+
+def _mk_growth(state, *, clock_val=100.0, last_size=100, last_mtime=1.0,
+               last_growth_ts=0.0, last_rendered_offset=0,
+               turn_in_flight=False, pending_turn=None, pending_model=None,
+               engine_active_probe=None, engine=None):
+    """Build a registry+session configured for note_jsonl_growth tests."""
+    t = clock_val
+    reg = sr.SessionRegistry(
+        engine_factory=lambda sid, model: _FakeEngine(),
+        clock=lambda: t,
+    )
+    # Use a mutable cell so we can advance the clock inside a test.
+    clock_cell = [clock_val]
+    reg._clock = lambda: clock_cell[0]
+
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    s.state = state
+    s.last_size = last_size
+    s.last_mtime = last_mtime
+    s.last_growth_ts = last_growth_ts
+    s.last_rendered_offset = last_rendered_offset
+    s.turn_in_flight = turn_in_flight
+    s.pending_turn = pending_turn
+    s.pending_model = pending_model if pending_model is not None else "m"
+    s.engine_active_probe = engine_active_probe
+    if engine is not None:
+        s.engine = engine
+    return reg, s, clock_cell
+
+
+# --- MIRROR + growth → FOREIGN ---
+
+def test_mirror_growth_transitions_to_foreign():
+    """MIRROR: when the .jsonl grows it must be the IDE; transition to FOREIGN."""
+    reg, s, clock = _mk_growth(sr.SessionState.MIRROR, last_size=100)
+    reg.note_jsonl_growth("s", size=200, mtime=2.0)
+    assert s.state == sr.SessionState.FOREIGN
+    assert s.last_size == 200
+    assert s.last_mtime == 2.0
+
+
+# --- FOREIGN + quiet ≥ QUIESCENT_S + no pending → MIRROR ---
+
+def test_foreign_quiet_no_pending_transitions_to_mirror():
+    """FOREIGN + quiet tick after QUIESCENT_S with no pending turn → MIRROR."""
+    reg, s, clock = _mk_growth(
+        sr.SessionState.FOREIGN,
+        last_size=100, last_growth_ts=90.0,  # growth happened at t=90
+        clock_val=90.0,
+    )
+    # First tick: growth at t=90 sets last_growth_ts
+    reg.note_jsonl_growth("s", size=200, mtime=2.0)
+    assert s.state == sr.SessionState.FOREIGN
+
+    # Advance clock past quiescence threshold; send a quiet tick (same size)
+    clock[0] = 90.0 + sr.QUIESCENT_S + 0.1
+    reg.note_jsonl_growth("s", size=200, mtime=3.0)
+    assert s.state == sr.SessionState.MIRROR
+
+
+# --- FOREIGN + quiet ≥ QUIESCENT_S + pending → ACQUIRING + engine spawned ---
+
+def test_foreign_quiet_with_pending_auto_acquires():
+    """FOREIGN + quiet tick after QUIESCENT_S + pending turn → ACQUIRING, engine set."""
+    spawned = []
+
+    def factory(sid, model):
+        e = _FakeEngine()
+        e._ready = False   # stay in ACQUIRING so we can check
+        spawned.append(e)
+        return e
+
+    reg = sr.SessionRegistry(engine_factory=factory, clock=lambda: 90.0)
+    clock_cell = [90.0]
+    reg._clock = lambda: clock_cell[0]
+
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    s.state = sr.SessionState.FOREIGN
+    s.last_size = 100
+    s.last_mtime = 1.0
+    s.last_growth_ts = 90.0
+    s.pending_turn = {"text": "waiting"}
+    s.pending_model = "claude-sonnet-4-6"
+
+    # Growth tick establishes last_growth_ts = 90
+    reg.note_jsonl_growth("s", size=200, mtime=2.0)
+    assert s.state == sr.SessionState.FOREIGN
+
+    # Quiet tick after quiescence
+    clock_cell[0] = 90.0 + sr.QUIESCENT_S + 0.1
+    reg.note_jsonl_growth("s", size=200, mtime=3.0)
+
+    assert s.state == sr.SessionState.ACQUIRING
+    assert s.engine is not None
+    assert len(spawned) == 1
+
+
+# --- ENGINE idle + growth → FOREIGN, engine killed, warning recorded ---
+
+def test_engine_idle_foreign_growth_cedes():
+    """ENGINE idle (turn_in_flight=False, probe=False) + growth → FOREIGN, kill, warning."""
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ENGINE,
+        last_size=100, last_rendered_offset=100,
+        turn_in_flight=False,
+        engine=eng,
+        engine_active_probe=lambda: False,
+    )
+    reg.note_jsonl_growth("s", size=200, mtime=2.0)
+    assert s.state == sr.SessionState.FOREIGN
+    assert eng.killed is True
+    assert s.engine is None
+    assert len(s.warnings) >= 1
+    assert any("ceded" in w for w in s.warnings)
+
+
+# --- ENGINE, turn_in_flight=True + growth → stays ENGINE, offset advances ---
+
+def test_engine_turn_in_flight_growth_stays_engine():
+    """ENGINE with turn_in_flight=True + growth → stays ENGINE, last_rendered_offset updated."""
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ENGINE,
+        last_size=100, last_rendered_offset=100,
+        turn_in_flight=True,
+        engine=eng,
+        engine_active_probe=lambda: False,
+    )
+    reg.note_jsonl_growth("s", size=200, mtime=2.0)
+    assert s.state == sr.SessionState.ENGINE
+    assert eng.killed is False
+    assert s.last_rendered_offset == 200
+    assert s.warnings == []
+
+
+# --- ENGINE idle but probe=True + growth → stays ENGINE ---
+
+def test_engine_idle_probe_true_growth_stays_engine():
+    """ENGINE idle but engine_active_probe returns True → corroborated ours, stay ENGINE."""
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ENGINE,
+        last_size=100, last_rendered_offset=100,
+        turn_in_flight=False,
+        engine=eng,
+        engine_active_probe=lambda: True,
+    )
+    reg.note_jsonl_growth("s", size=200, mtime=2.0)
+    assert s.state == sr.SessionState.ENGINE
+    assert eng.killed is False
+    assert s.last_rendered_offset == 200
+    assert s.warnings == []
+
+
+# --- ACQUIRING + growth, probe False → FOREIGN (abort) + warning ---
+
+def test_acquiring_growth_probe_false_aborts_to_foreign():
+    """ACQUIRING + growth + probe False → engine killed, FOREIGN, warning, pending kept."""
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ACQUIRING,
+        last_size=100,
+        engine=eng,
+        engine_active_probe=lambda: False,
+        pending_turn={"text": "my turn"},
+    )
+    reg.note_jsonl_growth("s", size=200, mtime=2.0)
+    assert s.state == sr.SessionState.FOREIGN
+    assert eng.killed is True
+    assert s.engine is None
+    assert len(s.warnings) >= 1
+    assert any("acquire aborted" in w for w in s.warnings)
+    # Turn must be preserved for future auto-acquire
+    assert s.pending_turn == {"text": "my turn"}
+
+
+# --- ACQUIRING + growth, probe True → stays ACQUIRING ---
+
+def test_acquiring_growth_probe_true_stays_acquiring():
+    """ACQUIRING + growth + probe True (our engine is producing stdout) → stays ACQUIRING."""
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ACQUIRING,
+        last_size=100,
+        engine=eng,
+        engine_active_probe=lambda: True,
+        pending_turn={"text": "my turn"},
+    )
+    reg.note_jsonl_growth("s", size=200, mtime=2.0)
+    assert s.state == sr.SessionState.ACQUIRING
+    assert eng.killed is False
+    assert s.warnings == []
+
+
+# --- Shrink → MIRROR + terminated + engine killed ---
+
+def test_shrink_transitions_to_mirror_terminated():
+    """Shrink (size < last_size) → MIRROR, terminated=True, engine killed."""
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ENGINE,
+        last_size=500,
+        engine=eng,
+    )
+    reg.note_jsonl_growth("s", size=100, mtime=5.0)
+    assert s.state == sr.SessionState.MIRROR
+    assert s.terminated is True
+    assert eng.killed is True
+    assert s.engine is None
+    assert s.last_size == 100
+    assert s.last_mtime == 5.0
+
+
+# --- note_jsonl_gone → MIRROR + terminated ---
+
+def test_note_jsonl_gone_mirror_terminated():
+    """note_jsonl_gone: file disappeared → MIRROR + terminated=True, engine killed if any."""
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ENGINE,
+        last_size=200,
+        engine=eng,
+    )
+    reg.note_jsonl_gone("s")
+    assert s.state == sr.SessionState.MIRROR
+    assert s.terminated is True
+    assert eng.killed is True
+    assert s.engine is None
