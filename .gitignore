@@ -19,6 +19,7 @@ tests/*
 !tests/conftest.py
 !tests/_diff_render_runner.js
 !tests/_split_tree_runner.js
+!tests/_canvas_bus_runner.js
 
 # ─────────────────────────────────────────────────────────────
 # AI workflow — generated content
