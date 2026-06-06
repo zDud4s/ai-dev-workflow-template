@@ -39,4 +39,59 @@ function stRemove(tree, key) {
   };
   return rec(tree);
 }
-window.SplitTree = { empty: stEmpty, insertFirst: stInsertFirst, splitLeaf: stSplitLeaf, remove: stRemove };
+function stKeys(tree) {
+  if (tree === null || tree === undefined) return [];
+  if (tree.leaf !== undefined) return [tree.leaf];
+  var result = [];
+  tree.children.forEach(function(c) {
+    stKeys(c).forEach(function(k) { result.push(k); });
+  });
+  return result;
+}
+var ST_MIN_RATIO = 0.1;
+function stResize(tree, path, delta) {
+  var clone = function(node) {
+    if (node.leaf !== undefined) return { leaf: node.leaf };
+    return { split: node.split, ratios: node.ratios.slice(),
+             children: node.children.map(clone) };
+  };
+  var root = clone(tree);
+  var node = root;
+  for (var i = 0; i < path.length; i++) { node = node.children[path[i]]; }
+  // node is the addressed split — shift boundary between child[0] and child[1]
+  var r0 = node.ratios[0], r1 = node.ratios[1];
+  var newR0 = Math.min(Math.max(r0 + delta, ST_MIN_RATIO), r0 + r1 - ST_MIN_RATIO);
+  node.ratios[0] = newR0;
+  node.ratios[1] = (r0 + r1) - newR0;
+  return root;
+}
+function stSerialize(tree) {
+  if (tree === null || tree === undefined) return null;
+  if (tree.leaf !== undefined) return { leaf: tree.leaf };
+  return { split: tree.split, ratios: tree.ratios.slice(),
+           children: tree.children.map(stSerialize) };
+}
+function stDeserialize(obj) {
+  if (obj === null || obj === undefined) return null;
+  if (obj.leaf !== undefined) {
+    if (typeof obj.leaf !== "string") return null;
+    return { leaf: obj.leaf };
+  }
+  if (obj.split === undefined) return null;
+  if (obj.split !== "row" && obj.split !== "col") return null;
+  if (!Array.isArray(obj.children) || !Array.isArray(obj.ratios)) return null;
+  if (obj.children.length !== obj.ratios.length) return null;
+  if (obj.children.length === 0) return null;
+  var kids = [];
+  for (var i = 0; i < obj.children.length; i++) {
+    var k = stDeserialize(obj.children[i]);
+    if (k === null) return null;
+    kids.push(k);
+  }
+  return { split: obj.split, ratios: obj.ratios.slice(), children: kids };
+}
+window.SplitTree = {
+  empty: stEmpty, insertFirst: stInsertFirst, splitLeaf: stSplitLeaf,
+  remove: stRemove, keys: stKeys, resize: stResize,
+  serialize: stSerialize, deserialize: stDeserialize
+};

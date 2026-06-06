@@ -59,3 +59,19 @@ def test_remove_deep_keeps_other_branch():
     t = call("splitLeaf", t, "b", "c", "bottom")
     assert call("remove", t, "c") == {"split": "row", "ratios": [0.5, 0.5],
         "children": [{"leaf": "a"}, {"leaf": "b"}]}
+
+@requires_node
+def test_keys_in_order():
+    t = call("splitLeaf", {"leaf": "a"}, "a", "b", "right")
+    assert call("keys", t) == ["a", "b"]
+
+@requires_node
+def test_resize_clamps_to_min_ratio():
+    t = call("splitLeaf", {"leaf": "a"}, "a", "b", "right")
+    out = call("resize", t, [], 0.6)        # would push child0 to 1.1 -> clamp
+    assert out["ratios"][0] <= 0.9 + 1e-9 and out["ratios"][1] >= 0.1 - 1e-9
+
+@requires_node
+def test_deserialize_rejects_malformed():
+    assert call("deserialize", {"split": "row"}) is None     # missing children
+    assert call("deserialize", {"leaf": "a"}) == {"leaf": "a"}
