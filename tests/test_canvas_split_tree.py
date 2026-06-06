@@ -17,3 +17,29 @@ def call(op, *args):
 @requires_node
 def test_insert_first_makes_single_leaf():
     assert call("insertFirst", None, "job:a") == {"leaf": "job:a"}
+
+@requires_node
+def test_split_right_makes_row():
+    t = call("insertFirst", None, "a")
+    assert call("splitLeaf", t, "a", "b", "right") == {
+        "split": "row", "ratios": [0.5, 0.5],
+        "children": [{"leaf": "a"}, {"leaf": "b"}]}
+
+@requires_node
+def test_split_left_puts_new_first():
+    t = call("insertFirst", None, "a")
+    assert call("splitLeaf", t, "a", "b", "left")["children"] == [{"leaf": "b"}, {"leaf": "a"}]
+
+@requires_node
+def test_split_bottom_makes_col():
+    t = call("insertFirst", None, "a")
+    out = call("splitLeaf", t, "a", "b", "bottom")
+    assert out["split"] == "col" and out["children"] == [{"leaf": "a"}, {"leaf": "b"}]
+
+@requires_node
+def test_split_nested_leaf_only_touches_target():
+    t = call("splitLeaf", call("insertFirst", None, "a"), "a", "b", "right")
+    out = call("splitLeaf", t, "b", "c", "bottom")
+    assert out["children"][0] == {"leaf": "a"}
+    assert out["children"][1] == {"split": "col", "ratios": [0.5, 0.5],
+                                  "children": [{"leaf": "b"}, {"leaf": "c"}]}
