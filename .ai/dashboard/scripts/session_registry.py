@@ -142,6 +142,7 @@ class SessionRegistry:
                     # File has been quiet long enough; safe to acquire.
                     s.last_rendered_offset = s.last_size  # seed offset BEFORE writing
                     s.engine = self._engine_factory(sid, model)
+                    s.engine_active_probe = getattr(s.engine, "recently_active", None)
                     s.state = SessionState.ACQUIRING
                     s.pending_turn = turn
                     s.pending_model = model
@@ -405,6 +406,7 @@ class SessionRegistry:
                         s.owner = s.pending_owner
                         s.last_rendered_offset = s.last_size
                         s.engine = self._engine_factory(sid, model)
+                        s.engine_active_probe = getattr(s.engine, "recently_active", None)
                         s.state = SessionState.ACQUIRING
                         if s.engine.is_ready():
                             self._promote_to_engine(s)

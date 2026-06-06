@@ -263,3 +263,199 @@ def test_session_stream_pushes_state_transitions(serve_module):
     assert "SESSION_REGISTRY._lock" in src
     assert "_cur_state != last_emitted_state" in src
     assert '"kind": "state_change"' in src
+
+
+# ---------------------------------------------------------------------------
+# Hook A — engine stdout activity (recently_active)
+# ---------------------------------------------------------------------------
+
+def test_recently_active_true_when_stdout_recent(serve_module):
+    """recently_active() returns True when last_stdout_ts is within the window."""
+    job_id = str(uuid.uuid4())
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {
+            "id": job_id,
+            "kind": "chat",
+            "task": "session-resume:test-sid",
+            "status": "running",
+            "last_stdout_ts": serve_module.time.monotonic(),  # just now
+        }
+    adapter = serve_module._ResumeEngineAdapter(job_id)
+    assert adapter.recently_active() is True
+    # cleanup
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS.pop(job_id, None)
+
+
+def test_recently_active_false_when_stdout_old(serve_module):
+    """recently_active() returns False when last_stdout_ts is far in the past."""
+    job_id = str(uuid.uuid4())
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {
+            "id": job_id,
+            "kind": "chat",
+            "task": "session-resume:test-sid",
+            "status": "running",
+            "last_stdout_ts": serve_module.time.monotonic() - 100.0,  # long ago
+        }
+    adapter = serve_module._ResumeEngineAdapter(job_id)
+    assert adapter.recently_active() is False
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS.pop(job_id, None)
+
+
+def test_recently_active_false_when_ts_zero(serve_module):
+    """recently_active() returns False when last_stdout_ts is 0.0 (not yet set)."""
+    job_id = str(uuid.uuid4())
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {
+            "id": job_id,
+            "kind": "chat",
+            "task": "session-resume:test-sid",
+            "status": "running",
+            "last_stdout_ts": 0.0,
+        }
+    adapter = serve_module._ResumeEngineAdapter(job_id)
+    assert adapter.recently_active() is False
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Hook B — result event → mark_turn_done
+# ---------------------------------------------------------------------------
+
+def test_maybe_mark_session_turn_done_advances_registry(serve_module):
+    """_maybe_mark_session_turn_done() calls mark_turn_done when type==result
+    and the job is a session-resume job whose sid is registered."""
+    import importlib
+    # Use a registry session in ENGINE state with a turn in-flight.
+    sid = "dddddddd-0000-0000-0000-000000000001"
+    reg = serve_module.SESSION_REGISTRY
+    s = reg.get_or_create(sid, jsonl_path="fake.jsonl")
+
+    # Set up a minimal fake engine so submit() doesn't crash.
+    class _FakeEng:
+        def __init__(self):
+            self.submitted = []
+        def submit(self, turn):
+            self.submitted.append(turn)
+        def is_ready(self):
+            return True
+        def kill(self):
+            pass
+
+    fake_eng = _FakeEng()
+    with s.lock:
+        s.state = serve_module.session_registry.SessionState.ENGINE
+        s.engine = fake_eng
+        s.turn_in_flight = True
+        s.pending_turn = {"text": "queued turn"}
+
+    job_id = str(uuid.uuid4())
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {
+            "id": job_id,
+            "kind": "chat",
+            "task": f"session-resume:{sid}",
+            "session_id": sid,
+            "status": "running",
+            "last_stdout_ts": 0.0,
+        }
+
+    serve_module._maybe_mark_session_turn_done(job_id, {"type": "result"})
+
+    # mark_turn_done should have cleared turn_in_flight and drained the pending turn.
+    assert s.turn_in_flight is True       # True because pending_turn was drained into engine
+    assert s.pending_turn is None         # pending slot emptied
+    assert fake_eng.submitted            # engine.submit() was called with the queued turn
+
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS.pop(job_id, None)
+
+
+def test_maybe_mark_session_turn_done_ignores_non_session_job(serve_module):
+    """_maybe_mark_session_turn_done() does nothing for jobs whose task does
+    not start with 'session-resume:'."""
+    job_id = str(uuid.uuid4())
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {
+            "id": job_id,
+            "kind": "chat",
+            "task": "chat:some other task",
+            "status": "running",
+            "last_stdout_ts": 0.0,
+        }
+    # Should not raise and should not affect the registry.
+    serve_module._maybe_mark_session_turn_done(job_id, {"type": "result"})
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS.pop(job_id, None)
+
+
+def test_maybe_mark_session_turn_done_noop_non_result(serve_module):
+    """_maybe_mark_session_turn_done() is a no-op when type != 'result'."""
+    sid = "dddddddd-0000-0000-0000-000000000002"
+    reg = serve_module.SESSION_REGISTRY
+    s = reg.get_or_create(sid, jsonl_path="fake2.jsonl")
+    with s.lock:
+        s.state = serve_module.session_registry.SessionState.ENGINE
+        s.turn_in_flight = True
+
+    job_id = str(uuid.uuid4())
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {
+            "id": job_id,
+            "kind": "chat",
+            "task": f"session-resume:{sid}",
+            "session_id": sid,
+            "status": "running",
+            "last_stdout_ts": 0.0,
+        }
+    serve_module._maybe_mark_session_turn_done(job_id, {"type": "text_delta"})
+    # turn_in_flight must remain True; mark_turn_done was not called.
+    assert s.turn_in_flight is True
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Probe wiring — engine_active_probe set on acquire
+# ---------------------------------------------------------------------------
+
+def test_probe_wired_after_submit_turn_acquire(serve_module, monkeypatch):
+    """After submit_turn() acquires and sets s.engine, s.engine_active_probe
+    must be set to the engine's recently_active method (or None via getattr
+    for engines that lack it)."""
+    sid = "eeeeeeee-0000-0000-0000-000000000003"
+
+    class _FakeEngineWithProbe:
+        def recently_active(self):
+            return True
+        def is_ready(self):
+            return False  # stay in ACQUIRING so we can inspect
+        def submit(self, turn):
+            pass
+        def kill(self):
+            pass
+
+    fake_eng = _FakeEngineWithProbe()
+    monkeypatch.setattr(
+        serve_module.SESSION_REGISTRY,
+        "_engine_factory",
+        lambda s, m: fake_eng,
+    )
+
+    reg = serve_module.SESSION_REGISTRY
+    # Ensure a session exists so submit_turn can find it.
+    s = reg.get_or_create(sid, jsonl_path="fake3.jsonl")
+    # Force MIRROR + quiescent so the factory is called.
+    with s.lock:
+        s.state = serve_module.session_registry.SessionState.MIRROR
+        s.last_growth_ts = 0.0
+
+    reg.submit_turn(sid, {"text": "hello"}, model="claude-sonnet-4-6")
+
+    # engine_active_probe must point to the engine's recently_active method.
+    assert s.engine_active_probe is not None
+    assert callable(s.engine_active_probe)
+    assert s.engine_active_probe() is True

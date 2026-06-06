@@ -4687,6 +4687,7 @@ def _start_subprocess_job(
                 "exit_code": None,
                 "started_at": None,
                 "ended_at": None,
+                "last_stdout_ts": 0.0,
             }
         sid_for_path = JOBS[job_id].get("session_id")
 
@@ -4793,6 +4794,8 @@ def _start_subprocess_job(
                         logf.write(publishable.encode("utf-8"))
                         logf.flush()
                     _publish_chunk(job_id, publishable)
+                    with JOBS_LOCK:
+                        JOBS[job_id]["last_stdout_ts"] = time.monotonic()
                     if track_cost:
                         for line in publishable.split("\n"):
                             line = line.strip()
@@ -4804,6 +4807,7 @@ def _start_subprocess_job(
                                 continue
                             if obj.get("type") == "result":
                                 _update_job_cost(job_id, obj)
+                                _maybe_mark_session_turn_done(job_id, obj)
                             # Codex emits a ``session_meta`` event on its first
                             # JSON line with ``payload.id`` = the rollout/session
                             # id. We capture it once so the next-turn handler
@@ -5038,6 +5042,10 @@ def _cancel_job(job_id: str) -> bool:
 # started with ``claude --resume <sid>``.
 # SESSION_REGISTRY is instantiated once at module level; the endpoints
 # for Tasks 6-8 will call SESSION_REGISTRY.submit_turn() / .release().
+
+# Seconds after the last stdout chunk within which the engine is considered
+# "recently active" for the concurrency heuristic in the registry.
+STDOUT_CORROBORATION_WINDOW_S = 2.0
 # ---------------------------------------------------------------------------
 
 class _ResumeEngineAdapter:
@@ -5079,6 +5087,21 @@ class _ResumeEngineAdapter:
                 return False
             return j.get("proc") is not None
 
+    def recently_active(self) -> bool:
+        """True when the engine produced stdout within STDOUT_CORROBORATION_WINDOW_S seconds.
+
+        Used by the session registry as a corroboration signal to attribute .jsonl
+        growth to our engine rather than the IDE.
+        """
+        with JOBS_LOCK:
+            j = JOBS.get(self._job_id)
+            if not j:
+                return False
+            ts = j.get("last_stdout_ts", 0.0)
+        if ts <= 0.0:
+            return False
+        return (time.monotonic() - ts) < STDOUT_CORROBORATION_WINDOW_S
+
 
 def _session_engine_factory(sid: str, model: str) -> _ResumeEngineAdapter:
     """Build an EngineProtocol adapter for session ``sid``.
@@ -5106,6 +5129,7 @@ def _session_engine_factory(sid: str, model: str) -> _ResumeEngineAdapter:
             "ended_at": None,
             "session_id": sid,
             "model": model,
+            "last_stdout_ts": 0.0,
         }
 
     _start_subprocess_job(
@@ -5149,6 +5173,38 @@ def _session_engine_factory(sid: str, model: str) -> _ResumeEngineAdapter:
 SESSION_REGISTRY = session_registry.SessionRegistry(
     engine_factory=_session_engine_factory,
 )
+
+
+def _maybe_mark_session_turn_done(job_id: str, obj: dict) -> None:
+    """Advance the session-registry baton when a ``type=result`` event arrives.
+
+    Called from the stdout pump whenever a complete JSON line is parsed.
+    Only acts when:
+      - obj["type"] == "result"
+      - the job's task starts with "session-resume:"
+      - the session id extracted from the job is registered in SESSION_REGISTRY
+
+    This is the production linchpin that drives mark_turn_done so the baton
+    advances and a queued pending turn (if any) is dispatched to the engine.
+    """
+    if obj.get("type") != "result":
+        return
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if not j:
+            return
+        task = j.get("task", "")
+        if not task.startswith("session-resume:"):
+            return
+        sid = j.get("session_id")
+    if not sid:
+        return
+    if sid not in SESSION_REGISTRY._sessions:
+        return
+    try:
+        SESSION_REGISTRY.mark_turn_done(sid)
+    except Exception as exc:
+        print(f"[serve] mark_turn_done failed for session {sid}: {exc}", flush=True)
 
 # ---------------------------------------------------------------------------
 
