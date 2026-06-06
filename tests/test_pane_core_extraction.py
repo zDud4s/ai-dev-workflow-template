@@ -31,6 +31,23 @@ INDEX_HTML = ROOT / ".ai/dashboard/index.html"
 # chat-pane template (documented above).
 CHAT_TEMPLATE_MARKER = "type, /skill, @file, paste/drop images, Enter sends"
 
+# --- Task 7 markers (PTY / transcript / session pane templates) ---------
+# Each marker is a verbatim, single-occurrence fragment of ONE of the three
+# pane templates that Task 7 moves out of terminals.js and into
+# pane-core.js. None of them is a layout affordance (collapse/expand/pin),
+# so they genuinely track where the pane-INTRINSIC template now lives.
+#
+# PTY: the xterm-load-failure notice rendered into the PTY body. Verbatim,
+# appears exactly once, and is specific to the terminal pane (not chat /
+# transcript / session).
+PTY_TEMPLATE_MARKER = "xterm.js failed to load (CDN blocked?)"
+# Transcript: the IDE-fork composer placeholder. Unique to the transcript
+# (IDE mirror) pane's <textarea>.
+TRANSCRIPT_TEMPLATE_MARKER = "type to fork this IDE session"
+# Session: the unified-session composer placeholder. Unique to the session
+# pane's <textarea>.
+SESSION_TEMPLATE_MARKER = "type a message · Enter sends · Shift+Enter newline"
+
 
 def test_pane_core_file_exists():
     assert PANE_CORE.exists(), "app/pane-core.js must exist"
@@ -86,3 +103,66 @@ def test_terminals_delegates_to_pane_core_mount():
     assert "PaneCore.mount(" in src, (
         "terminals.js termOpen shim must call PaneCore.mount"
     )
+
+
+# --- Task 7: PTY / transcript / session templates moved into PaneCore -----
+
+
+def test_pty_template_moved_out_of_terminals():
+    src = TERMINALS.read_text(encoding="utf-8")
+    assert PTY_TEMPLATE_MARKER not in src, (
+        "PTY-pane template marker must no longer live in terminals.js — "
+        "it moved into pane-core.js"
+    )
+
+
+def test_pty_template_present_in_pane_core():
+    src = PANE_CORE.read_text(encoding="utf-8")
+    assert PTY_TEMPLATE_MARKER in src, (
+        "PTY-pane template marker must now live in pane-core.js"
+    )
+
+
+def test_transcript_template_moved_out_of_terminals():
+    src = TERMINALS.read_text(encoding="utf-8")
+    assert TRANSCRIPT_TEMPLATE_MARKER not in src, (
+        "transcript-pane template marker must no longer live in terminals.js"
+    )
+
+
+def test_transcript_template_present_in_pane_core():
+    src = PANE_CORE.read_text(encoding="utf-8")
+    assert TRANSCRIPT_TEMPLATE_MARKER in src, (
+        "transcript-pane template marker must now live in pane-core.js"
+    )
+
+
+def test_session_template_moved_out_of_terminals():
+    src = TERMINALS.read_text(encoding="utf-8")
+    assert SESSION_TEMPLATE_MARKER not in src, (
+        "session-pane template marker must no longer live in terminals.js"
+    )
+
+
+def test_session_template_present_in_pane_core():
+    src = PANE_CORE.read_text(encoding="utf-8")
+    assert SESSION_TEMPLATE_MARKER in src, (
+        "session-pane template marker must now live in pane-core.js"
+    )
+
+
+def test_terminals_openers_delegate_to_pane_core_mount():
+    """termOpenPty / termOpenTranscript / termOpenSession must be thin
+    shims that delegate pane construction to PaneCore.mount (mirroring the
+    Task 6 chat shim). We assert each opener body contains a PaneCore.mount
+    call by checking the count of PaneCore.mount( rose to cover all four
+    kinds (chat + pty + transcript + session)."""
+    src = TERMINALS.read_text(encoding="utf-8")
+    assert src.count("PaneCore.mount(") >= 4, (
+        "all four openers (chat/pty/transcript/session) must delegate to "
+        "PaneCore.mount — expected at least 4 call sites"
+    )
+    # And the opener functions still exist as the public entry points.
+    for fn in ("function termOpenPty", "function termOpenTranscript",
+               "function termOpenSession"):
+        assert fn in src, f"{fn} must remain as the layout shim entry point"

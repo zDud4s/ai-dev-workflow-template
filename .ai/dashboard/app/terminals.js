@@ -2872,71 +2872,37 @@
         : base;
     }
 
+    // Thin layout shim over PaneCore.mount (plan Task 7). The PTY pane DOM
+    // + xterm.js instance + WebSocket pipe + resize plumbing now live in
+    // app/pane-core.js (layout-AGNOSTIC, shared with the canvas). termOpenPty
+    // keeps ONLY the list/grid LAYOUT glue: TERMS registration, collapse-on-
+    // list initial state, head-click + expand/pin affordances (which re-fit
+    // xterm via the returned handle.fit()), and empty-state + persistence.
     function termOpenPty(ptyId, meta, initialCommand) {
       if (TERMS.has(ptyId)) return;
       const grid = $("#terms-grid");
       if (!grid) return;
-      const shellLabel = (meta?.argv && meta.argv[0]) || meta?.shell || "shell";
-      const shortShell = String(shellLabel).split(/[\\/]/).pop() || shellLabel;
-      const pane = document.createElement("div");
-      pane.className = "term-pane term-pty focus";
-      pane.dataset.jobId = ptyId;
-      pane.innerHTML = `
-        <div class="term-head">
-          <span class="pill running status-pill" title="PTY ${escape(ptyId)}">connecting</span>
-          <span class="task" title="${escape(meta?.cwd || "")}">${escape(shortShell)} · ${escape(meta?.cwd || "")}</span>
-          <span class="activity" title="current activity in this pane">connecting…</span>
-          <span class="id">${escape(ptyId.slice(0, 8))}</span>
-          <span class="actions">
-            <button class="expand-btn" title="Show or hide this terminal">expand</button>
-            <button class="pin-btn" title="Maximise / restore this pane">pin</button>
-            <button class="kill-btn danger" title="Terminate the shell (SIGTERM)">kill</button>
-            <button class="close-btn" title="Close this pane (and kill the shell)">close</button>
-          </span>
-        </div>
-        <div class="term-body term-pty-body" tabindex="0"></div>
-      `;
-      grid.appendChild(pane);
-
-      const body = pane.querySelector(".term-body");
-      const t = {
-        jobId: ptyId,
-        pane, body,
-        input: null, sendBtn: null,
-        source: null,            // WebSocket goes in here
-        task: meta?.cwd || "",
-        kind: "terminal",
-        shell: meta?.shell || "auto",
-        attached: { images: [], files: [] },
-      };
+      const handle = PaneCore.mount(grid, { kind: "terminal", key: ptyId, meta: meta || {}, initialCommand });
+      const t = handle.t;
+      const pane = handle.pane;
       TERMS.set(ptyId, t);
 
+      // ----- LAYOUT glue (stays in terminals.js) -----
       if (termGetLayout() === "list") pane.classList.add("collapsed");
 
-      pane.addEventListener("click", () => {
-        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
-        pane.classList.add("focus");
-      });
       pane.querySelector(".term-head").addEventListener("click", (e) => {
         if (e.target.closest("button")) return;
         termToggleCollapsed(t);
       });
       // Single expand-btn listener: toggles collapsed AND re-fits xterm
-      // on the next frame. The previous implementation registered TWO
-      // separate click listeners on the same button (one toggling
-      // collapse, another calling requestAnimationFrame(sendResize)),
-      // which fired in sequence on every click — wasteful and made it
-      // hard to reason about the order of operations. Consolidated here.
+      // on the next frame (the xterm body has display:none while collapsed,
+      // so its computed pixel size is 0 → fit() can't run until expanded).
+      // Re-fit is routed through the PaneCore handle so terminals.js never
+      // reaches into the pane's xterm internals.
       pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
         e.stopPropagation();
         termToggleCollapsed(t);
-        // The xterm body has display:none while collapsed, so its computed
-        // pixel size is 0 → fit() can't run. Re-fit on the next frame so
-        // the cols/rows match the new pane geometry once layout settles.
-        requestAnimationFrame(() => {
-          if (pane.classList.contains("collapsed")) return;
-          try { t._fitAddon && t._fitAddon.fit(); } catch (_) {}
-        });
+        requestAnimationFrame(() => handle.fit && handle.fit());
       });
       pane.querySelector(".pin-btn")?.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -2945,237 +2911,8 @@
         btn.classList.toggle("active", pane.classList.contains("pinned"));
         btn.textContent = pane.classList.contains("pinned") ? "unpin" : "pin";
         // Re-fit xterm to the new pane size on the next frame.
-        requestAnimationFrame(() => t._fitAddon && t._fitAddon.fit());
+        requestAnimationFrame(() => handle.fit && handle.fit());
       });
-      pane.querySelector(".close-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        termClosePty(ptyId);
-      });
-      pane.querySelector(".kill-btn").addEventListener("click", async (e) => {
-        e.stopPropagation();
-        try {
-          await postJson(`/api/ptys/${ptyId}/kill`, {});
-        } catch (err) {
-          setMsg("#term-msg", "err", "Kill failed: " + err.message, TERM_MSG_DURATION_MS);
-        }
-      });
-
-      if (termPtyMissingDeps()) {
-        body.innerHTML = `<div class="msg system" style="color:var(--bad);padding:12px">
-          xterm.js failed to load (CDN blocked?). Reload the page or check your network.
-        </div>`;
-        return;
-      }
-
-      // ----- xterm.js instance -----
-      const term = new Terminal({
-        cursorBlink: true,
-        fontFamily: "var(--ff-mono), JetBrains Mono, Menlo, Consolas, monospace",
-        fontSize: 13,
-        scrollback: 5000,
-        convertEol: false,
-        // Match the dashboard's dark palette so the terminal doesn't feel pasted-in.
-        theme: {
-          background: "#0b0f14",
-          foreground: "#d8dee9",
-          // Dashboard cyan (--accent ≈ #4fcdcd) so the xterm caret speaks the
-          // same signal color as the rest of the "Targeting HUD" cursor set.
-          cursor: "#4fcdcd",
-          selectionBackground: "#3b4252",
-          black: "#3b4252",
-          red:   "#bf616a",
-          green: "#a3be8c",
-          yellow:"#ebcb8b",
-          blue:  "#81a1c1",
-          magenta:"#b48ead",
-          cyan:  "#88c0d0",
-          white: "#e5e9f0",
-          brightBlack: "#4c566a",
-          brightRed:   "#bf616a",
-          brightGreen: "#a3be8c",
-          brightYellow:"#ebcb8b",
-          brightBlue:  "#81a1c1",
-          brightMagenta:"#b48ead",
-          brightCyan:  "#8fbcbb",
-          brightWhite: "#eceff4",
-        },
-      });
-      const fit = new FitAddon.FitAddon();
-      term.loadAddon(fit);
-      if (typeof WebLinksAddon !== "undefined") {
-        try { term.loadAddon(new WebLinksAddon.WebLinksAddon()); } catch (_) {}
-      }
-      term.open(body);
-      t._term = term;
-      t._fitAddon = fit;
-      // First fit after the next frame so layout has finished.
-      const initialFit = () => {
-        try { fit.fit(); } catch (_) {}
-      };
-      requestAnimationFrame(initialFit);
-
-      // ----- WebSocket -----
-      // meta?.token is set by /api/ptys (POST) for newly-spawned PTYs.
-      // _PTY_TOKENS is the runtime cache for restoreOpenPanes / reattach
-      // — it survives the page lifetime so refreshing the dashboard keeps
-      // existing PTYs reachable as long as the original spawner is the
-      // same browser tab.
-      const token = (meta && meta.token) || (window._PTY_TOKENS && window._PTY_TOKENS[ptyId]);
-      const ws = new WebSocket(termPtyWsUrl(ptyId, token));
-      ws.binaryType = "arraybuffer";
-      t.source = ws;
-      // ``stream: true`` is critical: bytes from the PTY arrive as
-      // arbitrary chunks and a single multi-byte char (Portuguese accents,
-      // emoji, line-drawing glyphs) may straddle two WebSocket frames.
-      // Without streaming mode the decoder emits a U+FFFD replacement for
-      // the split char on each end, corrupting the output. With stream:
-      // true the incomplete trailing bytes are buffered and joined with
-      // the start of the next chunk.
-      const decoder = new TextDecoder("utf-8", { fatal: false });
-      const statusPill = pane.querySelector(".status-pill");
-
-      ws.onopen = () => {
-        termSetPillState(statusPill, "running", "live");
-        termSetActivity(t, "live", "busy");
-        // Sync the server PTY to our actual rendered geometry.
-        sendResize();
-        // ``initialCommand`` accepts three shapes:
-        //   string     -> sent once, followed by Enter
-        //   array      -> sequence of { text, delay, appendCR? } steps
-        //   {text,...} -> single object treated as a one-step sequence
-        const steps = Array.isArray(initialCommand)
-          ? initialCommand
-          : (initialCommand
-              ? (typeof initialCommand === "string"
-                  ? [{ text: initialCommand }]
-                  : [initialCommand])
-              : []);
-        // Steps go as BINARY frames: text frames are reserved for JSON
-        // control messages (resize, etc.) and would be silently dropped
-        // by the server's parser. \r at the end fires Enter.
-        const enc = new TextEncoder();
-        // Track every queued initial-command timer so termClosePty can
-        // cancel them. Otherwise a recursive runStep tail keeps ws + term
-        // alive until the last delay fires even after the user closed
-        // the pane.
-        t._runStepTimers = t._runStepTimers || [];
-        const runStep = (i) => {
-          if (i >= steps.length) return;
-          if (t._closed) return;
-          const s = steps[i] || {};
-          const text = s.text != null ? String(s.text) : "";
-          const appendCR = s.appendCR !== false;
-          const payload = appendCR ? text + "\r" : text;
-          if (ws.readyState === WebSocket.OPEN && payload) {
-            try { ws.send(enc.encode(payload)); } catch (_) {}
-          }
-          if (i + 1 < steps.length) {
-            const nextDelay = Math.max(0, Number(steps[i + 1].delay) || 0);
-            const tm = setTimeout(() => runStep(i + 1), nextDelay);
-            t._runStepTimers.push(tm);
-          }
-        };
-        if (steps.length) {
-          const firstDelay = Math.max(0, Number(steps[0].delay) || 0);
-          const tm = setTimeout(() => runStep(0), firstDelay);
-          t._runStepTimers.push(tm);
-        }
-        term.focus();
-      };
-
-      ws.onmessage = (ev) => {
-        if (typeof ev.data === "string") {
-          // Control frame from server (JSON).
-          let msg;
-          try { msg = JSON.parse(ev.data); } catch (e) { console.warn("[terminals] PTY control frame JSON parse failed: " + (e && e.message ? e.message : e)); return; }
-          if (msg.type === "exit") {
-            termSetPillState(statusPill, "done", "ended");
-            termSetActivity(t, "ended", "ended");
-            pane.classList.add("dead");
-          }
-          return;
-        }
-        // Binary frame: raw bytes from the PTY master. Pass stream:true
-        // so the decoder buffers a partial trailing multi-byte sequence
-        // until the next chunk completes it.
-        const buf = ev.data instanceof ArrayBuffer ? ev.data : new Uint8Array(ev.data);
-        const text = decoder.decode(buf, { stream: true });
-        if (text) term.write(text);
-      };
-
-      ws.onerror = () => {
-        termSetPillState(statusPill, "warn", "disconnected");
-        termSetActivity(t, "disconnected", "ended");
-      };
-
-      ws.onclose = () => {
-        if (!pane.classList.contains("dead")) {
-          // No state class survived the open->close path — drop into the
-          // neutral "cancelled" colour so it visually matches the "this
-          // shell is gone" semantics.
-          termSetPillState(statusPill, "cancelled", "closed");
-          termSetActivity(t, "closed", "ended");
-          pane.classList.add("dead");
-        }
-      };
-
-      // ----- keystroke pipe (xterm -> ws) -----
-      term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          // Send as binary so the server treats it as raw bytes, not
-          // a JSON control message.
-          ws.send(new TextEncoder().encode(data));
-        }
-      });
-
-      // ----- resize plumbing -----
-      let lastCols = 0, lastRows = 0;
-      const sendResize = () => {
-        try { fit.fit(); } catch (_) {}
-        const cols = term.cols, rows = term.rows;
-        if (!cols || !rows) return;
-        if (cols === lastCols && rows === lastRows) return;
-        lastCols = cols; lastRows = rows;
-        if (ws.readyState === WebSocket.OPEN) {
-          try {
-            ws.send(JSON.stringify({ type: "resize", cols, rows }));
-          } catch (e) { console.warn("[terminals] PTY resize send failed: " + (e && e.message ? e.message : e)); }
-        }
-      };
-      term.onResize(({ cols, rows }) => {
-        if (cols === lastCols && rows === lastRows) return;
-        lastCols = cols; lastRows = rows;
-        if (ws.readyState === WebSocket.OPEN) {
-          try {
-            ws.send(JSON.stringify({ type: "resize", cols, rows }));
-          } catch (e) { console.warn("[terminals] PTY resize send failed: " + (e && e.message ? e.message : e)); }
-        }
-      });
-      // Debounce so a window-drag burst (~60 Hz of resize events) collapses
-      // into a handful of fit.fit() calls instead of one per frame. xterm's
-      // fit() reflows + repaints the cell grid, which is the expensive bit —
-      // the WS resize message itself is already deduped via lastCols/Rows.
-      // 80 ms is short enough that the terminal still feels alive during a
-      // drag (user sees a settle within ~5 frames) and long enough to absorb
-      // typical burst patterns. Uses window.debounce (defined in core.js,
-      // loaded earlier in defer order).
-      const debouncedResize = (typeof window.debounce === "function")
-        ? window.debounce(sendResize, 80)
-        : sendResize;
-      if (typeof ResizeObserver !== "undefined") {
-        const ro = new ResizeObserver(() => debouncedResize());
-        ro.observe(body);
-        t._resizeObserver = ro;
-      } else {
-        // Capture the fallback listener so termClosePty can remove it.
-        // Without this, every closed PTY pane leaks a window-level
-        // resize handler that keeps the term object alive forever.
-        t._resizeFallback = debouncedResize;
-        window.addEventListener("resize", debouncedResize);
-      }
-      // (The expand button's own click listener already re-fits xterm on
-      // the post-expand frame; the ResizeObserver above catches every
-      // other geometry change — no extra listener needed here.)
 
       termRenderEmptyState();
       persistOpenPanes();
@@ -3303,58 +3040,33 @@
     // #term-picker; ``termRefreshTranscriptPicker`` lives near the top
     // of this file and just forwards to ``termRefreshPicker``.)
 
+    // Thin layout shim over PaneCore.mount (plan Task 7). The transcript
+    // (IDE mirror) pane DOM + fork-and-send composer + lazy mirror SSE
+    // now live in app/pane-core.js (layout-AGNOSTIC, shared with the
+    // canvas). termOpenTranscript keeps ONLY the layout glue: TERMS
+    // registration, the always-collapsed-on-open state, the expand/head-
+    // toggle affordances (which drive openStream/closeStream through
+    // termSetCollapsed), and empty-state + persistence bookkeeping.
     function termOpenTranscript(sessionId) {
       const paneKey = "ide:" + sessionId;
       if (TERMS.has(paneKey)) return;
       const grid = $("#terms-grid");
-      const pane = document.createElement("div");
-      pane.className = "term-pane focus";
-      pane.dataset.jobId = paneKey;
-      pane.innerHTML = `
-        <div class="term-head">
-          <span class="pill claude status-pill">IDE mirror</span>
-          <span class="task" title="mirror of Claude Code session ${escape(sessionId)}">IDE chat ${escape(sessionId.slice(0, 8))}…</span>
-          <span class="activity" title="current activity in this pane">mirroring…</span>
-          <span class="id">${escape(sessionId.slice(0, 8))}</span>
-          <span class="actions">
-            <button class="expand-btn" title="Show or hide this terminal's output">expand</button>
-            <button class="close-btn" title="Close this pane">close</button>
-          </span>
-        </div>
-        <div class="term-body chat" tabindex="0"></div>
-        <div class="term-foot">
-          <textarea class="stdin-input" rows="1" placeholder="type to fork this IDE session — Enter forks &amp; sends · Shift+Enter newline"></textarea>
-          <button class="send-btn">fork &amp; send</button>
-        </div>
-      `;
-      grid.appendChild(pane);
-      const body = pane.querySelector(".term-body");
-      const t = {
-        jobId: paneKey,
-        pane, body,
-        input: pane.querySelector(".stdin-input"),
-        sendBtn: pane.querySelector(".send-btn"),
-        source: null,
-        task: "IDE session " + sessionId,
-        kind: "transcript",
-        jsonBuf: [],
-        currentAssistant: null,
-        toolUseEls: new Map(),
-      };
+      const handle = PaneCore.mount(grid, { kind: "transcript", key: paneKey, meta: { sessionId } });
+      const t = handle.t;
+      const pane = handle.pane;
       TERMS.set(paneKey, t);
+
+      // ----- LAYOUT glue (stays in terminals.js) -----
       // IDE mirror panes ALWAYS start collapsed regardless of layout.
       // They're passive observers — until the mirrored session emits
       // anything worth seeing, the body is empty and would otherwise
       // show as a huge dark rectangle in split/grid mode (the original
       // bug). Activity events still pulse the head row via has-update
       // so the operator notices when there's new IDE traffic and can
-      // click to expand.
+      // click to expand. PaneCore deliberately did NOT open the stream
+      // (it leaves a fresh transcript pane in the lazy/paused state), so
+      // collapsing here keeps the browser connection budget free.
       pane.classList.add("collapsed");
-      termInitAutoFollow(t);
-      pane.querySelector(".close-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        termClose(paneKey);
-      });
       pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
         e.stopPropagation();
         termToggleCollapsed(t);
@@ -3363,171 +3075,8 @@
         if (e.target.closest("button")) return;
         termToggleCollapsed(t);
       });
-      pane.addEventListener("click", () => {
-        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
-        pane.classList.add("focus");
-      });
-
-      // First send forks the IDE session into a writable dashboard chat
-      // (claude --resume <sid>). The mirror pane is KEPT OPEN alongside
-      // the fork so the operator can compare the original IDE branch
-      // (still owned by the IDE writer) to the new dashboard branch
-      // side-by-side. Mirror's composer is disabled after the first fork
-      // — additional forks should come from the IDE-side itself.
-      // The `forking` flag + immediate UI lock below prevents a double
-      // POST when the operator hits Enter twice while the cold-start
-      // `claude --resume` is still spawning (which would otherwise create
-      // two parallel forks responding to the same prompt).
-      let forking = false;
-      const forkAndSend = async () => {
-        if (forking) return;
-        const text = t.input.value.trim();
-        if (!text) return;
-        forking = true;
-        // Lock the composer + clear the text BEFORE the await so the
-        // operator gets instant feedback and a second Enter is a no-op.
-        t.input.value = "";
-        t.input.disabled = true;
-        t.sendBtn.disabled = true;
-        t.sendBtn.textContent = "forking…";
-        try {
-          const res = await postJson("/api/jobs", {
-            kind: "chat",
-            task: text,
-            resume_session_id: sessionId,
-          });
-          // Banner inside the mirror documenting what just happened.
-          const banner = document.createElement("div");
-          banner.className = "msg system";
-          banner.style.color = "var(--warn)";
-          banner.textContent = `[forked into dashboard chat ${res.id.slice(0,8)} — new pane opened to the right]`;
-          t.body.appendChild(banner);
-          // Mirror's composer stays locked; this branch is now history.
-          t.input.placeholder = "mirror pane is read-only — continue in the fork pane";
-          t.sendBtn.textContent = "forked";
-          // Route through termSetPillState so the pill ends up with EXACTLY
-          // the warn class (and "forked" text), with every prior state
-          // (running/done/bad/queued/cancelling/cancelled) stripped.
-          // Direct ``classList.add("warn")`` previously left those stacked
-          // and the CSS cascade could resolve to the wrong colour.
-          termSetPillState(t.pane.querySelector(".status-pill"), "warn", "forked");
-          // Open the writable chat pane next to this one AND expand +
-          // scroll it into view so the operator sees their fork land
-          // (otherwise list-mode tucks it away as a collapsed row at the
-          // bottom of the grid and the mirror banner is the only feedback,
-          // which makes the whole flow feel like nothing happened).
-          termOpen(res.id, res);
-          termFocusNewPane(res.id);
-          await loadJobs();
-        } catch (e) {
-          const err = document.createElement("div");
-          err.className = "msg system";
-          err.style.color = "var(--bad)";
-          err.textContent = `[fork failed: ${e.message}]`;
-          t.body.appendChild(err);
-          setMsg("#term-msg", "err", "Fork failed: " + e.message, TERM_MSG_DURATION_MS);
-          // Restore the composer so the operator can retry.
-          t.input.value = text;
-          t.input.disabled = false;
-          t.sendBtn.disabled = false;
-          t.sendBtn.textContent = "fork & send";
-          forking = false;
-        }
-      };
-      t.sendBtn.addEventListener("click", forkAndSend);
-      t.input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-          e.preventDefault();
-          forkAndSend();
-        }
-      });
-      // Auto-grow the fork prompt up to a sensible cap so multi-line
-      // prompts (which the placeholder advertises via Shift+Enter) don't
-      // get clipped to one row. Previously this textarea was the ONLY
-      // composer in the file without autosize wiring — typing more than
-      // one line meant the operator couldn't see what they were writing.
-      const transcriptAutosize = () => {
-        t.input.style.height = "auto";
-        t.input.style.height = Math.min(t.input.scrollHeight, COMPOSER_AUTOSIZE_MAX_PX) + "px";
-      };
-      t.input.addEventListener("input", transcriptAutosize);
-
-      const statusPill = pane.querySelector(".status-pill");
-      // Stream is lazy: only attach the EventSource while the pane is
-      // expanded. Browsers cap HTTP/1.1 connections per origin at ~6, so
-      // 6 restored transcript panes auto-streaming at once would starve
-      // every other AJAX request (jobs polling, sessions, etc.) and make
-      // the dashboard appear stuck. Collapsed panes are passive observers
-      // — there's nothing to render — so they don't need to hold a slot.
-      // termSetCollapsed wires expand -> openStream / collapse -> close.
-      t.openStream = () => {
-        if (t.source) return;
-        const es = new EventSource(`/api/transcripts/${sessionId}/stream`);
-        t.source = es;
-        es.onopen = () => {
-          // ``IDE live`` keeps the "claude" tool-identity class for colour
-          // while running. We don't add a state class here — running is the
-          // implicit default for an active mirror.
-          statusPill.textContent = "IDE live";
-          termSetActivity(t, "mirroring…", "busy");
-        };
-        es.onmessage = (ev) => termHandleTranscriptChunk(t, ev.data + "\n");
-        es.addEventListener("end", () => {
-          termSetPillState(statusPill, "done", "IDE ended");
-          termSetActivity(t, "ended", "ready");
-          try { es.close(); } catch (_) {}
-          t.source = null;
-        });
-        es.onerror = () => {
-          // Same rationale as the chat-pane onerror: don't paint the pane
-          // as "disconnected" while the browser is still trying to reconnect
-          // (readyState === CONNECTING). Only flip the status when the
-          // browser has given up (CLOSED). Otherwise a momentary network
-          // glitch turns a perfectly healthy mirror pane red until F5.
-          if (t.pane.classList.contains("dead")) return;
-          if (es.readyState !== EventSource.CLOSED) return;
-          termSetPillState(statusPill, "warn", "disconnected");
-          termSetActivity(t, "disconnected", "ended");
-        };
-      };
-      t.closeStream = () => {
-        if (!t.source) return;
-        try { t.source.close(); } catch (_) {}
-        t.source = null;
-        statusPill.textContent = "IDE paused";
-        // Reuse the enriched paused-state text the hydrator built (size
-        // + relative mtime) so collapsing a pane lands back on the same
-        // informative row it had before expand, instead of regressing
-        // to the bare "expand to resume" hint.
-        termSetActivity(t, t._pausedActivity || "paused (expand to resume)", "ready");
-      };
-      // Transcript panes always start collapsed (see the classList.add
-      // above), so we deliberately do NOT openStream here — the lazy
-      // path keeps the browser's connection budget free for AJAX until
-      // the operator actually expands the pane. Render the same idle
-      // state closeStream() uses so a never-opened pane and a
-      // collapsed-after-open pane are visually indistinguishable,
-      // instead of leaving the stale "mirroring…" template text.
-      statusPill.textContent = "IDE paused";
-      termSetActivity(t, "paused (expand to resume)", "ready");
-
-      // Hydrate the pane header from /api/transcripts without opening
-      // the SSE stream. The shared helper applies title (ai-title
-      // preferred → first-user-message fallback), tooltip, last-
-      // modified time and size — same code path the 5s poller uses so
-      // initial render and subsequent refreshes stay consistent.
-      fetchTranscriptsListCached().then((data) => {
-        const entry = (data.transcripts || []).find((e) => e.session_id === sessionId);
-        if (entry) applyTranscriptStatus(t, entry, sessionId);
-      }).catch(() => { /* label stays as the SID placeholder */ });
-
-      // Make sure the periodic status poll is running — restores the
-      // "live status bar while collapsed" feel without keeping a per-
-      // pane EventSource open. Idempotent; safe to call on every open.
-      ensureTranscriptStatusPoll();
 
       termRenderEmptyState();
-      termRefreshTranscriptPicker();
       persistOpenPanes();
     }
 
@@ -3652,67 +3201,28 @@
       // Unknown event kinds: silently ignore to stay forward-compatible.
     }
 
+    // Thin layout shim over PaneCore.mount (plan Task 7). The unified
+    // session pane DOM + always-on composer + release/interrupt buttons +
+    // lazy session SSE now live in app/pane-core.js (layout-AGNOSTIC,
+    // shared with the canvas). termOpenSession keeps ONLY the layout glue:
+    // computing the initial collapsed state from termGetLayout (passed to
+    // PaneCore as ``collapsed`` so it seeds the lazy-stream decision), the
+    // expand/head-toggle affordances (which drive openStream/closeStream
+    // through termSetCollapsed), and empty-state + persistence bookkeeping.
     function termOpenSession(sid) {
       const paneKey = "session:" + sid;
       if (TERMS.has(paneKey)) return;
       const grid = $("#terms-grid");
-      const pane = document.createElement("div");
-      pane.className = "term-pane focus";
-      pane.dataset.jobId = paneKey;
-      pane.innerHTML = `
-        <div class="term-head">
-          <span class="pill running status-pill" title="session ${escape(sid)}">connecting</span>
-          <span class="task" title="session ${escape(sid)}">session ${escape(sid.slice(0, 8))}…</span>
-          <span class="activity" title="current activity in this pane">connecting…</span>
-          <span class="id">${escape(sid.slice(0, 8))}</span>
-          <span class="actions">
-            <button class="release-btn" title="Release session control back to the engine">release</button>
-            <button class="interrupt-btn" title="Interrupt the current session turn">interrupt</button>
-            <button class="expand-btn" title="Show or hide this pane">expand</button>
-            <button class="close-btn" title="Close this pane">close</button>
-          </span>
-        </div>
-        <div class="term-body chat" tabindex="0"></div>
-        <div class="term-foot">
-          <textarea class="stdin-input" rows="1" autocomplete="off" placeholder="type a message · Enter sends · Shift+Enter newline"></textarea>
-          <button class="send-btn">send</button>
-        </div>
-      `;
-      grid.appendChild(pane);
-
-      const body = pane.querySelector(".term-body");
-      const input = pane.querySelector(".stdin-input");
-      const sendBtn = pane.querySelector(".send-btn");
-      const statusPill = pane.querySelector(".status-pill");
-
-      // Auto-grow the textarea up to the shared cap so multi-line
-      // prompts don't get clipped (same pattern as chat / transcript).
-      const autosize = () => {
-        input.style.height = "auto";
-        input.style.height = Math.min(input.scrollHeight, COMPOSER_AUTOSIZE_MAX_PX) + "px";
-      };
-      input.addEventListener("input", autosize);
-
-      // Build the term object. kind="session" so persistence and layout
-      // code distinguishes it from chat / transcript / terminal.
-      const t = {
-        jobId: paneKey,
-        sid,                         // raw session UUID (no "session:" prefix)
-        pane, body, input, sendBtn,
-        source: null,
-        task: "session " + sid,
-        kind: "session",
-        state: "mirror",             // updated by the first state_change SSE frame
-        currentAssistant: null,
-        toolUseEls: new Map(),
-      };
+      // Start collapsed in list layout; expanded in others (matches chat-pane
+      // behaviour). PaneCore uses this seed to decide whether to auto-open
+      // the SSE stream (collapsed panes stay connection-free until expanded).
+      const collapsed = termGetLayout() === "list";
+      const handle = PaneCore.mount(grid, { kind: "session", key: paneKey, meta: { sid }, collapsed });
+      const t = handle.t;
+      const pane = handle.pane;
       TERMS.set(paneKey, t);
 
-      // Start collapsed in list layout; expanded in others (matches chat-pane behaviour).
-      if (termGetLayout() === "list") pane.classList.add("collapsed");
-
-      termInitAutoFollow(t);
-
+      // ----- LAYOUT glue (stays in terminals.js) -----
       // Header click toggles expand/collapse.
       pane.querySelector(".term-head").addEventListener("click", (e) => {
         if (e.target.closest("button")) return;
@@ -3722,110 +3232,6 @@
         e.stopPropagation();
         termToggleCollapsed(t);
       });
-      pane.querySelector(".close-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        termClose(paneKey);
-      });
-      // Release: ask the server to hand session control back to the engine.
-      pane.querySelector(".release-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        fetch("/api/sessions/" + encodeURIComponent(sid) + "/release", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: "{}",
-        }).catch((err) => {
-          setMsg("#term-msg", "err", "Release failed: " + err.message, TERM_MSG_DURATION_MS);
-        });
-      });
-      // Interrupt: signal the current turn to stop processing.
-      pane.querySelector(".interrupt-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        fetch("/api/sessions/" + encodeURIComponent(sid) + "/interrupt", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: "{}",
-        }).catch((err) => {
-          setMsg("#term-msg", "err", "Interrupt failed: " + err.message, TERM_MSG_DURATION_MS);
-        });
-      });
-      pane.addEventListener("click", () => {
-        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
-        pane.classList.add("focus");
-      });
-
-      // Composer wiring — always enabled (no fork gate, no dead-pane check).
-      const doSend = () => termSendSession(t, t.input.value);
-      sendBtn.addEventListener("click", doSend);
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-          e.preventDefault();
-          doSend();
-        }
-      });
-
-      // Lazy SSE streaming — mirrors the transcript pane pattern so session panes
-      // don't consume one of the browser's ~6 HTTP/1.1 connection slots while
-      // collapsed. The /api/sessions/<sid>/stream endpoint re-sends a leading
-      // state_change frame then re-tails the .jsonl from the start on every new
-      // connection, so a naive reopen would duplicate the conversation. We avoid
-      // that by clearing the rendered body and resetting currentAssistant / toolUseEls
-      // in openStream before subscribing — the fresh replay overwrites nothing.
-      // termSetCollapsed wires expand -> openStream / collapse -> closeStream.
-      t.openStream = () => {
-        if (t.source) return;
-        // Clear prior rendered content and reset accumulation state so the
-        // server's replay-from-start doesn't duplicate the conversation.
-        t.body.innerHTML = "";
-        t.currentAssistant = null;
-        t.toolUseEls = new Map();
-        // Reset auto-follow so the fresh replay scrolls from the top smoothly.
-        t.autoFollowBottom = true;
-        t.firstScroll = true;
-        const es = new EventSource("/api/sessions/" + encodeURIComponent(sid) + "/stream");
-        t.source = es;
-        es.onopen = () => {
-          termSetPillState(statusPill, "running", "connecting");
-          termSetActivity(t, "connecting…", "busy");
-        };
-        es.onmessage = (ev) => {
-          let obj;
-          try { obj = JSON.parse(ev.data); } catch (_) { return; }
-          termHandleSessionEvent(t, obj);
-        };
-        es.addEventListener("end", () => {
-          try { es.close(); } catch (_) {}
-          t.source = null;
-          termSetPillState(statusPill, "done", "ended");
-          termSetActivity(t, "ended", "ready");
-          // Keep composer enabled — operator can still send; backend will
-          // re-acquire / re-engine on the next /input call.
-        });
-        es.onerror = () => {
-          // Transient disconnect: don't mark the pane dead while the browser
-          // is still reconnecting (readyState === CONNECTING). Only surface
-          // the disconnect when the browser has given up (CLOSED).
-          if (es.readyState !== EventSource.CLOSED) return;
-          termSetPillState(statusPill, "warn", "disconnected");
-          termSetActivity(t, "disconnected", "ended");
-          t.source = null;
-        };
-      };
-      t.closeStream = () => {
-        if (!t.source) return;
-        try { t.source.close(); } catch (_) {}
-        t.source = null;
-        termSetPillState(statusPill, "done", "paused");
-        termSetActivity(t, "paused (expand to resume)", "ready");
-      };
-
-      // Open stream immediately only if the pane is NOT starting collapsed.
-      // Collapsed panes stay connection-free until expanded by the operator.
-      if (!pane.classList.contains("collapsed")) {
-        t.openStream();
-      } else {
-        termSetPillState(statusPill, "done", "paused");
-        termSetActivity(t, "paused (expand to resume)", "ready");
-      }
 
       termRenderEmptyState();
       persistOpenPanes();
