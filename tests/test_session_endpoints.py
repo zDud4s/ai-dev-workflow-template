@@ -749,3 +749,103 @@ def test_session_interrupt_calls_engine_interrupt(running_server, serve_module, 
     assert interrupted, "engine.interrupt() was not called"
     # Registry reconcile must have cleared turn_in_flight.
     assert s.turn_in_flight is False, "registry.interrupt() did not reconcile state"
+
+
+# ---------------------------------------------------------------------------
+# New signals: pending flag + conflict warnings on the session stream
+# ---------------------------------------------------------------------------
+
+def test_source_guard_pending_and_warnings(serve_module):
+    """Source-level guard: _handle_session_stream must contain the symbols that
+    implement the pending flag and warning drain.  Non-flaky — fails before the
+    implementation is written, passes immediately after."""
+    src = inspect.getsource(serve_module.Handler._handle_session_stream)
+    assert '"pending"' in src, "pending key missing from state_change frame"
+    assert "last_emitted_pending" in src, "last_emitted_pending tracker missing"
+    assert ".warnings" in src, "warning drain (.warnings) missing"
+
+
+def test_stream_leading_frame_carries_pending(running_server, serve_module, tmp_path, monkeypatch):
+    """Behavioral: the very first SSE frame must include a 'pending' key.
+
+    The test seeds a .jsonl so the stream opens, pre-seeds the session in the
+    registry with pending_turn set, then reads the leading state_change frame and
+    asserts 'pending' is present and True.  Because the leading frame is emitted
+    synchronously before any file I/O, this test does not depend on timing."""
+    projects = tmp_path / ".claude" / "projects"
+    slug = (str(serve_module.ROOT)
+            .replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-"))
+    (projects / slug).mkdir(parents=True)
+    sid = "12345678-1234-1234-1234-1234abcd0020"
+    (projects / slug / f"{sid}.jsonl").write_text(
+        '{"type":"user","message":{"role":"user","content":"hi"}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+
+    # Put the session in the registry with a pending turn so the leading frame
+    # should report pending=True.
+    reg = serve_module.SESSION_REGISTRY
+    s = reg.get_or_create(sid, jsonl_path=str(projects / slug / f"{sid}.jsonl"))
+    with s.lock:
+        s.pending_turn = {"text": "queued message"}
+
+    buf = _read_sse(running_server, f"/api/sessions/{sid}/stream",
+                    until=b'"pending"', timeout=6)
+    assert b"text/event-stream" in buf.lower(), "not an SSE response"
+    _, _, body = buf.partition(b"\r\n\r\n")
+    frames = [ln[len(b"data:"):].strip()
+              for ln in body.split(b"\n") if ln.startswith(b"data:")]
+    assert frames, f"no SSE data frames received; raw buf: {buf!r}"
+    first = serve_module.json.loads(frames[0])
+    assert first["kind"] == "state_change", f"first frame is not state_change: {first}"
+    assert "pending" in first, f"'pending' key missing from leading state_change frame: {first}"
+    assert first["pending"] is True, f"expected pending=True (turn was queued), got: {first}"
+
+
+def test_stream_emits_warning_frame(running_server, serve_module, tmp_path, monkeypatch):
+    """Behavioral: when a session has warnings queued, the stream must emit at
+    least one SSE frame with kind='warning' and the warning text.
+
+    Warnings are drained on each poll tick.  We append the warning before the
+    stream opens, then read until we see 'warning' in the byte stream."""
+    projects = tmp_path / ".claude" / "projects"
+    slug = (str(serve_module.ROOT)
+            .replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-"))
+    (projects / slug).mkdir(parents=True)
+    sid = "12345678-1234-1234-1234-1234abcd0021"
+    (projects / slug / f"{sid}.jsonl").write_text(
+        '{"type":"user","message":{"role":"user","content":"hi"}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+
+    # Pre-seed a warning on the session so the first poll tick drains it.
+    reg = serve_module.SESSION_REGISTRY
+    s = reg.get_or_create(sid, jsonl_path=str(projects / slug / f"{sid}.jsonl"))
+    warning_text = "ceded: foreign write during idle engine"
+    with serve_module.SESSION_REGISTRY._lock:
+        s.warnings.append(warning_text)
+
+    # Read with a generous timeout; the warning is drained on the first poll tick
+    # (up to 1 s after the leading frame).
+    buf = _read_sse(running_server, f"/api/sessions/{sid}/stream",
+                    until=b'"warning"', timeout=8)
+    assert b"text/event-stream" in buf.lower(), "not an SSE response"
+    _, _, body = buf.partition(b"\r\n\r\n")
+    frames = [ln[len(b"data:"):].strip()
+              for ln in body.split(b"\n") if ln.startswith(b"data:")]
+    warning_frames = []
+    for f in frames:
+        try:
+            obj = serve_module.json.loads(f)
+            if obj.get("kind") == "warning":
+                warning_frames.append(obj)
+        except Exception:
+            pass
+    assert warning_frames, (
+        f"no warning frame found in SSE stream; frames: {frames!r}"
+    )
+    assert any(warning_text in wf.get("text", "") for wf in warning_frames), (
+        f"warning text not in any warning frame: {warning_frames}"
+    )

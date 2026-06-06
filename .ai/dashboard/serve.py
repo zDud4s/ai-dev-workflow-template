@@ -8982,6 +8982,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
         # Leading state_change frame — always emitted first.
+        # Include the pending flag so the chip can show "em fila" immediately.
+        _leading_pending = (reg_session.pending_turn is not None) if reg_session is not None else False
         state_event = json.dumps({
             "seq": 0,
             "kind": "state_change",
@@ -8989,6 +8991,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "text": None,
             "partial": False,
             "state": state_label,
+            "pending": _leading_pending,
         })
         if not self._write_sse_frame(state_event):
             try:
@@ -9034,6 +9037,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         session_start = time.monotonic()
         last_size = pos
         last_emitted_state = state_label
+        last_emitted_pending = _leading_pending  # track pending alongside state
         idle_ticks = 0
         max_idle_ticks = 240  # ~4 minutes at 1 s; client will reconnect
         try:
@@ -9051,16 +9055,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # engine) so the pane chip updates live. The leading frame only
                 # captured the state at connect time; without this an open
                 # stream would never see the session go live.
+                # Also surface the pending flag and drain any conflict warnings.
                 with SESSION_REGISTRY._lock:
                     _rs = SESSION_REGISTRY._sessions.get(session_id)
                     _cur_state = _rs.state.value if _rs is not None else None
-                if _cur_state and _cur_state != last_emitted_state:
+                    _cur_pending = (_rs.pending_turn is not None) if _rs is not None else False
+                    # Drain warnings atomically under the lock so none are lost.
+                    _ws = list(_rs.warnings) if _rs is not None else []
+                    if _rs is not None:
+                        _rs.warnings.clear()
+                if _cur_state and (_cur_state != last_emitted_state or _cur_pending != last_emitted_pending):
                     last_emitted_state = _cur_state
+                    last_emitted_pending = _cur_pending
                     _sframe = json.dumps({
                         "seq": seq, "kind": "state_change", "role": None,
                         "text": None, "partial": False, "state": _cur_state,
+                        "pending": _cur_pending,
                     })
                     if not self._write_sse_frame(_sframe):
+                        return
+                    seq += 1
+                # Emit each drained warning as its own SSE frame.
+                for _wmsg in _ws:
+                    _wframe = json.dumps({
+                        "seq": seq, "kind": "warning", "role": None,
+                        "text": _wmsg, "partial": False, "state": None,
+                    })
+                    if not self._write_sse_frame(_wframe):
                         return
                     seq += 1
                 try:
