@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 # Minimum seconds without file growth before MIRROR → ACQUIRING is allowed.
 QUIESCENT_S = 2.5
 
+# Seconds the ENGINE may sit fully idle (no turn in-flight, nothing pending)
+# before the background watcher reclaims it via tick().
+ENGINE_IDLE_S = 300
+
 
 class SessionState(enum.Enum):
     MIRROR = "mirror"
@@ -63,6 +67,10 @@ class Session:
         self.warnings: list = []
         # Set True when the .jsonl shrinks or disappears; signals log rotation / reset.
         self.terminated: bool = False
+        # Monotonic timestamp (from the registry clock) at which the engine
+        # became fully idle (no turn in-flight, nothing pending).  Reset to 0.0
+        # whenever a turn goes in-flight.  Used by tick() to enforce ENGINE_IDLE_S.
+        self.idle_since: float = 0.0
 
     # ------------------------------------------------------------------
     # Backward-compatibility shim: existing code reads/writes
@@ -161,6 +169,7 @@ class SessionRegistry:
                     s.engine.submit(turn)
                     s.turn_in_flight = True
                     s.in_flight_turn = turn  # record for rescue if we later cede
+                    s.idle_since = 0.0       # timer reset: engine is now busy
                     return "accepted"
                 else:
                     s.pending_turn = turn
@@ -186,6 +195,7 @@ class SessionRegistry:
             s.engine.submit(first)
             s.turn_in_flight = True
             s.in_flight_turn = first  # record for rescue if we later cede
+            s.idle_since = 0.0        # timer reset: turn is now in-flight
             s._pending_first_turn = None
 
     def mark_engine_ready(self, sid: str) -> None:
@@ -206,9 +216,11 @@ class SessionRegistry:
                 s.turn_in_flight = True
                 s.in_flight_turn = next_turn
                 s.pending_turn = None
+                s.idle_since = 0.0  # re-armed: idle timer resets while a turn is running
             else:
-                # Nothing pending; the engine is now fully idle.
+                # Nothing pending; the engine is now fully idle — start the idle timer.
                 s.in_flight_turn = None
+                s.idle_since = self._clock()
 
     def release(self, sid: str) -> None:
         s = self._sessions[sid]
@@ -223,6 +235,42 @@ class SessionRegistry:
             s.turn_in_flight = False
             s.last_rendered_offset = s.last_size   # de-dup on any engine exit
             s.state = SessionState.MIRROR
+
+    def tick(self, sid: str) -> None:
+        """Check whether the ENGINE for *sid* has been idle long enough to reclaim.
+
+        Called by the background watcher on each poll cycle (or directly by tests
+        with an injected clock).  If the session is in ENGINE state, has no turn
+        in-flight, has nothing pending, and the idle timer has expired, the engine
+        is released back to MIRROR.  All other states are a no-op.
+        """
+        s = self._sessions[sid]
+        with s.lock:
+            if (
+                s.state == SessionState.ENGINE
+                and not s.turn_in_flight
+                and s.pending_turn is None
+                and s.idle_since  # 0.0 means timer not started; skip
+                and self._clock() - s.idle_since >= ENGINE_IDLE_S
+            ):
+                self.release(sid)
+
+    def interrupt(self, sid: str) -> None:
+        """Perform a turn-boundary reconcile for an ENGINE session whose running
+        turn was interrupted (i.e. no terminal 'result' event was delivered).
+
+        Per spec §5.4 this is NOT a state transition — the session stays in
+        ENGINE.  It clears the in-flight bookkeeping and reconciles
+        last_rendered_offset so that writing_ours() returns False immediately,
+        closing the post-interrupt self-cede race.
+        """
+        s = self._sessions[sid]
+        with s.lock:
+            if s.state == SessionState.ENGINE:
+                s.turn_in_flight = False
+                s.in_flight_turn = None
+                s.last_rendered_offset = s.last_size  # reconcile: no pending drain
+                s.idle_since = self._clock()          # idle timer starts now
 
     # ------------------------------------------------------------------
     # Engine-activity helper

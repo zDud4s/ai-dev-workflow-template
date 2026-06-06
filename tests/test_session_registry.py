@@ -684,3 +684,168 @@ def test_session_has_in_flight_turn_attribute():
     s = reg.get_or_create("attr-check", jsonl_path="/tmp/attr.jsonl")
     assert hasattr(s, "in_flight_turn"), "Session must define in_flight_turn"
     assert s.in_flight_turn is None
+
+
+# ---------------------------------------------------------------------------
+# ENGINE_IDLE_S constant, idle_since attribute, tick(), and interrupt()
+# ---------------------------------------------------------------------------
+
+def test_engine_idle_s_constant():
+    """MODULE must expose ENGINE_IDLE_S = 300."""
+    assert sr.ENGINE_IDLE_S == 300
+
+
+def test_session_idle_since_initialises_to_zero():
+    """A freshly created Session must have idle_since == 0.0."""
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: _FakeEngine())
+    s = reg.get_or_create("idle-init", jsonl_path="/tmp/idle.jsonl")
+    assert s.idle_since == 0.0
+
+
+# --- tick: releases idle ENGINE after ENGINE_IDLE_S ---
+
+def _mk_tick(state, *, turn_in_flight=False, pending_turn=None,
+             idle_since=0.0, clock_val=100.0):
+    """Build registry+session for tick() tests with a mutable clock cell."""
+    clock_cell = [clock_val]
+    eng = _FakeEngine()
+    reg = sr.SessionRegistry(
+        engine_factory=lambda sid, model: eng,
+        clock=lambda: clock_cell[0],
+    )
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    s.state = state
+    s.turn_in_flight = turn_in_flight
+    s.pending_turn = pending_turn
+    s.idle_since = idle_since
+    if state == sr.SessionState.ENGINE:
+        s.engine = eng
+    return reg, s, clock_cell, eng
+
+
+def test_tick_releases_idle_engine():
+    """tick() on an ENGINE that has been idle for >= ENGINE_IDLE_S must call release()
+    and leave the session in MIRROR state."""
+    reg, s, clock_cell, eng = _mk_tick(
+        sr.SessionState.ENGINE,
+        turn_in_flight=False,
+        pending_turn=None,
+        idle_since=50.0,
+        clock_val=50.0 + sr.ENGINE_IDLE_S + 1,  # just past the threshold
+    )
+    reg.tick("s")
+    assert s.state == sr.SessionState.MIRROR, "idle ENGINE must be released to MIRROR"
+    assert eng.killed is True
+
+
+def test_tick_no_release_when_pending_turn():
+    """tick() must NOT release when pending_turn is set (a turn is about to go in-flight)."""
+    reg, s, clock_cell, eng = _mk_tick(
+        sr.SessionState.ENGINE,
+        turn_in_flight=False,
+        pending_turn={"text": "queued"},
+        idle_since=50.0,
+        clock_val=50.0 + sr.ENGINE_IDLE_S + 1,
+    )
+    reg.tick("s")
+    assert s.state == sr.SessionState.ENGINE, "must stay ENGINE when pending_turn is set"
+
+
+def test_tick_no_release_when_turn_in_flight():
+    """tick() must NOT release when turn_in_flight is True."""
+    reg, s, clock_cell, eng = _mk_tick(
+        sr.SessionState.ENGINE,
+        turn_in_flight=True,
+        pending_turn=None,
+        idle_since=50.0,
+        clock_val=50.0 + sr.ENGINE_IDLE_S + 1,
+    )
+    reg.tick("s")
+    assert s.state == sr.SessionState.ENGINE, "must stay ENGINE while a turn is in-flight"
+
+
+def test_tick_noop_for_mirror():
+    """tick() on a MIRROR session must be a no-op (no exception, state unchanged)."""
+    reg, s, clock_cell, eng = _mk_tick(sr.SessionState.MIRROR)
+    reg.tick("s")
+    assert s.state == sr.SessionState.MIRROR
+
+
+def test_tick_noop_for_foreign():
+    """tick() on a FOREIGN session must be a no-op."""
+    reg, s, clock_cell, eng = _mk_tick(sr.SessionState.FOREIGN)
+    reg.tick("s")
+    assert s.state == sr.SessionState.FOREIGN
+
+
+def test_tick_noop_for_acquiring():
+    """tick() on an ACQUIRING session must be a no-op."""
+    reg, s, clock_cell, eng = _mk_tick(sr.SessionState.ACQUIRING)
+    reg.tick("s")
+    assert s.state == sr.SessionState.ACQUIRING
+
+
+def test_tick_no_release_when_idle_since_not_set():
+    """tick() must NOT release when idle_since == 0.0 (timer not started)."""
+    reg, s, clock_cell, eng = _mk_tick(
+        sr.SessionState.ENGINE,
+        turn_in_flight=False,
+        pending_turn=None,
+        idle_since=0.0,
+        clock_val=50.0 + sr.ENGINE_IDLE_S + 1,
+    )
+    reg.tick("s")
+    assert s.state == sr.SessionState.ENGINE, "must stay ENGINE when idle_since is 0.0"
+
+
+# --- interrupt: turn-boundary reconcile, stays ENGINE ---
+
+def test_interrupt_clears_in_flight_and_reconciles_offset():
+    """interrupt() on ENGINE with turn_in_flight=True must clear turn_in_flight,
+    clear in_flight_turn, reconcile last_rendered_offset to last_size, and keep
+    state as ENGINE."""
+    clock_cell = [200.0]
+    eng = _FakeEngine()
+    reg = sr.SessionRegistry(
+        engine_factory=lambda sid, model: eng,
+        clock=lambda: clock_cell[0],
+    )
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    s.state = sr.SessionState.ENGINE
+    s.engine = eng
+    s.turn_in_flight = True
+    s.in_flight_turn = {"text": "interrupted"}
+    s.last_rendered_offset = 50
+    s.last_size = 200
+
+    reg.interrupt("s")
+
+    assert s.turn_in_flight is False, "turn_in_flight must be cleared"
+    assert s.in_flight_turn is None, "in_flight_turn must be cleared"
+    assert s.last_rendered_offset == s.last_size, "offset must be reconciled to size"
+    assert s.state == sr.SessionState.ENGINE, "state must remain ENGINE (not a transition)"
+    assert s.idle_since == 200.0, "idle_since must be set to clock() on interrupt"
+
+
+def test_interrupt_closes_writing_ours_race():
+    """After interrupt(), writing_ours() must return False so a post-interrupt
+    self-cede race cannot occur (spec §5.4)."""
+    clock_cell = [200.0]
+    eng = _FakeEngine()
+    reg = sr.SessionRegistry(
+        engine_factory=lambda sid, model: eng,
+        clock=lambda: clock_cell[0],
+    )
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    s.state = sr.SessionState.ENGINE
+    s.engine = eng
+    s.turn_in_flight = True
+    s.in_flight_turn = {"text": "interrupted"}
+    s.last_rendered_offset = 50
+    s.last_size = 200
+
+    reg.interrupt("s")
+
+    assert reg.writing_ours(s) is False, (
+        "writing_ours must be False after interrupt so the self-cede race is closed"
+    )
