@@ -193,16 +193,6 @@ def test_picker_open_routes_session_to_session_pane():
 # Task 5: route every Claude chat through the session pane
 # ------------------------------------------------------------------
 
-def test_open_transcript_is_session_shim():
-    src = js()
-    # termOpenTranscript must delegate to termOpenSession so the legacy
-    # transcript callers all converge on the unified writable pane.
-    body = _slice_function(src, "function termOpenTranscript(")
-    assert "termOpenSession(" in body, (
-        "termOpenTranscript should be a thin shim that calls termOpenSession"
-    )
-
-
 def test_term_open_routes_claude_chat_to_session():
     src = js()
     body = _slice_function(src, "function termOpen(")
@@ -286,4 +276,33 @@ def test_restore_opens_session_ids():
     body = _slice_function(src, "async function restoreOpenPanes(")
     assert "termOpenSession(" in body, (
         "restore should open session-kind panes via termOpenSession"
+    )
+
+
+# ------------------------------------------------------------------
+# Task 8: legacy chat/transcript/fork paths are pruned
+# ------------------------------------------------------------------
+
+def test_legacy_symbols_removed():
+    src = js()
+    assert "function forkAndSend" not in src, "forkAndSend must be removed"
+    assert "function termSendResumeChat" not in src and "termSendResumeChat(" not in src, (
+        "termSendResumeChat must be removed"
+    )
+    assert "function termOpenTranscript" not in src and "termOpenTranscript(" not in src, (
+        "termOpenTranscript shim and its callers must be removed"
+    )
+
+
+def test_term_send_still_exists_as_codex_dispatcher():
+    src = js()
+    # termSend stays — it routes chat-codex to termSendCodexNextTurn.
+    assert "function termSend" in src, "termSend must remain (codex dispatcher)"
+    assert "termSendCodexNextTurn(" in src, "termSend must still dispatch chat-codex"
+
+
+def test_no_transcript_kind_branches_remain():
+    src = js()
+    assert 'kind === "transcript"' not in src, (
+        "dead kind === 'transcript' branches must be removed"
     )

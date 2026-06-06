@@ -164,23 +164,5 @@ def test_termCloseAllFinished_snapshots_keys():
 # ---------------------------------------------------------------------------
 # Fix 4 — chat resume includes model field
 # ---------------------------------------------------------------------------
-
-def test_chat_resume_includes_model():
-    """termSendResumeChat must propagate the operator's chosen model on resume."""
-    src = _src()
-    body = _slice_function(src, "async function termSendResumeChat(")
-    assert 'kind: "chat"' in body, "smoke-check: chat resume body present"
-    assert "resume_session_id: t.sessionId" in body, (
-        "smoke-check: chat resume still uses resume_session_id"
-    )
-    # The model field — either as a conditional spread or an `if (t.model)` /
-    # `payload.model = t.model` assignment — must be present.
-    has_model = (
-        "payload.model = t.model" in body
-        or "model: t.model" in body
-        or "if (t.model)" in body
-    )
-    assert has_model, (
-        "termSendResumeChat must propagate t.model on /api/jobs POST — "
-        "otherwise resuming a dead chat reverts to the server-default model"
-    )
+# Removed: the dead-chat resume path (termSendResumeChat) was deleted when
+# Claude chats converged on the unified session pane.

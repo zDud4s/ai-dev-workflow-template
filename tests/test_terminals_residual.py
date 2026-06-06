@@ -220,28 +220,9 @@ def test_pill_helper_used_at_codex_onopen():
     )
 
 
-def test_pill_helper_used_at_fork_banner():
-    """The fork-and-send branch must mutate the original status pill
-    through termSetPillState. The previous ``sp.textContent = "forked";
-    sp.classList.add("warn")`` left running/done/bad/queued stacked,
-    and the cascade resolved unpredictably."""
-    src = _src()
-    # Find the fork-banner site. The marker is the unique inline string
-    # ``t.sendBtn.textContent = "forked";`` immediately followed by the
-    # pill mutation.
-    marker = 't.sendBtn.textContent = "forked";'
-    idx = src.find(marker)
-    assert idx != -1, "could not find the fork-banner site"
-    window = src[idx : idx + 600]
-    assert "termSetPillState" in window, (
-        "the fork-banner site must route through termSetPillState — "
-        "direct classList.add('warn') leaves stale state classes stacked"
-    )
-    # And the ad-hoc ``sp.textContent = "forked"`` should not remain.
-    assert 'sp.textContent = "forked"' not in window, (
-        "the ad-hoc ``sp.textContent = \"forked\"`` line should be gone "
-        "(termSetPillState passes the text as its third arg)"
-    )
+# Removed: the fork-and-send affordance (forkAndSend / IDE transcript mirror
+# pane) was deleted when Claude conversations converged on the unified
+# session pane, so there is no fork-banner site left to assert on.
 
 
 # ----- Already-closed sanity checks -----
