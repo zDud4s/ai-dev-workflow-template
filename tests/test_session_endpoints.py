@@ -46,6 +46,13 @@ def _isolate_jobs_dir(tmp_path, monkeypatch, serve_module):
     monkeypatch.setattr(serve_module, "JOBS_DIR", tmp_path / "jobs")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_session_lock(tmp_path, monkeypatch, serve_module):
+    """Point the module SESSION_LOCK at a per-test tmp dir so lock files never
+    leak into the repo's .ai/dashboard/sessions/."""
+    monkeypatch.setattr(serve_module.SESSION_LOCK, "_lock_dir", tmp_path / "sessions")
+
+
 @pytest.fixture
 def running_server(serve_module):
     """Start the dashboard HTTP server on an ephemeral port in a thread."""
