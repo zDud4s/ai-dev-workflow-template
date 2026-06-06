@@ -103,6 +103,7 @@ _RE_SESSION_STREAM = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/stream")
 _RE_SESSION_INPUT = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/input")
 _RE_SESSION_RELEASE = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/release")
 _RE_SESSION_INTERRUPT = re.compile(r"/api/sessions/([^/]+)/interrupt")
+_RE_SESSION_BRANCH = re.compile(r"/api/sessions/([^/]+)/branch")
 _RE_AGENT_PROPOSAL_GET = re.compile(r"/api/agents/proposals/([A-Za-z0-9_\-]+)")
 _RE_SKILL_PROPOSAL_GET = re.compile(r"/api/skills/proposals/([A-Za-z0-9_\-]+)")
 _RE_JOB_STREAM = re.compile(r"/api/jobs/([0-9a-f-]+)/stream")
@@ -6369,6 +6370,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if m:
                 self._handle_session_interrupt(m.group(1))
                 return
+            m = _RE_SESSION_BRANCH.fullmatch(parsed.path)
+            if m:
+                self._handle_session_branch(m.group(1))
+                return
             self._json(404, {"error": "unknown endpoint", "path": parsed.path})
 
     def do_PUT(self):  # noqa: N802
@@ -9727,6 +9732,53 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as exc:
                 print(f"[serve] session interrupt reconcile failed for {sid}: {exc}", flush=True)
         self._json(200, {"status": "interrupted"})
+
+    def _handle_session_branch(self, sid: str) -> None:
+        """POST /api/sessions/<sid>/branch
+
+        Fork ``sid`` via ``claude --fork-session`` (no initial turn), capture the
+        new session id claude mints (recorded by the stdout pump into the job's
+        session_id), then kill the fork engine and return ``{"sid": <new>}``. The
+        caller opens a fresh session pane on the forked sid, which acquires its
+        own engine on first input — so no foreign-engine adoption is needed and
+        the new pane cannot cede against a lingering fork engine.
+        """
+        if not self._UUID_RE.match(sid):
+            self._json(400, {"error": "sid must be a UUID"})
+            return
+        session_cfg = _read_yaml_field(ROOT / ".ai" / "models.yaml", "session")
+        model = (session_cfg.get("model") if isinstance(session_cfg, dict) else None) or "claude-sonnet-4-6"
+        job_id = str(uuid.uuid4())
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+        with JOBS_LOCK:
+            JOBS[job_id] = {
+                "id": job_id, "kind": "chat", "task": f"branch:{sid}",
+                "status": "queued", "created_at": now, "pid": None,
+                "log_path": None, "exit_code": None, "started_at": None,
+                "ended_at": None, "session_id": sid,
+            }
+        # Fork with no turn — just materialize the forked transcript + mint a sid.
+        _spawn_job(job_id, "chat", task="", fork_session_id=sid, model_override=model)
+        # Wait for claude's init event to report the forked sid (pump records it).
+        deadline = time.monotonic() + 10.0
+        new_sid = None
+        while time.monotonic() < deadline:
+            with JOBS_LOCK:
+                cur = (JOBS.get(job_id) or {}).get("session_id")
+            if cur and cur != sid:
+                new_sid = cur
+                break
+            time.sleep(0.1)
+        # The fork engine has done its job; kill it so the new pane owns the
+        # session cleanly (whether or not we captured a sid).
+        try:
+            _cancel_job(job_id)
+        except Exception as exc:
+            print(f"[serve] branch: cancel fork job failed for {sid}: {exc}", flush=True)
+        if not new_sid:
+            self._json(504, {"error": "branch timed out before a forked session id was reported"})
+            return
+        self._json(200, {"sid": new_sid})
 
     def _compose_multimodal_blocks(self, text: str, images: list, files: list):
         """Validate + assemble a stream-json content array from a composer

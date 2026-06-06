@@ -227,9 +227,12 @@ def _arm_fake_resume_engine(serve_module, monkeypatch):
     return captured
 
 
-def test_session_input_acquires_resume_engine(running_server, serve_module, monkeypatch):
-    captured = _arm_fake_resume_engine(serve_module, monkeypatch)
+def test_session_input_acquires_resume_engine(running_server, serve_module, monkeypatch, tmp_path):
+    # Resume mode requires an existing transcript, so seed one for this sid.
     sid = "aaaaaaaa-0000-1111-2222-bbbbbbbbbbbb"
+    sdir = _seed_projects_root(serve_module, monkeypatch, tmp_path)
+    (sdir / f"{sid}.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+    captured = _arm_fake_resume_engine(serve_module, monkeypatch)
     status, body, _ = _http("POST", f"{running_server}/api/sessions/{sid}/input",
                             data=b'{"text":"continua por favor"}',
                             headers={"Content-Type": "application/json"})
@@ -953,3 +956,36 @@ def test_non_fork_chat_job_keeps_sid_on_init(serve_module):
     finally:
         with serve_module.JOBS_LOCK:
             serve_module.JOBS.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Branch endpoint: fork a session, capture the new sid, kill the fork engine.
+# ---------------------------------------------------------------------------
+
+def test_session_branch_returns_forked_sid(running_server, serve_module, monkeypatch, tmp_path):
+    sdir = _seed_projects_root(serve_module, monkeypatch, tmp_path)
+    src = "12345678-1234-1234-1234-1234abcd0aa1"
+    new = "12345678-1234-1234-1234-1234abcd0bb2"
+    (sdir / f"{src}.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+
+    def fake_spawn(job_id, kind, task, **kw):
+        assert kw.get("fork_session_id") == src
+        # Simulate claude minting a forked sid + writing the forked transcript.
+        with serve_module.JOBS_LOCK:
+            serve_module.JOBS[job_id]["session_id"] = new
+        (sdir / f"{new}.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+
+    cancelled = []
+    monkeypatch.setattr(serve_module, "_spawn_job", fake_spawn)
+    monkeypatch.setattr(serve_module, "_cancel_job", lambda jid: cancelled.append(jid))
+
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/{src}/branch", data=b"{}")
+    assert status == 200, body
+    data = serve_module.json.loads(body)
+    assert data["sid"] == new and data["sid"] != src
+    assert cancelled, "the fork engine must be cancelled after capturing the sid"
+
+
+def test_session_branch_rejects_bad_sid(running_server, serve_module):
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/not-a-uuid/branch", data=b"{}")
+    assert status == 400
