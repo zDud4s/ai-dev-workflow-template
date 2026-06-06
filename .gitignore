@@ -52,6 +52,8 @@ tests/*
 .ai/local/
 .ai/dashboard/.server-*.log
 .ai/dashboard/.server-*.err
+# Per-session runtime lock files written by the dashboard session engine.
+.ai/dashboard/sessions/
 
 # ─────────────────────────────────────────────────────────────
 # Local-only repo extras (not shipped via install.sh, not pushed)
