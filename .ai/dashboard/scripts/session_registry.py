@@ -17,6 +17,9 @@ import enum
 import threading
 import time
 
+# Minimum seconds without file growth before MIRROR → ACQUIRING is allowed.
+QUIESCENT_S = 2.5
+
 
 class SessionState(enum.Enum):
     MIRROR = "mirror"
@@ -94,24 +97,59 @@ class SessionRegistry:
             return s.turn_in_flight or s.last_rendered_offset < s.last_size
         return False
 
-    def submit_turn(self, sid: str, turn: dict, model: str) -> str:
+    def submit_turn(self, sid: str, turn: dict, model: str, owner=None) -> str:
+        """Route an incoming turn to the session's state machine.
+
+        Returns:
+            "accepted"  – turn will be processed immediately or on next ready event.
+            "queued"    – turn stored in the single pending slot; caller may retry later.
+            "rejected"  – slot already occupied; discard this turn.
+        """
         s = self._sessions[sid]
         with s.lock:
+            # Single-slot guard: if a turn is already waiting, reject immediately.
+            if s.pending_turn is not None:
+                return "rejected"
+
             if s.state == SessionState.MIRROR:
-                s.last_rendered_offset = s.last_size      # seed BEFORE writing
-                s.engine = self._engine_factory(sid, model)
-                s.state = SessionState.ACQUIRING
-                s._pending_first_turn = turn
-                if s.engine.is_ready():
-                    self._promote_to_engine(s)
-                return "accepted"
+                elapsed = self._clock() - s.last_growth_ts
+                if elapsed >= QUIESCENT_S:
+                    # File has been quiet long enough; safe to acquire.
+                    s.last_rendered_offset = s.last_size  # seed offset BEFORE writing
+                    s.engine = self._engine_factory(sid, model)
+                    s.state = SessionState.ACQUIRING
+                    s.pending_turn = turn
+                    s.owner = owner
+                    if s.engine.is_ready():
+                        self._promote_to_engine(s)
+                    return "accepted"
+                else:
+                    # File is still being written; buffer and wait.
+                    s.pending_turn = turn
+                    return "queued"
+
             if s.state == SessionState.ENGINE:
-                s.engine.submit(turn)
-                s.turn_in_flight = True                   # re-arm the baton
-                return "accepted"
-            # ACQUIRING: store as first turn (one is already on its way)
-            s._pending_first_turn = turn
-            return "accepted"
+                # Different tab is the registered owner; buffer, do not steal.
+                if s.owner is not None and owner is not None and owner != s.owner:
+                    s.pending_turn = turn
+                    return "queued"
+                # Our engine: submit if idle, buffer if busy.
+                if not s.turn_in_flight:
+                    s.engine.submit(turn)
+                    s.turn_in_flight = True
+                    return "accepted"
+                else:
+                    s.pending_turn = turn
+                    return "queued"
+
+            if s.state == SessionState.FOREIGN:
+                # A foreign agent owns this session; buffer for later.
+                s.pending_turn = turn
+                return "queued"
+
+            # ACQUIRING: pending slot is occupied by the buffered first turn,
+            # so the guard above already catches a second attempt. Unreachable.
+            return "rejected"  # pragma: no cover
 
     def _promote_to_engine(self, s: Session) -> None:
         s.state = SessionState.ENGINE
