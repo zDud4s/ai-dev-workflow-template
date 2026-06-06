@@ -32,7 +32,10 @@ BUDGETS = [
     # contract (must emit empty header, not omit — reconciles a STOP-vs-fallback
     # contradiction with orchestrate/dispatch) and the tests-match normalization
     # rule (rule 7 / checklist 4 aligned to reviewer gate 6, away from byte-identity).
-    (".claude/skills/planner/SKILL.md",     100,  8300),
+    # Bumped 8300->8500 (2026-06-06): rule 6 now directs the planner to scope
+    # Validation.Commands to changed paths / the project's fast test subset and
+    # defer the full slow suite to the review gate (test-speed work).
+    (".claude/skills/planner/SKILL.md",     100,  8500),
     (".claude/skills/reviewer/SKILL.md",     70,  3700),
     # maintenance: Round 2 expanded the "Immutable core" enumeration to
     # cover all skills + future skills explicitly (closes D.P1-3). +1L

@@ -50,7 +50,7 @@ State both `Size` and `Risk level` at the top of your output.
 3. Factual base: `.ai/project.yaml`, `.ai/memory.md`, `.ai/decisions.md`. State assumptions explicitly.
 4. Produce self-contained packets (executor needs no prior conversation context). Fill every schema field from `.ai/packets/execute.md`; include actual code snippets in File Context so the executor doesn't re-read whole files.
 5. **`.ai/packets/*.md` are read-only templates.** Read for format; emit filled copies in output. Never Edit/Write the templates. Medium/large MAY persist a new `.ai/plans/<YYYY-MM-DD>-<slug>.md` (new file only, never overwrite).
-6. **Plan tests, don't postpone.** Each acceptance criterion → one test (path + case) under `Tests to add`. Required for Risk `elevated` OR Size `medium`/`large`; trivial/low-risk small may use `none` + reason. `Validation.Commands` must run the test runner when `Tests to add` is non-empty.
+6. **Plan tests, don't postpone.** Each acceptance criterion → one test (path + case) under `Tests to add`. Required for Risk `elevated` OR Size `medium`/`large`; trivial/low-risk small may use `none` + reason. `Validation.Commands` must run the test runner when `Tests to add` is non-empty, scoped to the changed paths or the project's fast test subset (see `.ai/memory.md`); reserve the full/slow suite for the review gate, not the iteration loop.
 7. **Plan and execute agree on tests.** Execute packet's `## Tests / To add:` MUST match plan's `Tests to add:` after normalization (trim/lowercase; treat none/-/empty as equal), NOT byte-identical (templates use field vs heading) — reviewer gate 6. If execute reveals new tests, amend the plan — never emit mismatched sections.
 
 ## Token budget
