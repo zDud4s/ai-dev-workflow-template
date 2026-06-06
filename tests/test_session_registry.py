@@ -113,3 +113,41 @@ def test_release_reconciles_offset_to_size():
     s.last_size = 999
     reg.release("s")
     assert s.last_rendered_offset == 999   # tail recomeça daqui, sem repetir
+
+
+# ---------------------------------------------------------------------------
+# New tests for Phase 1 schema groundwork: FOREIGN state + pending slot + clock
+# ---------------------------------------------------------------------------
+
+def test_foreign_state_value():
+    """SessionState.FOREIGN must have value 'foreign'."""
+    assert sr.SessionState.FOREIGN.value == "foreign"
+
+
+def test_new_session_pending_turn_is_none():
+    """A freshly created Session has pending_turn=None."""
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: _FakeEngine())
+    s = reg.get_or_create("fresh", jsonl_path="/tmp/fresh.jsonl")
+    assert s.pending_turn is None
+
+
+def test_new_session_timing_fields_are_zero():
+    """A freshly created Session has last_mtime==0.0 and last_growth_ts==0.0."""
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: _FakeEngine())
+    s = reg.get_or_create("fresh2", jsonl_path="/tmp/fresh2.jsonl")
+    assert s.last_mtime == 0.0
+    assert s.last_growth_ts == 0.0
+
+
+def test_registry_injectable_clock():
+    """SessionRegistry(engine_factory, clock=...) stores and exposes the clock."""
+    fixed_clock = lambda: 100.0
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: _FakeEngine(), clock=fixed_clock)
+    assert reg._clock() == 100.0
+
+
+def test_registry_default_clock_is_monotonic():
+    """The default registry clock is time.monotonic."""
+    import time
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: _FakeEngine())
+    assert reg._clock is time.monotonic

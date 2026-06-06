@@ -2,11 +2,11 @@
 """Per-session state machine for the dashboard unified-chat feature.
 
 SessionRegistry tracks active sessions by sid (the Claude .jsonl stem). Each
-Session moves through three states:
+Session moves through four states:
   mirror    – server tails the .jsonl; no dashboard engine running.
   acquiring – engine is starting; the first turn is buffered.
   engine    – engine is live; turns are submitted directly.
-FOREIGN is reserved for Phase 2.
+  foreign   – session is owned by another agent; local engine must not run.
 
 Thread-safety: a registry-level RLock guards the sessions dict; a per-Session
 RLock guards individual state transitions. The engine is injected via
@@ -15,13 +15,14 @@ engine_factory so the registry stays free of HTTP / CLI concerns.
 from __future__ import annotations
 import enum
 import threading
+import time
 
 
 class SessionState(enum.Enum):
     MIRROR = "mirror"
     ACQUIRING = "acquiring"
     ENGINE = "engine"
-    # FOREIGN enters in Phase 2.
+    FOREIGN = "foreign"
 
 
 class Session:
@@ -34,14 +35,44 @@ class Session:
         self.turn_in_flight = False
         self.last_size = 0
         self.last_rendered_offset = 0
-        self._pending_first_turn = None   # turn buffered while in ACQUIRING
+        # Single-slot queue: the turn buffered while in ACQUIRING state.
+        # Exposed via the _pending_first_turn property for backward compatibility.
+        self.pending_turn: dict | None = None
+        # Write-timing fields for concurrency heuristics (Phase 2).
+        self.last_mtime: float = 0.0        # last observed mtime of the .jsonl
+        self.last_growth_ts: float = 0.0    # monotonic timestamp of last file growth
         self.subscribers: set = set()
         self.lock = threading.RLock()
 
+    # ------------------------------------------------------------------
+    # Backward-compatibility shim: existing code reads/writes
+    # _pending_first_turn; this property forwards to pending_turn so
+    # _promote_to_engine and submit_turn require no changes.
+    # (Will be removed when callers are updated.)
+    # ------------------------------------------------------------------
+
+    @property
+    def _pending_first_turn(self) -> dict | None:
+        """Read-through alias for pending_turn."""
+        return self.pending_turn
+
+    @_pending_first_turn.setter
+    def _pending_first_turn(self, value: dict | None) -> None:
+        self.pending_turn = value
+
 
 class SessionRegistry:
-    def __init__(self, engine_factory):
+    def __init__(self, engine_factory, clock=time.monotonic):
+        """Initialize the registry.
+
+        Args:
+            engine_factory: Callable(sid, model) -> engine object.
+            clock: Zero-argument callable returning a float timestamp.
+                   Defaults to time.monotonic. Override in tests to avoid
+                   real sleeps when exercising time-based transitions.
+        """
         self._engine_factory = engine_factory
+        self._clock = clock
         self._sessions: dict[str, Session] = {}
         self._lock = threading.RLock()
 
