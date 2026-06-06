@@ -135,3 +135,10 @@ def test_owner_id_is_per_tab_stable():
     # The owner id must be stable for the life of the tab (survives reloads,
     # distinct per tab) — sessionStorage is per-tab, so it is the right store.
     assert "sessionStorage" in src, "owner id should be persisted per-tab via sessionStorage"
+
+
+def test_queued_chip_updates_immediately_on_202():
+    src = js()
+    # On a 202 (queued) the chip should flip to the queued state right away
+    # rather than waiting ~1s for the next SSE state frame.
+    assert "t.pending = true" in src, "the 202 branch should set t.pending = true"

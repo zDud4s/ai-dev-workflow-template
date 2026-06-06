@@ -4164,6 +4164,10 @@
           // Accepted and queued — clear the composer; surface a brief notice.
           t.input.value = "";
           if (t.input.tagName === "TEXTAREA") t.input.style.height = "";
+          // Flip the chip to its queued state immediately rather than waiting
+          // for the next SSE state frame (~1s); the stream stays the source of truth.
+          t.pending = true;
+          termSessionChipUpdate(t);
           const note = document.createElement("div");
           note.className = "msg system";
           note.textContent = "[queued — turn will be processed shortly]";
