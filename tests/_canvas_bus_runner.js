@@ -35,6 +35,68 @@ if (cmd.op === "normalizeKey") {
     q.push(pushed[i]);
   }
   result = out;
+} else if (cmd.op === "queueReady") {
+  // Creates a queue, records ready() before flush, flushes with no-op, records after.
+  // Returns [before, after].
+  const q = CanvasBus.makeQueue();
+  const before = q.ready();
+  q.flush(function () {});
+  const after = q.ready();
+  result = [before, after];
+} else if (cmd.op === "storageRoundtrip") {
+  // Inject a fake global.localStorage backed by a plain map so loadState/saveState
+  // exercise the real read/write code path (they reference bare `localStorage`).
+  const store = {};
+  global.localStorage = {
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+    setItem: function (k, v) { store[k] = String(v); },
+  };
+  // Reload CanvasBus so the new global.localStorage is visible to the closures.
+  const CanvasBus2 = fn({});
+  const state = cmd.args[0]; // {open: [...], lastSeen: N}
+  CanvasBus2.saveState(state);
+  result = CanvasBus2.loadState();
+  delete global.localStorage;
+} else if (cmd.op === "storageEmpty") {
+  // Inject a fresh fake localStorage with no entries; loadState should return null.
+  const store = {};
+  global.localStorage = {
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+    setItem: function (k, v) { store[k] = String(v); },
+  };
+  const CanvasBus2 = fn({});
+  result = CanvasBus2.loadState();
+  delete global.localStorage;
+} else if (cmd.op === "storageMissing") {
+  // Ensure global.localStorage is absent; saveState should return without throwing.
+  delete global.localStorage;
+  const CanvasBus2 = fn({});
+  CanvasBus2.saveState({ open: ["job:a"], lastSeen: 1 });
+  result = "ok";
+} else if (cmd.op === "createStub") {
+  // No global BroadcastChannel in node → exercises the no-op stub path.
+  // Ensures post() and close() do not throw.
+  delete global.BroadcastChannel;
+  const CanvasBus2 = fn({});
+  const bus = CanvasBus2.create({ onMessage: function () {} });
+  bus.post({ type: "x" });
+  bus.close();
+  result = "ok";
+} else if (cmd.op === "createReal") {
+  // Inject a fake global.BroadcastChannel to exercise the real channel path.
+  let lastPosted = null;
+  global.BroadcastChannel = function (name) {
+    this._name = name;
+    this.onmessage = null;
+    this.postMessage = function (msg) { lastPosted = msg; };
+    this.close = function () {};
+  };
+  const CanvasBus2 = fn({});
+  const bus = CanvasBus2.create({ onMessage: function () {} });
+  bus.post({ type: "ping" });
+  bus.close();
+  delete global.BroadcastChannel;
+  result = lastPosted;
 } else {
   throw new Error("Unknown op: " + cmd.op);
 }

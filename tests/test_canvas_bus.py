@@ -50,3 +50,48 @@ def test_queue_after_ready_passes_through_in_order():
 def test_is_stale_after_three_intervals():
     assert call("isStale", {"lastSeen": 0}, 31000, 10000) is True
     assert call("isStale", {"lastSeen": 0}, 20000, 10000) is False
+
+
+# ── ready() coverage ──────────────────────────────────────────────────────────
+
+@requires_node
+def test_queue_ready_false_before_flush_true_after():
+    result = call("queueReady")
+    assert result == [False, True]
+
+
+# ── loadState / saveState coverage ───────────────────────────────────────────
+
+@requires_node
+def test_storage_roundtrip():
+    state = {"open": ["job:a"], "lastSeen": 5}
+    loaded = call("storageRoundtrip", state)
+    assert loaded is not None
+    assert loaded["open"] == ["job:a"]
+    assert loaded["lastSeen"] == 5
+
+
+@requires_node
+def test_load_state_returns_null_when_storage_empty():
+    result = call("storageEmpty")
+    assert result is None
+
+
+@requires_node
+def test_save_state_does_not_throw_without_storage():
+    result = call("storageMissing")
+    assert result == "ok"
+
+
+# ── create() coverage ─────────────────────────────────────────────────────────
+
+@requires_node
+def test_create_stub_post_and_close_do_not_throw():
+    result = call("createStub")
+    assert result == "ok"
+
+
+@requires_node
+def test_create_real_routes_post_through_broadcast_channel():
+    result = call("createReal")
+    assert result == {"type": "ping"}
