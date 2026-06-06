@@ -16,6 +16,24 @@ def js():
     return TERMINALS_JS.read_text(encoding="utf-8")
 
 
+def _slice_function(src: str, header: str) -> str:
+    """Return the body of the first function/closure whose signature matches ``header``."""
+    idx = src.find(header)
+    assert idx != -1, f"could not locate {header!r} in terminals.js"
+    brace = src.find("{", idx)
+    assert brace != -1
+    depth = 0
+    for i in range(brace, len(src)):
+        ch = src[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return src[brace : i + 1]
+    raise AssertionError(f"unterminated function body for {header!r}")
+
+
 def test_has_session_pane_open_and_send():
     src = js()
     assert "function termOpenSession" in src
@@ -169,3 +187,46 @@ def test_picker_open_routes_session_to_session_pane():
     assert 'source === "session"' in src, "open handler should route session: selections"
     # and it opens the unified pane
     assert "termOpenSession(" in src
+
+
+# ------------------------------------------------------------------
+# Task 5: route every Claude chat through the session pane
+# ------------------------------------------------------------------
+
+def test_open_transcript_is_session_shim():
+    src = js()
+    # termOpenTranscript must delegate to termOpenSession so the legacy
+    # transcript callers all converge on the unified writable pane.
+    body = _slice_function(src, "function termOpenTranscript(")
+    assert "termOpenSession(" in body, (
+        "termOpenTranscript should be a thin shim that calls termOpenSession"
+    )
+
+
+def test_term_open_routes_claude_chat_to_session():
+    src = js()
+    body = _slice_function(src, "function termOpen(")
+    assert 'kind === "chat"' in body, "termOpen should branch on the Claude chat kind"
+    assert "termOpenSession(" in body, (
+        "termOpen should delegate Claude chats to termOpenSession"
+    )
+
+
+def test_new_claude_chat_opens_session_pane():
+    src = js()
+    body = _slice_function(src, "const startConversation = async ()")
+    assert "termOpenSession(" in body, (
+        "the new Claude chat launch path should open a session pane"
+    )
+    assert "randomUUID" in body, (
+        "the new Claude chat launch path should mint a fresh sid via crypto.randomUUID"
+    )
+
+
+def test_codex_chat_still_opens_via_term_open():
+    src = js()
+    body = _slice_function(src, "const startConversation = async ()")
+    # chat-codex must continue to open via termOpen (job pane), not session.
+    assert "termOpen(res.id" in body, (
+        "chat-codex should still open via termOpen, not termOpenSession"
+    )
