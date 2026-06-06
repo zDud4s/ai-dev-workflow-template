@@ -21,7 +21,7 @@ from conftest import REPO_ROOT, ALLOWED_TOOLS, PHASES
 
 
 BASH = shutil.which("bash")
-pytestmark = pytest.mark.skipif(BASH is None, reason="bash not available on PATH")
+pytestmark = [pytest.mark.skipif(BASH is None, reason="bash not available on PATH"), pytest.mark.slow]
 
 
 def _run_install(target: Path, fake_home: Path) -> subprocess.CompletedProcess:

@@ -21,7 +21,7 @@ from conftest import REPO_ROOT
 
 
 BASH = shutil.which("bash")
-pytestmark = pytest.mark.skipif(BASH is None, reason="bash not available on PATH")
+pytestmark = [pytest.mark.skipif(BASH is None, reason="bash not available on PATH"), pytest.mark.slow]
 
 # Skills that MUST be present under ~/.agents/skills/ after install. These are
 # the skills any Codex-as-orchestrator session needs to find. `codex` itself is

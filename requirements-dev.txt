@@ -1,0 +1,19 @@
+# Dev/test dependencies for this template's OWN test suite (tests/).
+# These are NOT shipped downstream by install.sh — they're only for developing
+# the workflow scaffold itself.
+#
+#   pip install -r requirements-dev.txt
+#
+# Note: the local (gitignored) pytest.ini sets `-n auto` in addopts, so when it
+# is present pytest-xdist is REQUIRED — without it, `pytest` fails with
+# "unrecognized arguments: -n". Use `-n0` to force one process when debugging.
+
+pytest>=8
+pytest-xdist>=3.6      # parallel test execution (`-n auto`)
+PyYAML>=6              # conftest + schema/config tests parse .yaml
+
+# Optional — only the dashboard browser tests use it, and they skip cleanly when
+# it (or a running dashboard server) is absent:
+# playwright>=1.40
+
+# System tools some tests shell out to (skip cleanly if missing): bash, git, node.

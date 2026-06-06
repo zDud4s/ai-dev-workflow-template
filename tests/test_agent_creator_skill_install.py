@@ -13,7 +13,7 @@ from conftest import REPO_ROOT
 
 
 BASH = shutil.which("bash")
-pytestmark = pytest.mark.skipif(BASH is None, reason="bash not available on PATH")
+pytestmark = [pytest.mark.skipif(BASH is None, reason="bash not available on PATH"), pytest.mark.slow]
 
 
 def _run_script(script: str, target: Path, fake_home: Path) -> subprocess.CompletedProcess:

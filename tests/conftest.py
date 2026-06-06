@@ -47,6 +47,22 @@ ALLOWED_TOOLS = ("claude", "codex")
 FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom markers from tracked code.
+
+    `pytest.ini` is gitignored (local-only test config), so the marker
+    registration lives here in conftest.py — which IS tracked — to stay in
+    lockstep with the `@pytest.mark.slow` usages in the tracked test modules.
+    Otherwise a checkout without the local pytest.ini hits `--strict-markers`.
+    """
+    config.addinivalue_line(
+        "markers",
+        'slow: integration tests that run install.sh/update-workflow.sh/mirror '
+        'subprocesses (tens of seconds each); excluded from the fast loop via '
+        '-m "not slow"',
+    )
+
+
 def repo_path(*parts: str) -> Path:
     return REPO_ROOT.joinpath(*parts)
 

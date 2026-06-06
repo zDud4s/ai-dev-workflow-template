@@ -42,6 +42,10 @@ GIT = shutil.which("git")
 INSTALL_SH = REPO_ROOT / "install.sh"
 UPDATE_SH = REPO_ROOT / "update-workflow.sh"
 
+# Whole-file integration suite: every test runs install.sh/update-workflow.sh as a
+# subprocess (tens of seconds each). Excluded from the fast loop via -m "not slow".
+pytestmark = pytest.mark.slow
+
 
 # --- Contract: what the installers are responsible for placing in a target ---
 
