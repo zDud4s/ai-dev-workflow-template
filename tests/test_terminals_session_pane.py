@@ -53,3 +53,67 @@ def test_session_pane_closes_stream_on_collapse():
     import re as _re
     # crude but effective: the collapse handler references "session" alongside the stream toggle
     assert _re.search(r'kind\s*===\s*"session"', src), "termSetCollapsed should handle kind === 'session'"
+
+
+# ------------------------------------------------------------------
+# Task A: foreign chip, queued suffix, warning rendering
+# ------------------------------------------------------------------
+
+def test_chip_foreign_state_and_external_label():
+    src = js()
+    # termSessionChipUpdate must have a branch for the "foreign" state
+    assert '"foreign"' in src, 'termSessionChipUpdate should branch on state === "foreign"'
+    assert '"external"' in src, 'the foreign-state pill label should be "external"'
+
+
+def test_chip_queued_suffix():
+    src = js()
+    # When t.pending is true the chip label gets a " · queued" suffix
+    assert "t.pending" in src, "termSessionChipUpdate should read t.pending"
+    assert '"queued"' in src or "queued" in src, 'a "queued" label/suffix must appear'
+
+
+def test_handle_session_event_stores_pending():
+    src = js()
+    # state_change handler must also store t.pending = !!ev.pending
+    assert "t.pending" in src and "ev.pending" in src, (
+        "termHandleSessionEvent should store t.pending = !!ev.pending on state_change"
+    )
+
+
+def test_handle_session_event_warning_kind():
+    src = js()
+    # termHandleSessionEvent must handle kind === "warning" frames
+    assert '"warning"' in src, 'termHandleSessionEvent should branch on kind === "warning"'
+
+
+# ------------------------------------------------------------------
+# Task B: queue-aware send — explicit 202 and 409 branches
+# ------------------------------------------------------------------
+
+def test_send_session_inspects_status_202():
+    src = js()
+    assert "202" in src, "termSendSession should handle HTTP 202 (queued) explicitly"
+
+
+def test_send_session_inspects_status_409():
+    src = js()
+    assert "409" in src, "termSendSession should handle HTTP 409 (already_queued) explicitly"
+
+
+# ------------------------------------------------------------------
+# Task C: release + interrupt controls in pane header
+# ------------------------------------------------------------------
+
+def test_open_session_has_release_control():
+    src = js()
+    assert '"/release"' in src or "'/release'" in src or "/release" in src, (
+        "termOpenSession should wire a release fetch to /api/sessions/<sid>/release"
+    )
+
+
+def test_open_session_has_interrupt_control():
+    src = js()
+    assert '"/interrupt"' in src or "'/interrupt'" in src or "/interrupt" in src, (
+        "termOpenSession should wire an interrupt fetch to /api/sessions/<sid>/interrupt"
+    )

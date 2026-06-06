@@ -3834,20 +3834,30 @@
       const pill = t.pane && t.pane.querySelector(".status-pill");
       if (!pill) return;
       const state = t.state || "mirror";
+      let label, pillCls, activityCls;
       if (state === "mirror") {
-        termSetPillState(pill, "done", "mirror");
+        label = "mirror"; pillCls = "done"; activityCls = "ready";
         termSetActivity(t, "idle", "ready");
       } else if (state === "acquiring") {
-        termSetPillState(pill, "running", "acquiring…");
+        label = "acquiring…"; pillCls = "running"; activityCls = "busy";
         termSetActivity(t, "acquiring…", "busy");
       } else if (state === "engine") {
-        termSetPillState(pill, "running", "live");
+        label = "live"; pillCls = "running"; activityCls = "busy";
         termSetActivity(t, "live", "busy");
+      } else if (state === "foreign") {
+        // Session is driven by an external agent — show as busy/warn so
+        // the operator knows they are not the active driver.
+        label = "external"; pillCls = "warn"; activityCls = "busy";
+        termSetActivity(t, "external", "busy");
       } else {
         // Unknown future state — show it as-is with a neutral style.
-        termSetPillState(pill, "warn", state);
+        label = state; pillCls = "warn"; activityCls = "ready";
         termSetActivity(t, state, "ready");
       }
+      // When a turn is queued (t.pending true) append a visible suffix so
+      // the operator knows a message is waiting to be processed.
+      if (t.pending) label = label + " · queued";
+      termSetPillState(pill, pillCls, label);
     }
 
     // Handle one parsed SessionEvent object from the SSE stream.
@@ -3861,7 +3871,19 @@
         // Do NOT render as a bubble — state transitions are metadata,
         // not conversation content.
         t.state = ev.state || t.state;
+        t.pending = !!ev.pending;
         termSessionChipUpdate(t);
+        return;
+      }
+      if (kind === "warning") {
+        // Surface server-side warnings as inline system notices so the
+        // operator sees them without leaving the pane.
+        const warn = document.createElement("div");
+        warn.className = "msg system";
+        warn.style.color = "var(--warn, #e6a817)";
+        warn.textContent = "[warning] " + (ev.text || "");
+        t.body.appendChild(warn);
+        termAutoScroll(t);
         return;
       }
       if (kind === "message") {
@@ -3925,6 +3947,8 @@
           <span class="activity" title="current activity in this pane">connecting…</span>
           <span class="id">${escape(sid.slice(0, 8))}</span>
           <span class="actions">
+            <button class="release-btn" title="Release session control back to the engine">release</button>
+            <button class="interrupt-btn" title="Interrupt the current session turn">interrupt</button>
             <button class="expand-btn" title="Show or hide this pane">expand</button>
             <button class="close-btn" title="Close this pane">close</button>
           </span>
@@ -3982,6 +4006,28 @@
       pane.querySelector(".close-btn").addEventListener("click", (e) => {
         e.stopPropagation();
         termClose(paneKey);
+      });
+      // Release: ask the server to hand session control back to the engine.
+      pane.querySelector(".release-btn")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        fetch("/api/sessions/" + encodeURIComponent(sid) + "/release", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        }).catch((err) => {
+          setMsg("#term-msg", "err", "Release failed: " + err.message, TERM_MSG_DURATION_MS);
+        });
+      });
+      // Interrupt: signal the current turn to stop processing.
+      pane.querySelector(".interrupt-btn")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        fetch("/api/sessions/" + encodeURIComponent(sid) + "/interrupt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        }).catch((err) => {
+          setMsg("#term-msg", "err", "Interrupt failed: " + err.message, TERM_MSG_DURATION_MS);
+        });
       });
       pane.addEventListener("click", () => {
         document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
@@ -4079,10 +4125,44 @@
       t._sessionSendInFlight = true;
       t.sendBtn.disabled = true;
       try {
-        await postJson("/api/sessions/" + encodeURIComponent(t.sid) + "/input", { text: trimmed });
-        // Clear the composer on success. The SSE stream will render the turn.
-        t.input.value = "";
-        if (t.input.tagName === "TEXTAREA") t.input.style.height = "";
+        // Use fetch directly so we can inspect the HTTP status code.
+        // postJson throws on non-ok but we need to distinguish 202/409.
+        const r = await fetch(
+          "/api/sessions/" + encodeURIComponent(t.sid) + "/input",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: trimmed }),
+          }
+        );
+        if (r.status === 202) {
+          // Accepted and queued — clear the composer; surface a brief notice.
+          t.input.value = "";
+          if (t.input.tagName === "TEXTAREA") t.input.style.height = "";
+          const note = document.createElement("div");
+          note.className = "msg system";
+          note.textContent = "[queued — turn will be processed shortly]";
+          t.body.appendChild(note);
+          termAutoScroll(t);
+        } else if (r.status === 409) {
+          // Already queued — keep the composer text so the operator can
+          // retry once the current queued turn has been processed.
+          const note = document.createElement("div");
+          note.className = "msg system";
+          note.style.color = "var(--warn, #e6a817)";
+          note.textContent = "[already queued — please wait before sending again]";
+          t.body.appendChild(note);
+          termAutoScroll(t);
+          setMsg("#term-msg", "warn", "Already queued — text preserved.", TERM_MSG_DURATION_MS);
+        } else if (r.ok) {
+          // 200 accepted — clear the composer. The SSE stream renders the turn.
+          t.input.value = "";
+          if (t.input.tagName === "TEXTAREA") t.input.style.height = "";
+        } else {
+          // Other HTTP errors: surface them like network failures.
+          const body = await r.text().catch(() => "");
+          throw new Error("HTTP " + r.status + (body ? ": " + body.slice(0, 120) : ""));
+        }
       } catch (e) {
         const err = document.createElement("div");
         err.className = "msg system";
