@@ -915,3 +915,41 @@ def test_session_stream_does_not_clear_shared_warnings(serve_module):
     src = inspect.getsource(serve_module.Handler)
     assert ".warnings.clear()" not in src, "the SSE loop must not clear the shared warnings list"
     assert "warn_seen" in src, "the SSE loop should track a per-stream warning cursor"
+
+
+# ---------------------------------------------------------------------------
+# Branch groundwork: capture the forked session id from a chat fork job's
+# init event (the stdout pump only captured it for codex before).
+# ---------------------------------------------------------------------------
+
+def test_forked_chat_job_captures_new_session_id(serve_module):
+    job_id = "job-fork-cap-1"
+    src = "11111111-1111-1111-1111-111111111111"
+    new = "22222222-2222-2222-2222-222222222222"
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {"id": job_id, "kind": "chat",
+                                     "session_id": src, "forked_from": src}
+    try:
+        serve_module._maybe_capture_forked_sid(
+            job_id, "chat", {"type": "system", "subtype": "init", "session_id": new})
+        with serve_module.JOBS_LOCK:
+            assert serve_module.JOBS[job_id]["session_id"] == new
+    finally:
+        with serve_module.JOBS_LOCK:
+            serve_module.JOBS.pop(job_id, None)
+
+
+def test_non_fork_chat_job_keeps_sid_on_init(serve_module):
+    """A plain resume (non-fork) chat job must NOT have its sid overwritten."""
+    job_id = "job-resume-cap-1"
+    src = "33333333-3333-3333-3333-333333333333"
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {"id": job_id, "kind": "chat", "session_id": src}
+    try:
+        serve_module._maybe_capture_forked_sid(
+            job_id, "chat", {"type": "system", "session_id": "99999999-9999-9999-9999-999999999999"})
+        with serve_module.JOBS_LOCK:
+            assert serve_module.JOBS[job_id]["session_id"] == src
+    finally:
+        with serve_module.JOBS_LOCK:
+            serve_module.JOBS.pop(job_id, None)

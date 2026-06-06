@@ -4513,6 +4513,10 @@ def _spawn_job(
             JOBS[job_id]["command"] = " ".join(argv[1:])
             JOBS[job_id]["session_id"] = session_id
             JOBS[job_id]["model"] = model
+            # Mark fork jobs so the stdout pump knows to overwrite session_id
+            # with the new (forked) id claude mints, rather than keeping source.
+            if fork_session_id:
+                JOBS[job_id]["forked_from"] = fork_session_id
         _start_subprocess_job(
             job_id=job_id,
             kind=kind,
@@ -4822,6 +4826,10 @@ def _start_subprocess_job(
                                     with JOBS_LOCK:
                                         if not JOBS[job_id].get("session_id"):
                                             JOBS[job_id]["session_id"] = sid
+                            # A forked chat job: claude mints a new session id and
+                            # reports it in its init event. Capture it so /branch
+                            # can hand the forked sid to a fresh session pane.
+                            _maybe_capture_forked_sid(job_id, kind, obj)
 
                 # Flush any final partial line (no trailing newline). Add a
                 # synthetic ``\n`` so downstream line-based parsers can still
@@ -5235,6 +5243,28 @@ def _watcher_loop() -> None:
         except Exception as e:  # noqa: BLE001 — log and continue so the loop survives
             print("[serve] watcher: %r" % e, flush=True)
         time.sleep(WATCH_INTERVAL_S)
+
+
+def _maybe_capture_forked_sid(job_id: str, kind: str, obj: dict) -> None:
+    """Record the new session id minted by a ``--fork-session`` chat job.
+
+    A forked chat job is spawned with ``--resume <src> --fork-session``; claude
+    keeps the history but writes new turns under a freshly-generated session id,
+    reported in its ``system``/init event. We overwrite JOBS[job_id]["session_id"]
+    with it so ``POST /api/sessions/<sid>/branch`` can read back the forked sid.
+    Only acts on chat jobs flagged ``forked_from``; a plain resume keeps its sid.
+    """
+    if kind != "chat" or obj.get("type") != "system":
+        return
+    new_sid = obj.get("session_id")
+    if not new_sid:
+        return
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is None or not j.get("forked_from"):
+            return
+        if new_sid != j.get("session_id"):
+            j["session_id"] = new_sid
 
 
 def _maybe_mark_session_turn_done(job_id: str, obj: dict) -> None:
