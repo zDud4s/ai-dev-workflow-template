@@ -306,3 +306,32 @@ def test_no_transcript_kind_branches_remain():
     assert 'kind === "transcript"' not in src, (
         "dead kind === 'transcript' branches must be removed"
     )
+
+
+# ------------------------------------------------------------------
+# Fase 3 — review fixes: model pinning (#1), codex picker leak (#2),
+# migration quota safety (#5).
+# ------------------------------------------------------------------
+
+def test_new_chat_pins_selected_model():
+    src = js()
+    # The new-chat path stores the chosen model on the session pane...
+    assert "newT.model = model" in src, "new-chat path should pin the selected model on the pane"
+    # ...and termSendSession forwards it in the /input body when set.
+    assert "payload.model = t.model" in src, "termSendSession should send the pane's pinned model"
+
+
+def test_picker_sessions_group_excludes_codex():
+    src = js()
+    # Codex chats are not claude --resume sessions; they must not appear in the
+    # Sessions group (they would open a broken Claude pane on a codex id).
+    assert 's.kind !== "chat-codex"' in src, "Sessions group must filter out chat-codex"
+
+
+def test_migration_keeps_v1_on_quota_failure():
+    import re
+    src = js()
+    # removeItem(v1) must be nested inside the successful setItem(v2) branch, so
+    # a quota failure does not wipe both keys.
+    m = re.search(r"setItem\(PERSIST_KEY.*?removeItem\(LEGACY_PERSIST_KEY\).*?catch", src, re.DOTALL)
+    assert m, "removeItem(LEGACY) must run only inside the setItem(PERSIST_KEY) success path"

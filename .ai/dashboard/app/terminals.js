@@ -106,8 +106,13 @@
       }));
       const panes = mapped.filter(Boolean);
       const migrated = { panes, tokens: (legacy.tokens && typeof legacy.tokens === "object") ? legacy.tokens : {} };
-      try { localStorage.setItem(PERSIST_KEY, JSON.stringify(migrated)); } catch (_) { /* quota */ }
-      try { localStorage.removeItem(LEGACY_PERSIST_KEY); } catch (_) { /* ignore */ }
+      // Only drop the legacy key once the v2 write has actually succeeded —
+      // otherwise a quota failure would lose BOTH keys (all persisted panes)
+      // on the next reload, not just the intended sid-less chats.
+      try {
+        localStorage.setItem(PERSIST_KEY, JSON.stringify(migrated));
+        try { localStorage.removeItem(LEGACY_PERSIST_KEY); } catch (_) { /* ignore */ }
+      } catch (_) { /* quota: keep v1 so a later reload can retry the migration */ }
       return migrated;
     }
 
@@ -423,7 +428,11 @@
         const r = await fetch("/api/sessions", { cache: "no-store" });
         if (r.ok) {
           const data = await r.json();
-          const all = (data.sessions || []).filter((s) => !openKeys.has("session:" + s.sid));
+          // Sessions are Claude conversations only. Codex (chat-codex) is NOT a
+          // claude --resume session; exclude it here so it stays in the Jobs
+          // group and clicking it never spins up a Claude pane on a codex id.
+          const all = (data.sessions || []).filter(
+            (s) => s.kind !== "chat-codex" && !openKeys.has("session:" + s.sid));
           totalSessions = all.length;
           sessions = all.slice(0, PICKER_MAX_PER_GROUP);
         }
@@ -876,6 +885,10 @@
               newT.attached = attached;
               if (typeof termRenderAttachments === "function") termRenderAttachments(newT);
             }
+            // Pin the operator's chosen model so the first turn creates the
+            // session on it (the /input body carries it; the engine factory
+            // would otherwise fall back to the models.yaml default).
+            newT.model = model;
             // Send the first message — this acquires + creates the session.
             termSendSession(newT, text);
           }
@@ -3857,12 +3870,16 @@
       try {
         // Use fetch directly so we can inspect the HTTP status code.
         // postJson throws on non-ok but we need to distinguish 202/409.
+        const payload = { text: trimmed, owner: termClientId() };
+        // Carry the pane's pinned model (set when a new chat is started) so the
+        // backend creates/runs the session on the chosen model, not the default.
+        if (t.model) payload.model = t.model;
         const r = await fetch(
           "/api/sessions/" + encodeURIComponent(t.sid) + "/input",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: trimmed, owner: termClientId() }),
+            body: JSON.stringify(payload),
           }
         );
         if (r.status === 202) {
