@@ -8838,8 +8838,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except OSError:
             try:
                 fh.close()
-            except OSError:
-                pass
+            except OSError as exc:
+                print("[serve] session stream: file close on header flush error: %r" % (exc,), flush=True)
             return
 
         # Leading state_change frame — always emitted first.
@@ -8854,8 +8854,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not self._write_sse_frame(state_event):
             try:
                 fh.close()
-            except OSError:
-                pass
+            except OSError as exc:
+                print("[serve] session stream: file close on state frame write error: %r" % (exc,), flush=True)
             return
 
         # Catch-up: flush existing content, capped to avoid large memory use.
