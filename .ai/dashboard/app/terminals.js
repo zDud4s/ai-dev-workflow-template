@@ -1222,6 +1222,11 @@
         clearInterval(t._sseHeartbeat);
         t._sseHeartbeat = null;
       }
+      // Disconnect the activity MutationObserver (set up by PaneCore when
+      // onActivity is first subscribed). termClose is called by the in-pane
+      // close button, which bypasses handle.close(), so we must tear it down
+      // here too. Idempotent and safe when never set (Chunk 4 / Task 12).
+      if (t._activityDisconnect) t._activityDisconnect();
       // Cost-refresh debounce + auto-follow scroll listener cleanup.
       if (t._costRefreshTimer) { clearTimeout(t._costRefreshTimer); t._costRefreshTimer = null; }
       if (t._autoFollowScrollHandler && t.body) {
@@ -2942,6 +2947,10 @@
         try { window.removeEventListener("resize", t._resizeFallback); } catch (_) {}
         t._resizeFallback = null;
       }
+      // Disconnect the activity MutationObserver. termClosePty is called by
+      // the in-pane close button directly, bypassing handle.close(), so the
+      // teardown must live here too. Idempotent; safe if never set.
+      if (t._activityDisconnect) t._activityDisconnect();
       try { t.source && t.source.close(); } catch (_) {}
       // Fire-and-forget kill on the server side too so we don't leak shells.
       // Both the synchronous throw (rare) AND the Promise rejection (mid-flight

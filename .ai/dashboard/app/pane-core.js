@@ -406,6 +406,13 @@ function paneCoreMountChat(container, opts) {
   // broadcast `activity` to the status list.
   const activity = paneCoreActivityWiring(pane);
 
+  // Store the disconnect on `t` so termClose (which only has the `t`
+  // object, not the pane handle) can also tear down the observer.
+  // Idempotent: calling _activityDisconnect() more than once is safe.
+  t._activityDisconnect = function () {
+    try { activity.disconnect(); } catch (_) {}
+  };
+
   const handle = {
     // The shared term-object (TERMS entry). Layout code (terminals.js) and
     // the canvas register/own this; PaneCore just builds + wires it.
@@ -417,7 +424,7 @@ function paneCoreMountChat(container, opts) {
     // which already owns the leak-safe SSE/heartbeat/scroll-listener
     // cleanup; PaneCore additionally disconnects its activity observer.
     close() {
-      activity.disconnect();
+      t._activityDisconnect();
       termClose(t.jobId);
     },
     // Subscribe to activity changes ({label, cls}). Returns an
@@ -496,6 +503,13 @@ function paneCoreMountPty(container, opts) {
   });
 
   const activity = paneCoreActivityWiring(pane);
+
+  // Store the disconnect on `t` so termClosePty (which only has `t`,
+  // not the pane handle) can also tear down the observer. Idempotent.
+  t._activityDisconnect = function () {
+    try { activity.disconnect(); } catch (_) {}
+  };
+
   // ``.fit()`` re-fits the xterm grid. No-op while collapsed (the body is
   // display:none so its computed size is 0 → fit() can't run).
   const fit = () => {
@@ -504,7 +518,7 @@ function paneCoreMountPty(container, opts) {
   };
   const handle = {
     t, pane, key: ptyId, kind: "terminal",
-    close() { activity.disconnect(); termClosePty(ptyId); },
+    close() { t._activityDisconnect(); termClosePty(ptyId); },
     onActivity: activity.onActivity,
     fit,
   };
@@ -947,9 +961,16 @@ function paneCoreMountTranscript(container, opts) {
   termRefreshTranscriptPicker();
 
   const activity = paneCoreActivityWiring(pane);
+
+  // Store the disconnect on `t` so termClose (which only has `t`, not
+  // the pane handle) can also tear down the observer. Idempotent.
+  t._activityDisconnect = function () {
+    try { activity.disconnect(); } catch (_) {}
+  };
+
   return {
     t, pane, key: paneKey, kind: "transcript",
-    close() { activity.disconnect(); termClose(paneKey); },
+    close() { t._activityDisconnect(); termClose(paneKey); },
     onActivity: activity.onActivity,
     openStream: () => t.openStream(),
     closeStream: () => t.closeStream(),
@@ -1139,9 +1160,16 @@ function paneCoreMountSession(container, opts) {
   }
 
   const activity = paneCoreActivityWiring(pane);
+
+  // Store the disconnect on `t` so termClose (which only has `t`, not
+  // the pane handle) can also tear down the observer. Idempotent.
+  t._activityDisconnect = function () {
+    try { activity.disconnect(); } catch (_) {}
+  };
+
   return {
     t, pane, key: paneKey, kind: "session",
-    close() { activity.disconnect(); termClose(paneKey); },
+    close() { t._activityDisconnect(); termClose(paneKey); },
     onActivity: activity.onActivity,
     openStream: () => t.openStream(),
     closeStream: () => t.closeStream(),
@@ -1149,8 +1177,9 @@ function paneCoreMountSession(container, opts) {
 }
 
 // Per-kind metadata fetch used by both restore and the list. For chat
-// kinds this is the job record at /api/jobs/<id>. (PTY/transcript/session
-// fetches join in Task 7.)
+// kinds this is the job record at /api/jobs/<id>. The per-kind branches
+// for PTY / transcript / session are completed in Chunk 4 (Task 12,
+// canvas restore) once there is a consumer — no speculative fetch for now.
 function paneCoreFetchMeta(key) {
   return fetch("/api/jobs/" + encodeURIComponent(key), { cache: "no-store" })
     .then((r) => (r.ok ? r.json() : null));
