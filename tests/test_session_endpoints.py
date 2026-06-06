@@ -419,6 +419,131 @@ def test_maybe_mark_session_turn_done_noop_non_result(serve_module):
 
 
 # ---------------------------------------------------------------------------
+# ForeignWriteWatcher + SessionLock wiring tests (Part A & B)
+# ---------------------------------------------------------------------------
+
+def test_foreign_write_watcher_detects_growth(serve_module, tmp_path, _reset_session_registry):
+    """poll_once() marks a MIRROR session FOREIGN when the .jsonl file grows."""
+    sid = "eeeeeeee-0000-0000-0000-000000000010"
+    jsonl = tmp_path / f"{sid}.jsonl"
+    jsonl.write_bytes(b"")  # create empty file
+
+    reg = serve_module.SESSION_REGISTRY
+    s = reg.get_or_create(sid, jsonl_path=str(jsonl))
+    # Seed last_growth_ts to 0 so elapsed is large (file was quiet long ago),
+    # but last_size to 0 so any new bytes count as growth, not a quiet tick.
+    s.last_growth_ts = 0.0
+    s.last_size = 0
+
+    # Write bytes so os.stat() sees growth.
+    jsonl.write_bytes(b'{"type":"user"}\n')
+
+    watcher = serve_module.ForeignWriteWatcher()
+    watcher.poll_once()
+
+    assert s.state == serve_module.session_registry.SessionState.FOREIGN, (
+        f"expected FOREIGN after file growth, got {s.state}"
+    )
+
+
+def test_foreign_write_watcher_gone_terminates(serve_module, tmp_path, _reset_session_registry):
+    """poll_once() sets terminated=True when the .jsonl file is absent."""
+    sid = "eeeeeeee-0000-0000-0000-000000000011"
+    missing = tmp_path / f"{sid}.jsonl"
+    # Do NOT create the file — it is intentionally absent.
+
+    reg = serve_module.SESSION_REGISTRY
+    s = reg.get_or_create(sid, jsonl_path=str(missing))
+
+    watcher = serve_module.ForeignWriteWatcher()
+    watcher.poll_once()
+
+    # note_jsonl_gone() calls _reconcile_to_mirror which sets terminated=True.
+    assert s.terminated is True, "expected terminated=True after file gone"
+    assert s.state == serve_module.session_registry.SessionState.MIRROR, (
+        f"expected MIRROR after file gone, got {s.state}"
+    )
+
+
+def test_lock_blocks_spawn(serve_module, tmp_path, _reset_session_registry):
+    """submit_turn() with lock_acquire=False must not spawn an engine."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(serve_module.__file__).parent / "scripts"))
+    import session_registry as sr
+
+    spawn_calls = []
+
+    def fake_factory(sid, model):
+        spawn_calls.append(sid)
+        # Return a minimal fake engine that is immediately ready.
+        class _FE:
+            def submit(self, t): pass
+            def is_ready(self): return True
+            def kill(self): pass
+        return _FE()
+
+    # Registry with lock_acquire always returning False — spawn must be blocked.
+    reg_blocked = sr.SessionRegistry(
+        engine_factory=fake_factory,
+        lock_acquire=lambda sid, owner: False,
+    )
+    s_blocked = reg_blocked.get_or_create("lock-sid-1", jsonl_path=str(tmp_path / "a.jsonl"))
+    # Seed so the quiescence check passes (elapsed >= QUIESCENT_S).
+    s_blocked.last_growth_ts = 0.0
+    result = reg_blocked.submit_turn("lock-sid-1", {"text": "hello"}, model="m")
+    # Engine must NOT have been spawned.
+    assert len(spawn_calls) == 0, f"engine spawned despite lock_acquire=False: {spawn_calls}"
+    # A warning must have been recorded.
+    assert any("lock" in w for w in s_blocked.warnings), (
+        f"no lock warning in session warnings: {s_blocked.warnings}"
+    )
+
+    # With lock_acquire=True the engine SHOULD spawn.
+    spawn_calls.clear()
+    reg_allowed = sr.SessionRegistry(
+        engine_factory=fake_factory,
+        lock_acquire=lambda sid, owner: True,
+    )
+    s_allowed = reg_allowed.get_or_create("lock-sid-2", jsonl_path=str(tmp_path / "b.jsonl"))
+    s_allowed.last_growth_ts = 0.0
+    reg_allowed.submit_turn("lock-sid-2", {"text": "hello"}, model="m")
+    assert len(spawn_calls) == 1, f"engine not spawned when lock_acquire=True: {spawn_calls}"
+
+
+def test_release_calls_lock_release(serve_module, tmp_path, _reset_session_registry):
+    """release() must call lock_release when the hook is set."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(serve_module.__file__).parent / "scripts"))
+    import session_registry as sr
+
+    released = []
+
+    def fake_factory(sid, model):
+        class _FE:
+            def submit(self, t): pass
+            def is_ready(self): return True
+            def kill(self): pass
+        return _FE()
+
+    reg = sr.SessionRegistry(
+        engine_factory=fake_factory,
+        lock_acquire=lambda sid, owner: True,
+        lock_release=lambda sid: released.append(sid),
+    )
+    s = reg.get_or_create("release-sid", jsonl_path=str(tmp_path / "r.jsonl"))
+    s.last_growth_ts = 0.0
+    reg.submit_turn("release-sid", {"text": "hi"}, model="m")
+
+    reg.release("release-sid")
+
+    assert "release-sid" in released, (
+        f"lock_release not called after release(); got: {released}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Probe wiring — engine_active_probe set on acquire
 # ---------------------------------------------------------------------------
 

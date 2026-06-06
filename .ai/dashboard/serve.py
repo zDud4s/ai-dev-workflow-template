@@ -80,6 +80,7 @@ if _SCRIPTS_DIR not in sys.path:
 import pty_session as _pty_session  # noqa: E402 — scripts/ helper
 import todos_parser as _todos_parser  # noqa: E402 — scripts/ helper
 import session_registry  # noqa: E402 — scripts/ helper
+import session_lock  # noqa: E402 — scripts/ helper
 
 from _improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
@@ -5171,9 +5172,58 @@ def _session_engine_factory(sid: str, model: str) -> _ResumeEngineAdapter:
     return adapter
 
 
+# Cross-process file lock: prevents two dashboard processes from running an
+# engine on the same session simultaneously. Lock files live under sessions/.
+SESSION_LOCK = session_lock.SessionLock(ROOT / ".ai" / "dashboard" / "sessions")
+
 SESSION_REGISTRY = session_registry.SessionRegistry(
     engine_factory=_session_engine_factory,
+    lock_acquire=lambda sid, owner: SESSION_LOCK.try_acquire(sid, owner or "dashboard"),
+    lock_release=SESSION_LOCK.release,
+    lock_heartbeat=SESSION_LOCK.heartbeat,
 )
+
+# Poll interval for the background foreign-write watcher (seconds).
+WATCH_INTERVAL_S = 1.0
+
+
+class ForeignWriteWatcher:
+    """Background watcher that detects file growth or disappearance for every
+    registered session.  poll_once() is driven by _watcher_loop() at a regular
+    interval; tests drive it directly to avoid real sleeps.
+    """
+
+    def poll_once(self) -> None:
+        """Snapshot the session table and stat each .jsonl file once."""
+        with SESSION_REGISTRY._lock:
+            items = list(SESSION_REGISTRY._sessions.items())
+        for sid, s in items:
+            try:
+                st = os.stat(s.jsonl_path)
+                SESSION_REGISTRY.note_jsonl_growth(sid, st.st_size, st.st_mtime)
+                SESSION_REGISTRY.tick(sid)
+                # Keep the file lock alive for sessions that currently own an engine.
+                if s.state.value in ("engine", "acquiring"):
+                    SESSION_LOCK.heartbeat(sid)
+            except OSError:
+                # File gone or rotated; reconcile the session back to MIRROR.
+                SESSION_REGISTRY.note_jsonl_gone(sid)
+
+
+def _watcher_loop() -> None:
+    """Loop that calls ForeignWriteWatcher.poll_once() every WATCH_INTERVAL_S.
+
+    One bad tick must not kill the loop, so the body is wrapped and any
+    unexpected exception is logged.  The OSError path inside poll_once() does
+    real work (note_jsonl_gone) and is not silenced here.
+    """
+    watcher = ForeignWriteWatcher()
+    while True:
+        try:
+            watcher.poll_once()
+        except Exception as e:  # noqa: BLE001 — log and continue so the loop survives
+            print("[serve] watcher: %r" % e, flush=True)
+        time.sleep(WATCH_INTERVAL_S)
 
 
 def _maybe_mark_session_turn_done(job_id: str, obj: dict) -> None:
@@ -10115,6 +10165,13 @@ def main() -> None:
         threading.Thread(
             target=_periodic_transcript_purge_loop,
             name="improver-transcript-purge",
+            daemon=True,
+        ).start()
+        # Background watcher: detects foreign writes and file disappearance so
+        # the session registry stays consistent without requiring HTTP requests.
+        threading.Thread(
+            target=_watcher_loop,
+            name="foreign-write-watcher",
             daemon=True,
         ).start()
         try:

@@ -90,7 +90,14 @@ class Session:
 
 
 class SessionRegistry:
-    def __init__(self, engine_factory, clock=time.monotonic):
+    def __init__(
+        self,
+        engine_factory,
+        clock=time.monotonic,
+        lock_acquire=None,
+        lock_release=None,
+        lock_heartbeat=None,
+    ):
         """Initialize the registry.
 
         Args:
@@ -98,9 +105,20 @@ class SessionRegistry:
             clock: Zero-argument callable returning a float timestamp.
                    Defaults to time.monotonic. Override in tests to avoid
                    real sleeps when exercising time-based transitions.
+            lock_acquire: Optional callable(sid, owner) -> bool. When provided,
+                called before spawning an engine. If it returns False the spawn
+                is skipped and a warning is recorded on the session.
+            lock_release: Optional callable(sid). Called after killing the engine
+                in release() to free the cross-process file lock.
+            lock_heartbeat: Optional callable(sid). Called by the background
+                watcher for sessions in ENGINE or ACQUIRING state so the file
+                lock stays alive between heartbeat intervals.
         """
         self._engine_factory = engine_factory
         self._clock = clock
+        self._lock_acquire = lock_acquire
+        self._lock_release = lock_release
+        self._lock_heartbeat = lock_heartbeat
         self._sessions: dict[str, Session] = {}
         self._lock = threading.RLock()
 
@@ -139,7 +157,15 @@ class SessionRegistry:
             if s.state == SessionState.MIRROR:
                 elapsed = self._clock() - s.last_growth_ts
                 if elapsed >= QUIESCENT_S:
-                    # File has been quiet long enough; safe to acquire.
+                    # File has been quiet long enough; safe to acquire — but only
+                    # if the cross-process lock is available (or no lock hook set).
+                    if self._lock_acquire is not None and not self._lock_acquire(sid, owner):
+                        # Another process holds the lock; buffer the turn and wait.
+                        s.pending_turn = turn
+                        s.pending_model = model
+                        s.pending_owner = owner
+                        s.warnings.append("engine lock held by another process")
+                        return "queued"
                     s.last_rendered_offset = s.last_size  # seed offset BEFORE writing
                     s.engine = self._engine_factory(sid, model)
                     s.engine_active_probe = getattr(s.engine, "recently_active", None)
@@ -236,6 +262,9 @@ class SessionRegistry:
             s.turn_in_flight = False
             s.last_rendered_offset = s.last_size   # de-dup on any engine exit
             s.state = SessionState.MIRROR
+            # Free the cross-process file lock so another dashboard process may acquire.
+            if self._lock_release is not None:
+                self._lock_release(sid)
 
     def tick(self, sid: str) -> None:
         """Check whether the ENGINE for *sid* has been idle long enough to reclaim.
@@ -400,16 +429,21 @@ class SessionRegistry:
                 elapsed = now - s.last_growth_ts
                 if elapsed >= QUIESCENT_S:
                     if s.pending_turn is not None:
-                        # Session has gone quiet and there is a buffered turn: acquire.
-                        # Restore the owner that submitted the pending turn.
-                        model = s.pending_model or "claude-sonnet-4-6"
-                        s.owner = s.pending_owner
-                        s.last_rendered_offset = s.last_size
-                        s.engine = self._engine_factory(sid, model)
-                        s.engine_active_probe = getattr(s.engine, "recently_active", None)
-                        s.state = SessionState.ACQUIRING
-                        if s.engine.is_ready():
-                            self._promote_to_engine(s)
+                        # Session has gone quiet and there is a buffered turn: acquire —
+                        # unless the cross-process lock is held by another process.
+                        if self._lock_acquire is not None and not self._lock_acquire(sid, s.pending_owner):
+                            s.warnings.append("engine lock held by another process")
+                            # Leave pending_turn in place; stay in FOREIGN and wait.
+                        else:
+                            # Restore the owner that submitted the pending turn.
+                            model = s.pending_model or "claude-sonnet-4-6"
+                            s.owner = s.pending_owner
+                            s.last_rendered_offset = s.last_size
+                            s.engine = self._engine_factory(sid, model)
+                            s.engine_active_probe = getattr(s.engine, "recently_active", None)
+                            s.state = SessionState.ACQUIRING
+                            if s.engine.is_ready():
+                                self._promote_to_engine(s)
                     else:
                         # No pending turn; relax back to mirroring.
                         s.state = SessionState.MIRROR
