@@ -11,9 +11,14 @@ def test_canvas_html_loads_panecore_and_engine():
     # app/, so srcs are "./<file>.js") and in dependency order: the shared
     # engine (core/skills), then PaneCore, then the canvas-specific engine
     # (split-tree, canvas-bus) and finally the boot file canvas.js.
+    # pane-helpers.js (the pure render leaves PaneCore depends on) MUST load
+    # before pane-core.js — pane-core.js is the isolated canvas renderer and
+    # resolves termSetPillState / termRefreshCost / termExportMarkdown /
+    # renderBashCommand / termPtyWsUrl etc. as globals from pane-helpers.js.
     order = [
         "core.js",
         "skills.js",
+        "pane-helpers.js",
         "pane-core.js",
         "split-tree.js",
         "canvas-bus.js",

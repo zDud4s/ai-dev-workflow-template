@@ -448,6 +448,68 @@ function appendCanvasPaneHead(container, key) {
   return head;
 }
 
+// ─── PaneCore host adapter ────────────────────────────────────────────────────
+// PaneCore is the ISOLATED canvas renderer: it never reaches a registry /
+// layout / persistence layer directly — it routes those concerns through a
+// HOST object passed as the 3rd arg to PaneCore.mount(container, opts, host).
+// This adapter maps PaneCore's host contract onto the canvas's module state:
+//   * register/unregister/get/each — the PANES map (paneKey -> handle)
+//   * close(key)                    — CanvasApp.closePane (tree is authoritative)
+//   * persist()                     — saveCanvasState (debounced localStorage)
+//   * setCollapsed(key, collapsed)  — minimize/no-op (canvas tiles, doesn't list)
+//   * focusNewPane(key)             — CanvasApp.focusPane
+//   * renderEmptyState()            — no-op (canvas has no list empty-state)
+//   * openPane(kind, key, meta)     — mount as a split next to the active pane
+// A single shared host instance is fine — it closes over the module maps.
+var CANVAS_PANE_HOST = {
+  register: function (key, handle) { PANES.set(key, handle); },
+  unregister: function (key) { PANES.delete(key); },
+  get: function (key) { return PANES.get(key) || null; },
+  each: function (cb) { PANES.forEach(function (handle, key) { cb(handle, key); }); },
+  // The canvas owns tree membership; closePane removes the key from TREE and
+  // renderTree's teardown pass calls handle.close() (which unregisters us).
+  // Guard against re-entrancy: handle.close() also calls host.unregister, and
+  // closePane -> renderTree -> handle.close() is the intended single path.
+  close: function (key) { CanvasApp.closePane(key); },
+  persist: function () { saveCanvasState(); },
+  // Canvas tiles every pane; there's no collapsed-row list. "Collapsed" maps
+  // to the pane's own .collapsed class (lazy SSE open/close lives on the
+  // handle's openStream/closeStream, not here) — but the canvas keeps panes
+  // expanded, so this is effectively a no-op beyond toggling the class.
+  setCollapsed: function (key, collapsed) {
+    var handle = PANES.get(key);
+    if (!handle || !handle.pane) return;
+    handle.pane.classList.toggle("collapsed", !!collapsed);
+    if (!collapsed && handle.openStream) { try { handle.openStream(); } catch (_e) {} }
+    if (collapsed && handle.closeStream) { try { handle.closeStream(); } catch (_e) {} }
+  },
+  focusNewPane: function (key) { CanvasApp.focusPane(key); },
+  renderEmptyState: function () { /* canvas has no list empty-state */ },
+  // A pane asked to spawn a NEW sibling pane (e.g. transcript fork). On the
+  // canvas that means: stash render inputs + split the active region.
+  openPane: function (kind, key, meta) {
+    var ST = window.SplitTree;
+    if (!ST) return;
+    var k = (window.CanvasBus && window.CanvasBus.normalizeKey) ? window.CanvasBus.normalizeKey(key) : key;
+    if (!k) return;
+    if (ST.keys(TREE).indexOf(k) !== -1) { CanvasApp.focusPane(k); return; }
+    KIND_BY_KEY[k] = kind || canvasInferKind(k);
+    META_BY_KEY[k] = meta || null;
+    if (ST.keys(TREE).length === 0) {
+      CanvasApp.setTree(ST.insertFirst(ST.empty(), k));
+    } else {
+      var target = (ACTIVE_KEY && ST.keys(TREE).indexOf(ACTIVE_KEY) !== -1)
+        ? ACTIVE_KEY
+        : ST.keys(TREE)[ST.keys(TREE).length - 1];
+      CanvasApp.setTree(ST.splitLeaf(TREE, target, k, "right"));
+    }
+    ACTIVE_KEY = k;
+    CanvasApp.renderTree();
+    saveCanvasState();
+    if (BUS) BUS.post({ type: "opened", key: k });
+  },
+};
+
 // Cross-window message handler. Wired into the bus at create-time, but every
 // `open` / `focus` is routed through QUEUE.push so messages that arrive before
 // boot() has flushed are buffered and replayed in order. `hello` / `ready`
@@ -622,8 +684,10 @@ window.CanvasApp = {
         var kind = canvasResolveKind(key, lookup);
         var meta = canvasResolveMeta(key, lookup);
         try {
-          var handle = window.PaneCore.mount(container, { kind: kind, key: key, meta: meta });
-          PANES.set(key, handle);
+          // Thread the canvas host so PaneCore routes registry / persistence /
+          // open / focus through CANVAS_PANE_HOST. The host's register() adds
+          // the handle to PANES, so we don't PANES.set() here.
+          window.PaneCore.mount(container, { kind: kind, key: key, meta: meta }, CANVAS_PANE_HOST);
         } catch (err) {
           // A bad/unknown kind shouldn't wedge the whole render. Surface it
           // in the container so the operator sees which pane failed.
