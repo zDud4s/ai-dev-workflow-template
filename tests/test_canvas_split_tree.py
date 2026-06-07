@@ -87,3 +87,21 @@ def test_deserialize_rejects_nonpositive_ratios():
     assert call("deserialize", bad) is None
     bad2 = {"split": "row", "ratios": ["x", 0.5], "children": [{"leaf": "a"}, {"leaf": "b"}]}
     assert call("deserialize", bad2) is None
+
+@requires_node
+def test_compute_rects_row_split_halves_width():
+    tree = {"split": "row", "ratios": [0.5, 0.5], "children": [{"leaf": "a"}, {"leaf": "b"}]}
+    rects = call("computeRects", tree, 100, 40)
+    by = {r["key"]: r for r in rects}
+    assert by["a"] == {"key": "a", "x": 0, "y": 0, "w": 50, "h": 40}
+    assert by["b"] == {"key": "b", "x": 50, "y": 0, "w": 50, "h": 40}
+
+@requires_node
+def test_compute_rects_col_split_halves_height():
+    tree = {"split": "col", "ratios": [0.5, 0.5], "children": [{"leaf": "a"}, {"leaf": "b"}]}
+    by = {r["key"]: r for r in call("computeRects", tree, 100, 40)}
+    assert by["a"]["h"] == 20 and by["b"]["y"] == 20 and by["a"]["w"] == 100
+
+@requires_node
+def test_compute_rects_single_leaf_fills():
+    assert call("computeRects", {"leaf": "a"}, 80, 60) == [{"key": "a", "x": 0, "y": 0, "w": 80, "h": 60}]

@@ -93,8 +93,45 @@ function stDeserialize(obj) {
   }
   return { split: obj.split, ratios: obj.ratios.slice(), children: kids };
 }
+// Pure layout geometry. Walks the split tree, assigning each leaf an
+// absolute rect within the (w x h) viewport. A `row` split divides width
+// across children by their normalized ratios (x offsets accumulate); a
+// `col` split divides height (y offsets accumulate). Returns a FLAT array
+// of {key, x, y, w, h} in in-order. NO gutter subtraction — gutters are
+// drawn as overlays on top of these rects, not carved out of them.
+//
+// Multiplication is exact (no rounding) so a 0.5/0.5 split of 100 yields
+// exactly 50/50; the DOM renderer can absolutely-position from these.
+function stComputeRects(tree, w, h) {
+  var out = [];
+  var walk = function (node, x, y, ww, hh) {
+    if (node === null || node === undefined) return;
+    if (node.leaf !== undefined) {
+      out.push({ key: node.leaf, x: x, y: y, w: ww, h: hh });
+      return;
+    }
+    var ratios = stNormalize(node.ratios);
+    var isRow = node.split === "row";
+    var offset = 0; // along the split axis
+    for (var i = 0; i < node.children.length; i++) {
+      var frac = ratios[i];
+      if (isRow) {
+        var cw = ww * frac;
+        walk(node.children[i], x + offset, y, cw, hh);
+        offset += cw;
+      } else {
+        var ch = hh * frac;
+        walk(node.children[i], x, y + offset, ww, ch);
+        offset += ch;
+      }
+    }
+  };
+  walk(tree, 0, 0, w, h);
+  return out;
+}
 window.SplitTree = {
   empty: stEmpty, insertFirst: stInsertFirst, splitLeaf: stSplitLeaf,
   remove: stRemove, keys: stKeys, resize: stResize,
-  serialize: stSerialize, deserialize: stDeserialize
+  serialize: stSerialize, deserialize: stDeserialize,
+  computeRects: stComputeRects
 };
