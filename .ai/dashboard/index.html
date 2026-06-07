@@ -1052,7 +1052,11 @@
   <script defer src="app/pipelines.js"></script>
   <script defer src="app/jobs.js"></script>
   <script defer src="app/pane-helpers.js"></script>
-  <script defer src="app/pane-core.js"></script>
+  <!-- pane-core.js is the ISOLATED canvas renderer (loaded by app/canvas.html,
+       NOT here): the dashboard's terminals.js uses its own pane model and does
+       not call PaneCore. canvas-bus.js, however, IS needed here — it provides
+       the cross-window bus the "send to canvas" button posts over. -->
+  <script defer src="app/canvas-bus.js"></script>
   <script defer src="app/terminals.js"></script>
   <!-- Top-center toast stack. All setMsg() calls render here so transient
        status never affects toolbar layout. aria-live makes screen readers

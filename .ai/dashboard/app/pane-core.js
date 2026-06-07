@@ -44,9 +44,10 @@
 // ───────────────────────────────────────────────────────────────────────────
 // Composer / toast constants. terminals.js defines these for the dashboard;
 // the canvas page does NOT load terminals.js, so the isolated renderer owns
-// its own copies (values kept in sync with terminals.js). The isolated model
-// never loads pane-core.js and terminals.js on the same page, so there is no
-// redeclaration to guard against.
+// its own copies (values kept in sync with terminals.js). pane-core.js loads
+// ONLY on app/canvas.html and terminals.js loads ONLY on app/index.html — they
+// never share a page, so these duplicated declarations never collide. (The two
+// pages do both load canvas-bus.js, which is side-effect-free and idempotent.)
 var COMPOSER_AUTOSIZE_MAX_PX = 220;
 var TERM_MSG_DURATION_MS = 4000;
 
