@@ -85,9 +85,118 @@ function canvasResolveMeta(key, lookup) {
 // Declared here so the Task-10 bus handlers can reference them; Task 12 fills
 // in the real localStorage save/restore + heartbeat. Kept side-effect-free at
 // load (just function declarations).
-function saveCanvasState() { /* Task 12 */ }
-function restoreCanvasState() { return Promise.resolve(); }
-function startCanvasHeartbeat() { /* Task 12 */ }
+// Debounced (~250ms, mirrors terminals.js persistOpenPanes) serialise of the
+// current canvas layout to localStorage via CanvasBus.saveState. Called on
+// every structural change (open / close / split / resize-end). Captures the
+// serialized tree, the open key set, the per-PTY tokens for any open terminal
+// keys (so a refresh can reattach the WS), and a lastSeen stamp the list's
+// stale-check reads.
+var _canvasPersistTimer = null;
+function canvasCollectTokens(openKeys) {
+  var tokens = {};
+  var src = (typeof window !== "undefined" && window._PTY_TOKENS) || null;
+  if (!src) return tokens;
+  for (var i = 0; i < openKeys.length; i++) {
+    var k = openKeys[i];
+    // Terminal keys are bare ids (no prefix); only those have PTY tokens.
+    if (KIND_BY_KEY[k] === "terminal" && src[k]) tokens[k] = src[k];
+  }
+  return tokens;
+}
+function saveCanvasState() {
+  if (typeof window === "undefined" || !window.CanvasBus) return;
+  if (_canvasPersistTimer) return;
+  _canvasPersistTimer = setTimeout(function () {
+    _canvasPersistTimer = null;
+    var open = window.SplitTree.keys(TREE);
+    window.CanvasBus.saveState({
+      tree: window.SplitTree.serialize(TREE),
+      open: open,
+      tokens: canvasCollectTokens(open),
+      lastSeen: Date.now(),
+    });
+  }, 250);
+}
+
+// Heartbeat: rewrite lastSeen every ~3s so the status list's stale-check (3×
+// interval) keeps the canvas's badges live while the window is open. Also
+// register a beforeunload handler that posts `closed` for every open key and
+// clears `open` in the saved state — so both the explicit-close path and the
+// stale-check converge on "no badges" once the canvas window goes away.
+var _canvasHeartbeat = null;
+function startCanvasHeartbeat() {
+  if (typeof window === "undefined") return;
+  if (!_canvasHeartbeat && typeof setInterval === "function") {
+    _canvasHeartbeat = setInterval(function () {
+      var state = window.CanvasBus.loadState() || {};
+      state.lastSeen = Date.now();
+      window.CanvasBus.saveState(state);
+    }, 3000);
+  }
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("beforeunload", function () {
+      var open = window.SplitTree.keys(TREE);
+      if (BUS) {
+        for (var i = 0; i < open.length; i++) {
+          try { BUS.post({ type: "closed", key: open[i] }); } catch (_e) {}
+        }
+      }
+      var state = window.CanvasBus.loadState() || {};
+      state.open = [];
+      window.CanvasBus.saveState(state);
+    });
+  }
+}
+
+// Restore the persisted layout (called by boot() BEFORE posting `ready`).
+// Deserialises the saved tree, rehydrates window._PTY_TOKENS, then fetches
+// each key's meta in parallel; keys whose meta is null (session gone, shell
+// dead) are pruned from the tree. Survivors get KIND_BY_KEY / META_BY_KEY
+// seeded so renderTree mounts them with a real record. Returns a Promise so
+// boot() can chain the ready-post + queue-flush after restore settles.
+function restoreCanvasState() {
+  if (typeof window === "undefined" || !window.CanvasBus) return Promise.resolve();
+  var state = window.CanvasBus.loadState();
+  if (!state || !state.tree) return Promise.resolve();
+  var t = window.SplitTree.deserialize(state.tree);
+  if (!t) return Promise.resolve();
+  // Rehydrate the per-PTY token cache so restored terminal panes pass WS auth.
+  if (state.tokens && typeof state.tokens === "object") {
+    window._PTY_TOKENS = window._PTY_TOKENS || {};
+    for (var tk in state.tokens) {
+      if (Object.prototype.hasOwnProperty.call(state.tokens, tk)) {
+        window._PTY_TOKENS[tk] = state.tokens[tk];
+      }
+    }
+  }
+  var keys = window.SplitTree.keys(t);
+  var hasFetch = window.PaneCore && typeof window.PaneCore.fetchMeta === "function";
+  var fetchers = keys.map(function (key) {
+    if (!hasFetch) return Promise.resolve({ key: key, meta: null });
+    return Promise.resolve(window.PaneCore.fetchMeta(key))
+      .then(function (meta) { return { key: key, meta: meta }; })
+      .catch(function () { return { key: key, meta: null }; });
+  });
+  return Promise.all(fetchers).then(function (results) {
+    results.forEach(function (res) {
+      if (!res.meta) {
+        // Dead session / shell → prune the key from the tree.
+        t = window.SplitTree.remove(t, res.key);
+        return;
+      }
+      // Prefer the kind the server reports (chat vs chat-codex, terminal,
+      // transcript, session) over the prefix inference.
+      KIND_BY_KEY[res.key] = res.meta.kind || canvasInferKind(res.key);
+      META_BY_KEY[res.key] = res.meta;
+    });
+    CanvasApp.setTree(t);
+    var survivors = window.SplitTree.keys(t);
+    ACTIVE_KEY = survivors.length ? survivors[survivors.length - 1] : null;
+    CanvasApp.renderTree();
+    // Persist the pruned tree so the next boot doesn't re-attempt dead keys.
+    saveCanvasState();
+  });
+}
 
 // ─── Gutter geometry ──────────────────────────────────────────────────────────
 // Walk the tree the SAME way SplitTree.computeRects does (row → divide width,

@@ -1176,13 +1176,78 @@ function paneCoreMountSession(container, opts) {
   };
 }
 
-// Per-kind metadata fetch used by both restore and the list. For chat
-// kinds this is the job record at /api/jobs/<id>. The per-kind branches
-// for PTY / transcript / session are completed in Chunk 4 (Task 12,
-// canvas restore) once there is a consumer — no speculative fetch for now.
+// Per-kind metadata fetch used by both restore and the list. The pane KEY
+// shape decides which endpoint to hit (mirrors the canvas key space + the
+// per-kind branches in terminals.js ``restoreOpenPanes``):
+//   * "ide:<sid>"     → transcript. /api/transcripts must still list <sid>,
+//                       else the session file is gone → null. Returns a
+//                       { kind:"transcript", sessionId } shape (the field
+//                       paneCoreMountTranscript reads from meta).
+//   * "session:<sid>" → session. /api/sessions must still list <sid>, else
+//                       null. Returns { kind:"session", sid }.
+//   * bare id that is NOT a known prefix → terminal (PTY). /api/ptys/<id>;
+//                       null when 404 OR status !== "running" (the shell died,
+//                       so restore must skip it — matches restoreOpenPanes).
+//   * "job:<id>" or any other bare id → chat. /api/jobs/<id>; null on 404.
+//
+// Returns null whenever the underlying resource is gone so the canvas restore
+// loop can prune the dead key from the tree. Promise-based, no side effects at
+// load (safe to extract under the node sidecar).
 function paneCoreFetchMeta(key) {
-  return fetch("/api/jobs/" + encodeURIComponent(key), { cache: "no-store" })
-    .then((r) => (r.ok ? r.json() : null));
+  const raw = typeof key === "string" ? key : String(key == null ? "" : key);
+
+  if (raw.slice(0, 4) === "ide:") {
+    const sid = raw.slice(4);
+    if (!sid) return Promise.resolve(null);
+    return fetch("/api/transcripts", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return null;
+        const entry = (data.transcripts || []).find((e) => e.session_id === sid);
+        return entry ? { kind: "transcript", sessionId: sid } : null;
+      })
+      .catch(() => null);
+  }
+
+  if (raw.slice(0, 8) === "session:") {
+    const sid = raw.slice(8);
+    if (!sid) return Promise.resolve(null);
+    return fetch("/api/sessions", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return null;
+        // /api/sessions merges dashboard + IDE sessions; each item carries
+        // both ``sid`` and the back-compat ``session_id``. Match either.
+        const items = data.sessions || data || [];
+        const entry = (Array.isArray(items) ? items : []).find(
+          (e) => e && (e.sid === sid || e.session_id === sid)
+        );
+        return entry ? { kind: "session", sid } : null;
+      })
+      .catch(() => null);
+  }
+
+  // PTY ids are bare (no prefix) and are NOT job ids. A job id is also bare,
+  // so we can't always tell them apart by shape alone — but the canvas stores
+  // chat keys with the "job:" prefix, leaving truly-bare keys as PTY ids.
+  if (raw.slice(0, 4) !== "job:") {
+    // Treat as PTY first; the endpoint 404s for non-PTY ids and we fall to null.
+    return fetch("/api/ptys/" + encodeURIComponent(raw), { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((meta) => {
+        if (!meta) return null;
+        // A shell that already exited must be skipped on restore.
+        if (meta.status && meta.status !== "running") return null;
+        return Object.assign({ kind: "terminal" }, meta);
+      })
+      .catch(() => null);
+  }
+
+  // Chat / chat-codex: the job record. Accept a "job:" prefix or a bare id.
+  const jobId = raw.slice(0, 4) === "job:" ? raw.slice(4) : raw;
+  return fetch("/api/jobs/" + encodeURIComponent(jobId), { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null);
 }
 
 // Public entry: builds the pane for the given kind into ``container``.
