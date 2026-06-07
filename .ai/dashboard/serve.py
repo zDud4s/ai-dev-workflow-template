@@ -4827,9 +4827,10 @@ def _start_subprocess_job(
                                     with JOBS_LOCK:
                                         if not JOBS[job_id].get("session_id"):
                                             JOBS[job_id]["session_id"] = sid
-                            # A forked chat job: claude mints a new session id and
-                            # reports it in its init event. Capture it so /branch
-                            # can hand the forked sid to a fresh session pane.
+                            # A forked chat job (POST /api/jobs with
+                            # fork_session_id): claude mints a new session id and
+                            # reports it in its init event. Capture it so the job
+                            # row exposes the forked sid to the caller.
                             _maybe_capture_forked_sid(job_id, kind, obj)
 
                 # Flush any final partial line (no trailing newline). Add a
@@ -5249,11 +5250,12 @@ def _watcher_loop() -> None:
 def _maybe_capture_forked_sid(job_id: str, kind: str, obj: dict) -> None:
     """Record the new session id minted by a ``--fork-session`` chat job.
 
-    A forked chat job is spawned with ``--resume <src> --fork-session``; claude
-    keeps the history but writes new turns under a freshly-generated session id,
-    reported in its ``system``/init event. We overwrite JOBS[job_id]["session_id"]
-    with it so ``POST /api/sessions/<sid>/branch`` can read back the forked sid.
-    Only acts on chat jobs flagged ``forked_from``; a plain resume keeps its sid.
+    A forked chat job is spawned with ``--resume <src> --fork-session`` (via
+    ``POST /api/jobs`` with ``fork_session_id``); claude keeps the history but
+    writes new turns under a freshly-generated session id, reported in its
+    ``system``/init event. We overwrite JOBS[job_id]["session_id"] with it so the
+    job row exposes the forked sid. Only acts on chat jobs flagged
+    ``forked_from``; a plain resume keeps its sid.
     """
     if kind != "chat" or obj.get("type") != "system":
         return
