@@ -38,6 +38,33 @@ var CONTAINERS = new Map();
 var KIND_BY_KEY = {};
 var META_BY_KEY = {};
 
+// The most-recently mounted / focused pane key. `open` splits the active
+// region (SplitTree.splitLeaf at ACTIVE_KEY); `focus` repoints it. Null
+// until the first pane lands.
+var ACTIVE_KEY = null;
+
+// The cross-window bus handle (CanvasBus.create -> {post, close}) and the
+// queue-until-ready buffer. Both are created in boot(); before that the bus
+// is a no-op-safe null and the queue swallows nothing (we only push through
+// the queue, which buffers until boot flushes it). Kept at module scope so
+// handleBusMessage (the onMessage callback wired into the bus at create-time)
+// can post acks without threading the handle through every call.
+var BUS = null;
+var QUEUE = null;
+
+// Infer a pane kind from the key shape when an `open` message omits `kind`.
+// The status list (Task 13) sends `kind` explicitly; this is the fallback for
+// keys that arrive bare. `job:` → chat, `ide:` → transcript, `session:` →
+// session, everything else → terminal (a bare PTY id). fetchMeta refines
+// chat-vs-codex from the server record when needed.
+function canvasInferKind(key) {
+  if (typeof key !== "string") return "terminal";
+  if (key.slice(0, 4) === "job:") return "chat";
+  if (key.slice(0, 4) === "ide:") return "transcript";
+  if (key.slice(0, 8) === "session:") return "session";
+  return "terminal";
+}
+
 function canvasResolveKind(key, lookup) {
   if (lookup) {
     if (typeof lookup.kind === "function") return lookup.kind(key);
@@ -54,9 +81,159 @@ function canvasResolveMeta(key, lookup) {
   return META_BY_KEY[key] || {};
 }
 
+// ─── Persistence + restore (fleshed out in Task 12) ───────────────────────────
+// Declared here so the Task-10 bus handlers can reference them; Task 12 fills
+// in the real localStorage save/restore + heartbeat. Kept side-effect-free at
+// load (just function declarations).
+function saveCanvasState() { /* Task 12 */ }
+function restoreCanvasState() { return Promise.resolve(); }
+function startCanvasHeartbeat() { /* Task 12 */ }
+
+// Build + append the canvas-level head bar for a pane container. Carries a
+// short label and a close button that routes to CanvasApp.closePane (the
+// canvas owns tree membership — see the call site in renderTree). Task 11
+// makes this bar the drag handle.
+function appendCanvasPaneHead(container, key) {
+  var head = document.createElement("div");
+  head.className = "canvas-pane-head";
+  var label = document.createElement("span");
+  label.className = "canvas-pane-title";
+  label.textContent = key;
+  label.title = key;
+  var close = document.createElement("button");
+  close.className = "canvas-pane-close";
+  close.type = "button";
+  close.title = "Close this pane";
+  close.textContent = "×"; // ×
+  close.addEventListener("click", function (e) {
+    e.stopPropagation();
+    CanvasApp.closePane(key);
+  });
+  head.appendChild(label);
+  head.appendChild(close);
+  container.appendChild(head);
+  return head;
+}
+
+// Cross-window message handler. Wired into the bus at create-time, but every
+// `open` / `focus` is routed through QUEUE.push so messages that arrive before
+// boot() has flushed are buffered and replayed in order. `hello` / `ready`
+// don't need buffering (they're idempotent re-announcements) but go through
+// the same queue for ordering simplicity.
+function handleBusMessage(msg) {
+  if (!msg || typeof msg !== "object") return;
+  if (QUEUE) { QUEUE.push(msg); return; }
+  dispatchBusMessage(msg);
+}
+
+// The actual per-type dispatch, called by the queue handler once ready (and
+// directly if the queue somehow isn't set up). Async because an `open` with
+// no provided meta may need to await PaneCore.fetchMeta before mounting.
+async function dispatchBusMessage(msg) {
+  var ST = window.SplitTree;
+  if (msg.type === "open") {
+    var key = window.CanvasBus.normalizeKey(msg.key);
+    if (!key) return;
+    // Already mounted → treat as a focus, don't duplicate the pane.
+    if (ST.keys(TREE).indexOf(key) !== -1) {
+      CanvasApp.focusPane(key);
+      return;
+    }
+    // Stash the render inputs PaneCore.mount needs but the tree doesn't carry.
+    KIND_BY_KEY[key] = msg.kind || canvasInferKind(key);
+    META_BY_KEY[key] = msg.meta || null;
+    // If no meta was supplied, try to fetch it so the pane mounts with a real
+    // server record. fetchMeta returning null is fine — mount falls back to {}.
+    if (!META_BY_KEY[key] && window.PaneCore && typeof window.PaneCore.fetchMeta === "function") {
+      try {
+        var fetched = await window.PaneCore.fetchMeta(key);
+        if (fetched) META_BY_KEY[key] = fetched;
+      } catch (_e) { /* mount proceeds with empty meta */ }
+    }
+    // Insert: first pane fills the canvas; subsequent panes split the active
+    // region to the right.
+    if (ST.keys(TREE).length === 0) {
+      CanvasApp.setTree(ST.insertFirst(ST.empty(), key));
+    } else {
+      var target = (ACTIVE_KEY && ST.keys(TREE).indexOf(ACTIVE_KEY) !== -1)
+        ? ACTIVE_KEY
+        : ST.keys(TREE)[ST.keys(TREE).length - 1];
+      CanvasApp.setTree(ST.splitLeaf(TREE, target, key, "right"));
+    }
+    ACTIVE_KEY = key;
+    CanvasApp.renderTree();
+    saveCanvasState();
+    if (BUS) BUS.post({ type: "opened", key: key });
+    return;
+  }
+  if (msg.type === "focus") {
+    CanvasApp.focusPane(window.CanvasBus.normalizeKey(msg.key));
+    return;
+  }
+  if (msg.type === "hello") {
+    // A newly-opened list (other window) is asking who's around — re-announce.
+    if (BUS) BUS.post({ type: "ready", open: window.SplitTree.keys(TREE) });
+    return;
+  }
+}
+
 window.CanvasApp = {
   boot() {
-    /* stub for now — Task 10 wires the bus + initial render here */
+    // Wire the bus EARLY (before any await) so messages arriving during boot
+    // are captured by handleBusMessage and buffered in the queue; the flush
+    // at the end of boot replays them in order.
+    QUEUE = window.CanvasBus.makeQueue();
+    BUS = window.CanvasBus.create({ onMessage: handleBusMessage });
+
+    // Restore persisted layout (Task 12) before announcing readiness so the
+    // `ready` we post reflects the rehydrated open set. restoreCanvasState is
+    // async (it fetches per-pane meta); we chain the ready-post + flush after
+    // it resolves so a restore-then-open race can't drop the queued opens.
+    var finish = function () {
+      // Start the lastSeen heartbeat + beforeunload teardown (Task 12).
+      startCanvasHeartbeat();
+      // Announce our current open set to any listening status list, then
+      // open the floodgates: replay any messages buffered during boot and
+      // handle all subsequent ones immediately.
+      if (BUS) BUS.post({ type: "ready", open: window.SplitTree.keys(TREE) });
+      QUEUE.flush(function (msg) { dispatchBusMessage(msg); });
+    };
+
+    Promise.resolve(restoreCanvasState()).then(finish, finish);
+  },
+
+  // Highlight + activate the pane for `key`: add `.focused` (removing it from
+  // every other canvas pane), scroll it into view, and repoint ACTIVE_KEY so
+  // the next `open` splits next to it. No bus post (focus acks are optional).
+  focusPane(key) {
+    if (!key) return;
+    var found = false;
+    CONTAINERS.forEach(function (container, k) {
+      if (k === key) {
+        container.classList.add("focused");
+        found = true;
+        try { container.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_e) {}
+      } else {
+        container.classList.remove("focused");
+      }
+    });
+    if (found) ACTIVE_KEY = key;
+  },
+
+  // Remove a pane from the tree (the canvas is authoritative over tree
+  // membership). renderTree's teardown pass then calls the pane handle's
+  // close() — which disconnects the activity observer and tears down the
+  // stream via termClose/termClosePty. Also re-announces the new open set so
+  // the status list clears the badge.
+  closePane(key) {
+    var k = window.CanvasBus.normalizeKey(key);
+    CanvasApp.setTree(window.SplitTree.remove(TREE, k));
+    delete KIND_BY_KEY[k];
+    delete META_BY_KEY[k];
+    if (ACTIVE_KEY === k) ACTIVE_KEY = window.SplitTree.keys(TREE)[0] || null;
+    CanvasApp.renderTree();
+    saveCanvasState();
+    if (BUS) BUS.post({ type: "closed", key: k });
   },
 
   // Test/Task-10 seam: expose the module maps so the bus handler (and the
@@ -96,6 +273,17 @@ window.CanvasApp = {
         container.dataset.paneKey = key;
         root.appendChild(container);
         CONTAINERS.set(key, container);
+        // Canvas-level chrome: a thin head bar that (a) carries the
+        // drag-to-split handle (Task 11) and (b) owns the close affordance.
+        // Closing through THIS button routes to CanvasApp.closePane so the
+        // canvas tree stays authoritative — renderTree's teardown then calls
+        // the PaneCore handle.close() (stream + activity-observer teardown).
+        // We deliberately do NOT observe the PaneCore inner close button:
+        // that path tears the pane down but leaves the tree pointing at a
+        // ghost leaf. The canvas owns membership; the head close is the one
+        // robust entry point. The head is the FIRST child so the mounted
+        // .term-pane stacks below it.
+        appendCanvasPaneHead(container, key);
         var kind = canvasResolveKind(key, lookup);
         var meta = canvasResolveMeta(key, lookup);
         try {
