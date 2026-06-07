@@ -5268,6 +5268,45 @@ def _maybe_capture_forked_sid(job_id: str, kind: str, obj: dict) -> None:
             j["session_id"] = new_sid
 
 
+def _copy_transcript_with_new_sid(src_path: Path, dst_path: Path, new_sid: str) -> int:
+    """Copy a Claude transcript to ``dst_path`` while rewriting each record's
+    ``sessionId`` to ``new_sid``; return the number of records written.
+
+    This is how a session is branched: the new transcript carries the full
+    history under a fresh id, so resuming it (``claude --resume <new_sid>``)
+    continues the conversation independently of the source. Per-record
+    ``uuid``/``parentUuid`` links are internal to the transcript and stay
+    self-consistent, so only ``sessionId`` is rewritten.
+
+    The write is atomic (temp file + ``os.replace``) so a crash mid-copy can
+    never leave a partial ``<new_sid>.jsonl`` that a later resume would read.
+    Non-JSON lines (none expected in a well-formed transcript) are preserved
+    verbatim so an unexpected line never corrupts the copy.
+    """
+    count = 0
+    tmp_path = dst_path.with_name(dst_path.name + ".tmp")
+    with src_path.open("r", encoding="utf-8", errors="replace") as fin, \
+            tmp_path.open("w", encoding="utf-8", newline="\n") as fout:
+        for line in fin:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                rec = json.loads(stripped)
+            except (json.JSONDecodeError, ValueError):
+                fout.write(stripped + "\n")
+                count += 1
+                continue
+            if isinstance(rec, dict):
+                rec["sessionId"] = new_sid
+                fout.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+            else:
+                fout.write(stripped + "\n")
+            count += 1
+    os.replace(str(tmp_path), str(dst_path))
+    return count
+
+
 def _maybe_mark_session_turn_done(job_id: str, obj: dict) -> None:
     """Advance the session-registry baton when a ``type=result`` event arrives.
 
@@ -9736,48 +9775,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _handle_session_branch(self, sid: str) -> None:
         """POST /api/sessions/<sid>/branch
 
-        Fork ``sid`` via ``claude --fork-session`` (no initial turn), capture the
-        new session id claude mints (recorded by the stdout pump into the job's
-        session_id), then kill the fork engine and return ``{"sid": <new>}``. The
-        caller opens a fresh session pane on the forked sid, which acquires its
-        own engine on first input — so no foreign-engine adoption is needed and
-        the new pane cannot cede against a lingering fork engine.
+        Branch ``sid`` into a fresh session by copying its transcript on disk:
+        mint a new session id, copy ``<sid>.jsonl`` record-by-record (rewriting
+        each record's ``sessionId`` to the new id), and return ``{"sid": <new>}``.
+        The caller opens a fresh session pane on the new sid, which resumes the
+        copied transcript on first input (the engine factory sees the file and
+        uses ``--resume``). No subprocess, poll, or force-kill is involved, so
+        the branch can neither time out nor truncate the new transcript.
         """
         if not self._UUID_RE.match(sid):
             self._json(400, {"error": "sid must be a UUID"})
             return
-        session_cfg = _read_yaml_field(ROOT / ".ai" / "models.yaml", "session")
-        model = (session_cfg.get("model") if isinstance(session_cfg, dict) else None) or "claude-sonnet-4-6"
-        job_id = str(uuid.uuid4())
-        now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
-        with JOBS_LOCK:
-            JOBS[job_id] = {
-                "id": job_id, "kind": "chat", "task": f"branch:{sid}",
-                "status": "queued", "created_at": now, "pid": None,
-                "log_path": None, "exit_code": None, "started_at": None,
-                "ended_at": None, "session_id": sid,
-            }
-        # Fork with no turn — just materialize the forked transcript + mint a sid.
-        _spawn_job(job_id, "chat", task="", fork_session_id=sid, model_override=model)
-        # Wait for claude's init event to report the forked sid (pump records it).
-        deadline = time.monotonic() + 10.0
-        new_sid = None
-        while time.monotonic() < deadline:
-            with JOBS_LOCK:
-                cur = (JOBS.get(job_id) or {}).get("session_id")
-            if cur and cur != sid:
-                new_sid = cur
-                break
-            time.sleep(0.1)
-        # The fork engine has done its job; kill it so the new pane owns the
-        # session cleanly (whether or not we captured a sid).
-        try:
-            _cancel_job(job_id)
-        except Exception as exc:
-            print(f"[serve] branch: cancel fork job failed for {sid}: {exc}", flush=True)
-        if not new_sid:
-            self._json(504, {"error": "branch timed out before a forked session id was reported"})
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        if tdir is None:
+            self._json(404, {"error": "no transcripts directory for this project"})
             return
+        src_path = tdir / f"{sid}.jsonl"
+        if not src_path.is_file():
+            self._json(404, {"error": "no transcript to branch from"})
+            return
+        new_sid = str(uuid.uuid4())
+        dst_path = tdir / f"{new_sid}.jsonl"
+        try:
+            n = _copy_transcript_with_new_sid(src_path, dst_path, new_sid)
+        except OSError as exc:
+            print(f"[serve] branch: copy {sid} -> {new_sid} failed: {exc}", flush=True)
+            self._json(500, {"error": "branch copy failed"})
+            return
+        print(f"[serve] branch: {sid} -> {new_sid} ({n} records copied)", flush=True)
         self._json(200, {"sid": new_sid})
 
     def _compose_multimodal_blocks(self, text: str, images: list, files: list):

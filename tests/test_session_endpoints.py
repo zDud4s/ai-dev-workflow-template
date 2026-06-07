@@ -959,31 +959,50 @@ def test_non_fork_chat_job_keeps_sid_on_init(serve_module):
 
 
 # ---------------------------------------------------------------------------
-# Branch endpoint: fork a session, capture the new sid, kill the fork engine.
+# Branch endpoint: copy a session's transcript under a fresh sid on disk. No
+# subprocess / no --fork-session, so the branch can neither time out (#3) nor
+# truncate the new transcript (#4); the new pane resumes the copy on input.
 # ---------------------------------------------------------------------------
 
-def test_session_branch_returns_forked_sid(running_server, serve_module, monkeypatch, tmp_path):
+def test_session_branch_copies_transcript_with_new_sid(running_server, serve_module, monkeypatch, tmp_path):
     sdir = _seed_projects_root(serve_module, monkeypatch, tmp_path)
     src = "12345678-1234-1234-1234-1234abcd0aa1"
-    new = "12345678-1234-1234-1234-1234abcd0bb2"
-    (sdir / f"{src}.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
-
-    def fake_spawn(job_id, kind, task, **kw):
-        assert kw.get("fork_session_id") == src
-        # Simulate claude minting a forked sid + writing the forked transcript.
-        with serve_module.JOBS_LOCK:
-            serve_module.JOBS[job_id]["session_id"] = new
-        (sdir / f"{new}.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
-
-    cancelled = []
-    monkeypatch.setattr(serve_module, "_spawn_job", fake_spawn)
-    monkeypatch.setattr(serve_module, "_cancel_job", lambda jid: cancelled.append(jid))
+    records = [
+        {"type": "summary", "sessionId": src, "summary": "x"},
+        {"type": "user", "sessionId": src, "uuid": "u1", "parentUuid": None},
+        {"type": "assistant", "sessionId": src, "uuid": "u2", "parentUuid": "u1"},
+    ]
+    src_path = sdir / f"{src}.jsonl"
+    src_path.write_text(
+        "\n".join(serve_module.json.dumps(r) for r in records) + "\n", encoding="utf-8")
 
     status, body, _ = _http("POST", f"{running_server}/api/sessions/{src}/branch", data=b"{}")
     assert status == 200, body
-    data = serve_module.json.loads(body)
-    assert data["sid"] == new and data["sid"] != src
-    assert cancelled, "the fork engine must be cancelled after capturing the sid"
+    new = serve_module.json.loads(body)["sid"]
+    assert serve_module.Handler._UUID_RE.match(new) and new != src
+
+    dst_path = sdir / f"{new}.jsonl"
+    assert dst_path.is_file(), "the branched transcript must be written to disk"
+    out = [serve_module.json.loads(line)
+           for line in dst_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    # Every record's sessionId is rewritten to the new sid; no record dropped.
+    assert len(out) == len(records)
+    assert all(r["sessionId"] == new for r in out)
+    # Per-message parent/uuid links survive the copy unchanged.
+    assert out[2]["parentUuid"] == "u1" and out[2]["uuid"] == "u2"
+    # The source transcript is left untouched.
+    src_out = [serve_module.json.loads(line)
+               for line in src_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert all(r["sessionId"] == src for r in src_out)
+    # The atomic write leaves no stray temp file behind.
+    assert not list(sdir.glob("*.jsonl.tmp"))
+
+
+def test_session_branch_404_when_no_transcript(running_server, serve_module, monkeypatch, tmp_path):
+    _seed_projects_root(serve_module, monkeypatch, tmp_path)
+    missing = "abcdef01-0000-0000-0000-000000000000"
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/{missing}/branch", data=b"{}")
+    assert status == 404, body
 
 
 def test_session_branch_rejects_bad_sid(running_server, serve_module):
