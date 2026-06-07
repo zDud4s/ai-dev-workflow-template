@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Canvas — terminals</title>
+  <!-- canvas.html lives under app/, so the dashboard stylesheet is one level up. -->
+  <link rel="stylesheet" href="../styles.css" />
+</head>
+<body>
+  <div id="canvas-root"></div>
+
+  <!-- Sibling-relative script srcs (this page is already inside app/).
+       Dependency order: shared engine (core/skills) → PaneCore →
+       canvas engine (split-tree, canvas-bus) → boot file. -->
+  <script defer src="./core.js"></script>
+  <script defer src="./skills.js"></script>
+  <script defer src="./pane-core.js"></script>
+  <script defer src="./split-tree.js"></script>
+  <script defer src="./canvas-bus.js"></script>
+  <script defer src="./canvas.js"></script>
+</body>
+</html>
