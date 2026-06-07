@@ -213,19 +213,9 @@ def test_no_console_log_self_test_in_prod():
     )
 
 
-def test_chat_resume_still_propagates_model():
-    """REGRESSION (batch 4) — termSendResumeChat must still include
-    t.model in the resume POST payload, otherwise a resumed dead chat
-    silently flips back to the server-default model."""
-    body = _slice_function(_src(), "async function termSendResumeChat(")
-    has_model = (
-        "payload.model = t.model" in body
-        or "model: t.model" in body
-    )
-    assert has_model, (
-        "termSendResumeChat regressed — must propagate t.model on the "
-        "resume /api/jobs POST so the operator's chosen model survives"
-    )
+# Removed: chat-resume model propagation — the dead-chat resume path
+# (termSendResumeChat) was deleted when Claude chats converged on the
+# unified session pane.
 
 
 def test_dispatch_result_pill_routes_through_helper():

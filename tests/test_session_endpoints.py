@@ -97,13 +97,31 @@ def _reset_session_registry(serve_module):
     serve_module.SESSION_REGISTRY._sessions.clear()
 
 
-def test_engine_factory_builds_resume_argv(serve_module, monkeypatch):
+def _arm_argv_capture(serve_module, monkeypatch):
     captured = {}
     real_popen = serve_module.subprocess.Popen
     def fake_popen(argv, **kw):
         captured["argv"] = list(argv)
         return real_popen([serve_module.sys.executable, "-c", "pass"], **kw)
     monkeypatch.setattr(serve_module.subprocess, "Popen", fake_popen)
+    return captured
+
+
+def _seed_projects_root(serve_module, monkeypatch, tmp_path):
+    """Point transcript discovery at a tmp projects root; return the slug dir."""
+    projects = tmp_path / ".claude" / "projects"
+    slug = str(serve_module.ROOT).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
+    sdir = projects / slug
+    sdir.mkdir(parents=True)
+    monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    return sdir
+
+
+def test_engine_factory_builds_resume_argv(serve_module, monkeypatch, tmp_path):
+    # Resume mode is used only when the transcript already exists, so seed it.
+    sdir = _seed_projects_root(serve_module, monkeypatch, tmp_path)
+    (sdir / "sid-xyz.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+    captured = _arm_argv_capture(serve_module, monkeypatch)
 
     assert hasattr(serve_module, "SESSION_REGISTRY")
     eng = serve_module._session_engine_factory("sid-xyz", "claude-sonnet-4-6")
@@ -114,6 +132,21 @@ def test_engine_factory_builds_resume_argv(serve_module, monkeypatch):
         serve_module.time.sleep(0.05)
     assert "--resume" in captured["argv"] and "sid-xyz" in captured["argv"]
     eng.submit({"text": "oi"})
+
+
+def test_engine_factory_creates_new_session_when_no_transcript(serve_module, monkeypatch, tmp_path):
+    # No <sid>.jsonl on disk -> the engine must CREATE the session (--session-id),
+    # not --resume a transcript that does not exist yet.
+    _seed_projects_root(serve_module, monkeypatch, tmp_path)
+    captured = _arm_argv_capture(serve_module, monkeypatch)
+
+    new_sid = "12345678-1234-1234-1234-1234abcd00f1"  # intentionally no .jsonl seeded
+    serve_module._session_engine_factory(new_sid, "claude-sonnet-4-6")
+    for _ in range(40):
+        if "argv" in captured: break
+        serve_module.time.sleep(0.05)
+    assert "--session-id" in captured["argv"] and new_sid in captured["argv"]
+    assert "--resume" not in captured["argv"]
 
 
 def test_sessions_list_merges_ide_transcripts_and_dashboard(running_server, serve_module, tmp_path, monkeypatch):
@@ -130,7 +163,9 @@ def test_sessions_list_merges_ide_transcripts_and_dashboard(running_server, serv
     data = serve_module.json.loads(body)
     item = [x for x in data["sessions"] if x["sid"].endswith("abcd0001")]
     assert item, data
-    assert item[0]["state"] in ("mirror", "acquiring", "engine")
+    # This IDE row has no registry entry, so its state must be the explicit
+    # default ("mirror"), not just any valid state — pins the default-case branch.
+    assert item[0]["state"] == "mirror"
     assert item[0]["session_id"] == item[0]["sid"]
 
 
@@ -192,9 +227,12 @@ def _arm_fake_resume_engine(serve_module, monkeypatch):
     return captured
 
 
-def test_session_input_acquires_resume_engine(running_server, serve_module, monkeypatch):
-    captured = _arm_fake_resume_engine(serve_module, monkeypatch)
+def test_session_input_acquires_resume_engine(running_server, serve_module, monkeypatch, tmp_path):
+    # Resume mode requires an existing transcript, so seed one for this sid.
     sid = "aaaaaaaa-0000-1111-2222-bbbbbbbbbbbb"
+    sdir = _seed_projects_root(serve_module, monkeypatch, tmp_path)
+    (sdir / f"{sid}.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+    captured = _arm_fake_resume_engine(serve_module, monkeypatch)
     status, body, _ = _http("POST", f"{running_server}/api/sessions/{sid}/input",
                             data=b'{"text":"continua por favor"}',
                             headers={"Content-Type": "application/json"})
@@ -880,3 +918,93 @@ def test_session_stream_does_not_clear_shared_warnings(serve_module):
     src = inspect.getsource(serve_module.Handler)
     assert ".warnings.clear()" not in src, "the SSE loop must not clear the shared warnings list"
     assert "warn_seen" in src, "the SSE loop should track a per-stream warning cursor"
+
+
+# ---------------------------------------------------------------------------
+# Branch groundwork: capture the forked session id from a chat fork job's
+# init event (the stdout pump only captured it for codex before).
+# ---------------------------------------------------------------------------
+
+def test_forked_chat_job_captures_new_session_id(serve_module):
+    job_id = "job-fork-cap-1"
+    src = "11111111-1111-1111-1111-111111111111"
+    new = "22222222-2222-2222-2222-222222222222"
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {"id": job_id, "kind": "chat",
+                                     "session_id": src, "forked_from": src}
+    try:
+        serve_module._maybe_capture_forked_sid(
+            job_id, "chat", {"type": "system", "subtype": "init", "session_id": new})
+        with serve_module.JOBS_LOCK:
+            assert serve_module.JOBS[job_id]["session_id"] == new
+    finally:
+        with serve_module.JOBS_LOCK:
+            serve_module.JOBS.pop(job_id, None)
+
+
+def test_non_fork_chat_job_keeps_sid_on_init(serve_module):
+    """A plain resume (non-fork) chat job must NOT have its sid overwritten."""
+    job_id = "job-resume-cap-1"
+    src = "33333333-3333-3333-3333-333333333333"
+    with serve_module.JOBS_LOCK:
+        serve_module.JOBS[job_id] = {"id": job_id, "kind": "chat", "session_id": src}
+    try:
+        serve_module._maybe_capture_forked_sid(
+            job_id, "chat", {"type": "system", "session_id": "99999999-9999-9999-9999-999999999999"})
+        with serve_module.JOBS_LOCK:
+            assert serve_module.JOBS[job_id]["session_id"] == src
+    finally:
+        with serve_module.JOBS_LOCK:
+            serve_module.JOBS.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Branch endpoint: copy a session's transcript under a fresh sid on disk. No
+# subprocess / no --fork-session, so the branch can neither time out (#3) nor
+# truncate the new transcript (#4); the new pane resumes the copy on input.
+# ---------------------------------------------------------------------------
+
+def test_session_branch_copies_transcript_with_new_sid(running_server, serve_module, monkeypatch, tmp_path):
+    sdir = _seed_projects_root(serve_module, monkeypatch, tmp_path)
+    src = "12345678-1234-1234-1234-1234abcd0aa1"
+    records = [
+        {"type": "summary", "sessionId": src, "summary": "x"},
+        {"type": "user", "sessionId": src, "uuid": "u1", "parentUuid": None},
+        {"type": "assistant", "sessionId": src, "uuid": "u2", "parentUuid": "u1"},
+    ]
+    src_path = sdir / f"{src}.jsonl"
+    src_path.write_text(
+        "\n".join(serve_module.json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/{src}/branch", data=b"{}")
+    assert status == 200, body
+    new = serve_module.json.loads(body)["sid"]
+    assert serve_module.Handler._UUID_RE.match(new) and new != src
+
+    dst_path = sdir / f"{new}.jsonl"
+    assert dst_path.is_file(), "the branched transcript must be written to disk"
+    out = [serve_module.json.loads(line)
+           for line in dst_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    # Every record's sessionId is rewritten to the new sid; no record dropped.
+    assert len(out) == len(records)
+    assert all(r["sessionId"] == new for r in out)
+    # Per-message parent/uuid links survive the copy unchanged.
+    assert out[2]["parentUuid"] == "u1" and out[2]["uuid"] == "u2"
+    # The source transcript is left untouched.
+    src_out = [serve_module.json.loads(line)
+               for line in src_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert all(r["sessionId"] == src for r in src_out)
+    # The atomic write leaves no stray temp file behind.
+    assert not list(sdir.glob("*.jsonl.tmp"))
+
+
+def test_session_branch_404_when_no_transcript(running_server, serve_module, monkeypatch, tmp_path):
+    _seed_projects_root(serve_module, monkeypatch, tmp_path)
+    missing = "abcdef01-0000-0000-0000-000000000000"
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/{missing}/branch", data=b"{}")
+    assert status == 404, body
+
+
+def test_session_branch_rejects_bad_sid(running_server, serve_module):
+    status, body, _ = _http("POST", f"{running_server}/api/sessions/not-a-uuid/branch", data=b"{}")
+    assert status == 400

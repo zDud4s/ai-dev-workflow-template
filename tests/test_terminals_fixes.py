@@ -112,18 +112,5 @@ def test_chat_enter_checks_ime_composition():
     )
 
 
-def test_resume_chat_disabled_before_guard():
-    """HIGH 5: termSendResumeChat must disable the send button BEFORE the
-    empty-text early return, so a synchronous re-entry sees the disabled
-    button instead of double-posting."""
-    src = _src()
-    body = _slice_function(src, "async function termSendResumeChat(")
-    disable_idx = body.find("t.sendBtn.disabled = true")
-    return_idx = body.find("if (!trimmed) return")
-    assert disable_idx != -1, "termSendResumeChat must disable the send button"
-    assert return_idx != -1, "termSendResumeChat must still guard against empty input"
-    assert disable_idx < return_idx, (
-        "t.sendBtn.disabled = true must appear BEFORE the trimmed-empty "
-        "early return so a fast double-click can't slip a second send in "
-        "between the trim check and the disable"
-    )
+# Removed: the dead-chat resume path (termSendResumeChat) was deleted when
+# Claude chats converged on the unified session pane.

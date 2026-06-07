@@ -958,3 +958,24 @@ def test_repeated_lock_held_warning_is_deduped():
     held = [w for w in s.warnings if "lock held" in w]
     assert len(held) == 1, f"lock-held warning must be de-duped under sustained contention, got {len(held)}"
     assert s.state == sr.SessionState.FOREIGN  # still waiting for the lock
+
+
+def test_new_session_does_not_self_cede_on_creation_writes():
+    """A brand-new session (no prior transcript) acquires a CREATING engine
+    whose first writes to the .jsonl are its own. Those writes must NOT be
+    mistaken for the IDE and trigger a cede to FOREIGN."""
+    eng = _FakeEngine()
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
+    s = reg.get_or_create("new-sid", jsonl_path="/tmp/new-sid.jsonl")
+    # New file: last_growth_ts stays 0.0 so the first turn acquires immediately.
+    status = reg.submit_turn("new-sid", {"text": "hello"}, model="m")
+    assert status == "accepted"
+    assert s.state == sr.SessionState.ENGINE
+    assert s.turn_in_flight is True
+
+    # The creating engine now writes the user echo + reply to a fresh .jsonl:
+    # growth from offset 0. writing_ours must hold (turn in-flight), so the
+    # watcher attributes it to us and does NOT cede.
+    reg.note_jsonl_growth("new-sid", size=240, mtime=1.0)
+    assert s.state == sr.SessionState.ENGINE, "creation writes must not self-cede to FOREIGN"
+    assert s.last_rendered_offset == 240  # accounted as ours
