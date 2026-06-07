@@ -387,10 +387,12 @@
         }
         await loadJobs();
         await loadSessions();
-        if (isChat) {
-          termOpen(res.id, res);
-          if (compareRes) termOpen(compareRes.id, compareRes);
-        }
+        // The Terminals tab is a status list now (Chunk 5b-1): there is no
+        // inline pane to open. Switching tabs + the loadJobs()/loadSessions()
+        // refresh above already surface the new chat as a status row. The
+        // operator routes it to the canvas via the row's send-to-canvas (⊞)
+        // control. We deliberately do NOT auto-open the canvas popup — a
+        // window.open() after an await is commonly blocked and surprising.
       } catch (e) {
         setMsg("#run-msg", "err", e.message);
       } finally {

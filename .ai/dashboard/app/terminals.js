@@ -108,6 +108,8 @@
     function setCanvasBadge(key, on) {
       if (!key) return;
       if (on) _CANVAS_ON_KEYS.add(key); else _CANVAS_ON_KEYS.delete(key);
+      // Status rows (the Terminals tab's primary content) mirror the badge too.
+      setStatusRowCanvasBadge(key, on);
       // The dashboard keys panes by jobId; for terminals the bus key is the
       // bare id, which already equals jobId. session:/job: keys match directly.
       var t = TERMS.get(key);
@@ -125,6 +127,30 @@
           // Park it just before the actions cluster so it reads with the head.
           var actions = head.querySelector(".actions");
           if (actions) head.insertBefore(badge, actions); else head.appendChild(badge);
+        }
+      } else if (badge) {
+        badge.remove();
+      }
+    }
+
+    // Toggle the "on canvas" badge on a matching status row (if rendered).
+    // Rows key off data-key, which is the same normalized bus key.
+    function setStatusRowCanvasBadge(key, on) {
+      var grid = document.getElementById("terms-grid");
+      if (!grid) return;
+      var row = grid.querySelector('.term-status-row[data-key="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
+      if (!row) return;
+      row.classList.toggle("on-canvas", !!on);
+      var actions = row.querySelector(".row-actions");
+      if (!actions) return;
+      var badge = actions.querySelector(".on-canvas-badge");
+      if (on) {
+        if (!badge) {
+          badge = document.createElement("span");
+          badge.className = "on-canvas-badge";
+          badge.textContent = "on canvas";
+          badge.title = "Mirrored on the canvas window";
+          actions.insertBefore(badge, actions.querySelector(".send-to-canvas"));
         }
       } else if (badge) {
         badge.remove();
@@ -153,11 +179,18 @@
         return;
       }
       if (msg.type === "activity") {
-        // Optional: reflect a one-shot activity hint on the badge title.
+        // Optional: reflect a one-shot activity hint on the badge title and,
+        // for status rows, surface the live label on the row's activity chip.
         var key = window.CanvasBus.normalizeKey(msg.key);
         var t = TERMS.get(key);
         var badge = t && t.pane && t.pane.querySelector(".on-canvas-badge");
         if (badge && msg.label) badge.title = "on canvas · " + msg.label;
+        if (msg.label) {
+          var grid = document.getElementById("terms-grid");
+          var row = grid && grid.querySelector('.term-status-row[data-key="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
+          var chip = row && row.querySelector(".activity");
+          if (chip) chip.textContent = msg.label;
+        }
         return;
       }
     }
@@ -498,58 +531,14 @@
       return t.body.querySelector(".msg.user, .bash-cmd") !== null;
     }
 
-    // ----- layout control -----
-    // "list"  = vertical stack of status rows (collapsed by default).
-    // "split" = exactly 2 columns side-by-side, panes expanded.
-    // "grid"  = auto-fit multi-column grid, panes expanded.
-    // Persisted in localStorage; read at open-time and on every switch.
-    var TERM_LAYOUTS = ["list", "split", "grid"];
-    function termGetLayout() {
-      let v = null;
-      try { v = localStorage.getItem("dash.termLayout"); } catch (_) { /* private mode */ }
-      return TERM_LAYOUTS.includes(v) ? v : "list";
-    }
-    function termApplyLayout(mode) {
-      const grid = $("#terms-grid");
-      if (grid) {
-        grid.classList.toggle("layout-split", mode === "split");
-        grid.classList.toggle("layout-grid",  mode === "grid");
-      }
-      // Highlight the active icon button in the layout group.
-      document.querySelectorAll(".term-layout-group .layout-btn").forEach((b) => {
-        b.classList.toggle("active", b.dataset.layout === mode);
-      });
-    }
-    function termSetLayout(mode) {
-      const next = TERM_LAYOUTS.includes(mode) ? mode : "list";
-      try { localStorage.setItem("dash.termLayout", next); } catch (_) { /* private mode */ }
-      termApplyLayout(next);
-      // Whatever the new layout is, collapse every pane to a clean
-      // status-row baseline. This avoids every flavour of the "phantom
-      // empty body" bug: panes opened expanded by termOpen* in split
-      // mode, the grid-stretch issue, content-detection false positives,
-      // and stale state from the previous layout. The operator then
-      // clicks the panes they actually want to see — explicit and
-      // predictable. Drafts are skipped (no expand button means there's
-      // no way back). Silent flag stops scrollIntoView from racing.
-      for (const t of TERMS.values()) {
-        if (t.isDraft) continue;
-        termSetCollapsed(t, true, { silent: true });
-      }
-      // xterm.js panes compute their (cols, rows) from the body's
-      // pixel size. Switching layout changes the grid template, which
-      // in turn changes pane widths — fit() catches the cases where
-      // the ResizeObserver coalesces or fires before the new layout
-      // has settled. Defer two frames so the new grid template + any
-      // collapse-class changes have both applied.
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        for (const t of TERMS.values()) {
-          if (t.kind === "terminal" && t._fitAddon && !t.pane.classList.contains("collapsed")) {
-            try { t._fitAddon.fit(); } catch (_) {}
-          }
-        }
-      }));
-    }
+    // ----- layout control: REMOVED (Chunk 5b-1) -----
+    // The Terminals tab is a pure status list now; multi-pane geometry
+    // (side-by-side / tiled / resize) is owned by the standalone canvas
+    // window (app/canvas.html). The old layout selector, its persisted
+    // preference, and the apply/get/set-layout helpers + their grid CSS
+    // classes were deleted with the inline panes. Any still-live inline pane
+    // that a legacy path (restore / picker) opens always starts collapsed as
+    // a status row; the operator routes it to the canvas via send-to-canvas.
 
     // Hard cap on options per group. A long-running project accumulates
     // thousands of jobs/transcripts; jamming them all into a single
@@ -590,6 +579,7 @@
       // jobs — every Claude conversation opens as one writable session pane.
       let sessions = [];
       let totalSessions = 0;
+      let allSessions = [];
       try {
         const r = await fetch("/api/sessions", { cache: "no-store" });
         if (r.ok) {
@@ -597,12 +587,18 @@
           // Sessions are Claude conversations only. Codex (chat-codex) is NOT a
           // claude --resume session; exclude it here so it stays in the Jobs
           // group and clicking it never spins up a Claude pane on a codex id.
-          const all = (data.sessions || []).filter(
-            (s) => s.kind !== "chat-codex" && !openKeys.has("session:" + s.sid));
+          allSessions = (data.sessions || []).filter((s) => s.kind !== "chat-codex" && s.sid);
+          const all = allSessions.filter((s) => !openKeys.has("session:" + s.sid));
           totalSessions = all.length;
           sessions = all.slice(0, PICKER_MAX_PER_GROUP);
         }
       } catch (_) { /* ignore — picker still works for jobs */ }
+
+      // Feed the status list (the Terminals tab's primary content). Pass the
+      // FULL session/job snapshot — unlike the picker we want every row,
+      // including ones the operator has routed to the canvas. Chat jobs are
+      // sessions now, so the renderer drops kind === "chat" itself.
+      termRenderStatusList(allSessions, jobs || []);
 
       // Jobs spawned by the dashboard that are NOT Claude chats: orchestrate /
       // plan / codex. Claude chats (kind === "chat") are sessions now and live
@@ -667,15 +663,189 @@
     }
 
     function termRenderEmptyState() {
+      // Inline panes (drafts, legacy restore/picker opens) still live in
+      // #terms-grid alongside the status rows. The empty placeholder is only
+      // shown when there are NEITHER inline panes NOR status rows; the status
+      // renderer owns its own placeholder, so here we just drop the legacy
+      // placeholder once any inline pane exists.
       const grid = $("#terms-grid");
-      if (TERMS.size === 0) {
-        grid.innerHTML = `<div class="term-empty">No terminal panes open. Pick a job above, click <em>New terminal</em>, or start one in <em>Run</em>.</div>`;
-      } else {
-        // Drop the empty placeholder if it's still there.
+      if (!grid) return;
+      if (TERMS.size > 0) {
         const empty = grid.querySelector(".term-empty");
         if (empty) empty.remove();
       }
-      $("#count-terminals").textContent = TERMS.size || "·";
+      termUpdateTerminalsCount();
+    }
+
+    // ----- status list (Chunk 5b-1) -----
+    // The Terminals tab is a read-only status list: one row per Claude
+    // session and per dashboard job, summarising state + activity + tool/model
+    // + task. The actual interactive pane lives in the canvas window; each row
+    // carries a send-to-canvas control (⊞) and an on-canvas badge that lights
+    // up while the canvas mirrors that key. Rows are sorted active-first; the
+    // finished ones collapse into a disclosure group so the live work stays
+    // at the top. This renderer NEVER mounts an interactive pane inline.
+    var _STATUS_ROWS_KEY = "terms-status-rows";
+    var _STATUS_FINISHED_OPEN_KEY = "dash.terms.finishedOpen";
+    var _statusFinishedOpen = false;
+    try { _statusFinishedOpen = localStorage.getItem(_STATUS_FINISHED_OPEN_KEY) === "1"; } catch (_) {}
+
+    // Last data we rendered from, so the bus listener can re-paint badges
+    // (on-canvas state) without re-fetching.
+    var _STATUS_LAST = { sessions: [], jobs: [] };
+
+    // Active vs finished partition. A session/job is "active" while it is
+    // running / queued / cancelling / mirror (a live IDE session) — anything
+    // terminal (done / failed / cancelled) drops to the finished group.
+    var _STATUS_ACTIVE_JOB = new Set(["running", "queued", "cancelling"]);
+    function _statusIsActiveJob(j) { return _STATUS_ACTIVE_JOB.has(j.status); }
+    function _statusIsActiveSession(s) {
+      // Sessions carry a baton state (owned / mirror / idle / done …). Treat a
+      // session as finished only when it explicitly reports "done"; everything
+      // else (a live or resumable conversation) stays active so the operator
+      // can pick it up.
+      var st = (s.state || "mirror").toLowerCase();
+      return st !== "done";
+    }
+
+    // Pseudo-term for a status row so the existing canvas bridge
+    // (termSendToCanvas / canvasKeyForTerm) works unchanged: it only reads
+    // .jobId + .kind. For sessions the bus key is "session:<sid>"; for jobs
+    // it is the bare job id (matches how the inline panes key themselves).
+    function _statusRowTerm(kind, key) { return { jobId: key, kind: kind }; }
+
+    function _statusRowEl(opts) {
+      // opts: { key, kind, pill, pillState, activity, tool, preview, title }
+      const row = document.createElement("div");
+      row.className = "term-status-row";
+      row.dataset.key = opts.key;
+      row.dataset.kind = opts.kind;
+      const pillCls = opts.pillState ? " " + escape(opts.pillState) : "";
+      row.innerHTML =
+        `<span class="pill status-pill${pillCls}">${escape(opts.pill || "")}</span>` +
+        `<span class="activity${opts.activityCls ? " " + escape(opts.activityCls) : ""}">${escape(opts.activity || "")}</span>` +
+        `<span class="row-tool" title="${escape(opts.toolTitle || "")}">${escape(opts.tool || "")}</span>` +
+        `<span class="row-task" title="${escape(opts.title || "")}">${escape(opts.preview || "")}</span>` +
+        `<span class="row-actions">` +
+          `<button class="send-to-canvas" type="button" data-action="send-canvas" title="Open this in the canvas window">⊞</button>` +
+        `</span>`;
+      // Reflect any live on-canvas badge for this key immediately.
+      const onCanvas = _CANVAS_ON_KEYS.has(opts.key);
+      if (onCanvas) {
+        row.classList.add("on-canvas");
+        const badge = document.createElement("span");
+        badge.className = "on-canvas-badge";
+        badge.textContent = "on canvas";
+        badge.title = "Mirrored on the canvas window";
+        row.querySelector(".row-actions").insertBefore(badge, row.querySelector(".send-to-canvas"));
+      }
+      const sendBtn = row.querySelector(".send-to-canvas");
+      sendBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        termSendToCanvas(_statusRowTerm(opts.kind, opts.key));
+      });
+      return row;
+    }
+
+    // Build the rows from a sessions[] + jobs[] snapshot. Sessions are Claude
+    // conversations (key "session:<sid>"); jobs are non-chat dashboard jobs
+    // (orchestrate / plan / codex). Chat jobs (kind === "chat") are sessions
+    // now, so they are excluded from the jobs side to avoid double rows.
+    function termRenderStatusList(sessions, jobs) {
+      const grid = $("#terms-grid");
+      if (!grid) return;
+      if (Array.isArray(sessions)) _STATUS_LAST.sessions = sessions;
+      if (Array.isArray(jobs)) _STATUS_LAST.jobs = jobs;
+      sessions = _STATUS_LAST.sessions || [];
+      jobs = (_STATUS_LAST.jobs || []).filter((j) => j.kind !== "chat");
+
+      let container = grid.querySelector("." + _STATUS_ROWS_KEY);
+      if (!container) {
+        container = document.createElement("div");
+        container.className = _STATUS_ROWS_KEY;
+        // Status rows render before any legacy inline pane in the grid.
+        grid.insertBefore(container, grid.firstChild);
+      }
+      container.innerHTML = "";
+
+      const active = [];
+      const finished = [];
+      for (const s of sessions) {
+        const sid = s.sid;
+        if (!sid) continue;
+        const state = (s.state || "mirror");
+        const preview = (s.title || s.task || "").replace(/\s+/g, " ").slice(0, 80);
+        const el = _statusRowEl({
+          key: "session:" + sid,
+          kind: "session",
+          pill: state,
+          pillState: _statusIsActiveSession(s) ? "running" : "done",
+          activity: _statusIsActiveSession(s) ? "live" : "ended",
+          activityCls: _statusIsActiveSession(s) ? "busy" : "ended",
+          tool: "claude",
+          toolTitle: s.model || "claude",
+          preview: preview || (sid.slice(0, 8) + "…"),
+          title: "session " + sid,
+        });
+        (_statusIsActiveSession(s) ? active : finished).push(el);
+      }
+      for (const j of jobs) {
+        const preview = (j.task || "").replace(/\s+/g, " ").slice(0, 80);
+        const tool = j.kind === "chat-codex" ? "codex" : (j.kind || "job");
+        const el = _statusRowEl({
+          key: j.id,
+          kind: j.kind || "job",
+          pill: j.status || "?",
+          pillState: _statusIsActiveJob(j) ? "running" : (j.status === "done" ? "done" : "bad"),
+          activity: _statusIsActiveJob(j) ? "running" : (j.status || "ended"),
+          activityCls: _statusIsActiveJob(j) ? "busy" : "ended",
+          tool: tool,
+          toolTitle: j.model || tool,
+          preview: preview || j.id.slice(0, 8),
+          title: j.task || j.id,
+        });
+        (_statusIsActiveJob(j) ? active : finished).push(el);
+      }
+
+      if (!active.length && !finished.length) {
+        // No rows AND no inline panes → show the placeholder.
+        if (TERMS.size === 0 && !grid.querySelector(".term-empty")) {
+          const empty = document.createElement("div");
+          empty.className = "term-empty";
+          empty.innerHTML = "No sessions yet. Click <em>New terminal</em>, or start one in <em>Run</em>. Send a row to the canvas to interact with it.";
+          container.appendChild(empty);
+        }
+        termUpdateTerminalsCount();
+        return;
+      }
+
+      for (const el of active) container.appendChild(el);
+
+      if (finished.length) {
+        const details = document.createElement("details");
+        details.className = "terms-finished-group";
+        details.open = _statusFinishedOpen;
+        const summary = document.createElement("summary");
+        summary.textContent = "finished (" + finished.length + ")";
+        details.appendChild(summary);
+        for (const el of finished) details.appendChild(el);
+        details.addEventListener("toggle", () => {
+          _statusFinishedOpen = details.open;
+          try { localStorage.setItem(_STATUS_FINISHED_OPEN_KEY, details.open ? "1" : "0"); } catch (_) {}
+        });
+        container.appendChild(details);
+      }
+
+      termUpdateTerminalsCount();
+    }
+
+    // Count badge: inline panes + status rows.
+    function termUpdateTerminalsCount() {
+      const grid = $("#terms-grid");
+      const rows = grid ? grid.querySelectorAll(".term-status-row").length : 0;
+      const total = TERMS.size + rows;
+      const el = $("#count-terminals");
+      if (el) el.textContent = total || "·";
     }
 
     // ----- Draft terminal (created via "New terminal") -----
@@ -2253,7 +2423,9 @@
         </div>
       `;
       grid.appendChild(pane);
-      if (termGetLayout() === "list") pane.classList.add("collapsed");
+      // Inline panes always open collapsed (status-row baseline) now that the
+      // layout selector is gone — the canvas owns the expanded geometry.
+      pane.classList.add("collapsed");
       const body = pane.querySelector(".term-body");
       const t = {
         jobId: paneKey,
@@ -2810,7 +2982,8 @@
       TERMS.set(ptyId, t);
       termWireCanvasButton(t);
 
-      if (termGetLayout() === "list") pane.classList.add("collapsed");
+      // Always collapsed: layout selector removed in 5b-1 (canvas owns geometry).
+      pane.classList.add("collapsed");
 
       pane.addEventListener("click", () => {
         document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
@@ -3229,10 +3402,9 @@
       TERMS.set(jobId, t);
       termWireCanvasButton(t);
 
-      // Initial state depends on the operator's chosen layout. List mode
-      // opens collapsed (status-bar reading); grid mode opens expanded
-      // (legacy "see every pane at once" view).
-      if (termGetLayout() === "list") pane.classList.add("collapsed");
+      // Inline panes always open collapsed now (layout selector removed in
+      // 5b-1); the canvas window hosts the expanded view.
+      pane.classList.add("collapsed");
 
       // Composer wiring (only meaningful for chat panes; harmless otherwise).
       // termScheduleComposerInput debounces + race-protects the
@@ -3666,8 +3838,8 @@
       TERMS.set(paneKey, t);
       termWireCanvasButton(t);
 
-      // Start collapsed in list layout; expanded in others (matches chat-pane behaviour).
-      if (termGetLayout() === "list") pane.classList.add("collapsed");
+      // Always collapsed: layout selector removed in 5b-1 (canvas owns geometry).
+      pane.classList.add("collapsed");
 
       termInitAutoFollow(t);
 
@@ -4257,15 +4429,10 @@
       });
       $("#term-close-all")?.addEventListener("click", termCloseAllFinished);
       $("#term-collapse-all")?.addEventListener("click", termCollapseAll);
-      // Apply the persisted layout to the grid container, then wire the
-      // icon button group — each button carries its target layout in
-      // data-layout and we delegate via the group's click event.
-      termApplyLayout(termGetLayout());
-      document.querySelector(".term-layout-group")?.addEventListener("click", (e) => {
-        const btn = e.target.closest(".layout-btn");
-        if (!btn || !btn.dataset.layout) return;
-        termSetLayout(btn.dataset.layout);
-      });
+      // Layout selector removed in 5b-1: the Terminals tab is a status list,
+      // multi-pane geometry lives in the canvas window. Render the status
+      // rows from the current job/session state.
+      termRenderStatusList();
       // Initial picker fill (single unified source).
       termRefreshTranscriptPicker();
       // Restore panes that were open at the last unload. Fires once on

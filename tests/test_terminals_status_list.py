@@ -4,6 +4,65 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_terminals_tab_has_no_layout_mode_buttons():
+    """Chunk 5b-1: the Terminals tab is a pure status list. The inline
+    multi-pane layout selector is gone — index.html's Terminals section must
+    no longer carry the split/grid layout buttons or their group wrapper."""
+    index_html = (ROOT / ".ai/dashboard/index.html").read_text(encoding="utf-8")
+    # Scope the assertion to the Terminals section so an unrelated layout="grid"
+    # somewhere else in the document can't mask a regression here.
+    start = index_html.find('id="view-terminals"')
+    assert start != -1, "Terminals section not found in index.html"
+    end = index_html.find("</section>", start)
+    section = index_html[start:end]
+
+    assert 'data-layout="split"' not in section, (
+        "Terminals tab must not carry the split layout button"
+    )
+    assert 'data-layout="grid"' not in section, (
+        "Terminals tab must not carry the grid layout button"
+    )
+    assert "term-layout-group" not in section, (
+        "Terminals tab must not carry the layout-mode button group"
+    )
+
+
+def test_terminals_js_has_no_inline_grid_render():
+    """The layout machinery (list/split/grid) is removed in 5b-1. terminals.js
+    must not reference the grid layout classes or the apply-layout function in
+    live code — the canvas owns multi-pane geometry now."""
+    src = (ROOT / ".ai/dashboard/app/terminals.js").read_text(encoding="utf-8")
+
+    assert "layout-split" not in src, (
+        "terminals.js must not reference the layout-split grid class"
+    )
+    assert "layout-grid" not in src, (
+        "terminals.js must not reference the layout-grid grid class"
+    )
+    assert "termApplyLayout" not in src, (
+        "terminals.js must not reference termApplyLayout (layout machinery removed)"
+    )
+
+
+def test_status_row_has_send_to_canvas_control():
+    """Each status row in the new list emits a send-to-canvas control plus the
+    on-canvas badge placeholder, so an operator can route the row to the canvas
+    window and see when it is mirrored there."""
+    src = (ROOT / ".ai/dashboard/app/terminals.js").read_text(encoding="utf-8")
+
+    # The row renderer builds rows; assert the row template wires both the
+    # send-to-canvas affordance and the on-canvas badge marker.
+    assert "term-status-row" in src, (
+        "terminals.js must build status rows (term-status-row)"
+    )
+    assert "send-to-canvas" in src, (
+        "status rows must carry the .send-to-canvas control"
+    )
+    assert "on-canvas-badge" in src, (
+        "status rows must carry the .on-canvas-badge marker"
+    )
+
+
 def test_canvas_html_loads_panecore_and_engine():
     html = (ROOT / ".ai/dashboard/app/canvas.html").read_text(encoding="utf-8")
 

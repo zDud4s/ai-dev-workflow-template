@@ -1197,24 +1197,60 @@
     .terms-grid > .term-pane { order: 1; }
     .terms-grid > .term-pane.is-waiting,
     .terms-grid > .term-pane.needs-action { order: 0; }
-    .terms-grid.layout-split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); }
-    .terms-grid.layout-split > .term-pane { order: 0; }
-    .terms-grid.layout-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: var(--s-3); }
-    .terms-grid.layout-grid > .term-pane { order: 0; }
-    /* Grid items default to align-self:stretch — that makes a collapsed
-       pane in the same row as an expanded one balloon to the expanded
-       pane's height, producing a phantom "empty body" rectangle. Force
-       collapsed panes to keep their natural (head-only) height instead. */
-    .terms-grid.layout-split  > .term-pane.collapsed,
-    .terms-grid.layout-grid   > .term-pane.collapsed { align-self: start; }
-    /* Segmented layout selector — three icon buttons sharing a single
-       outer border. Height tuned to sit on the same baseline as .btn. */
-    .term-layout-group { display: inline-flex; gap: 0; border: 1px solid var(--border-soft); background: var(--surf-1); height: 38px; }
-    .term-layout-group .layout-btn { all: unset; cursor: var(--cur-pointer); display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 100%; color: var(--text-dim); border-right: 1px solid var(--border-soft); transition: color 140ms var(--easing), background-color 140ms var(--easing); }
-    .term-layout-group .layout-btn:last-child { border-right: 0; }
-    .term-layout-group .layout-btn:hover { color: var(--accent); background: var(--panel-inset); }
-    .term-layout-group .layout-btn.active { color: var(--on-accent); background: var(--accent); }
-    .term-layout-group .layout-btn svg { display: block; fill: currentColor; }
+    /* Layout selector (.layout-split / .layout-grid / .term-layout-group)
+       removed in Chunk 5b-1 — the Terminals tab is a status list and the
+       canvas window owns multi-pane geometry. */
+    /* ── Status rows (Chunk 5b-1) ───────────────────────────────────────
+       Each session / job is a single read-only row: status pill, activity
+       chip, tool/model, task preview, and the send-to-canvas control. */
+    .terms-status-rows { display: flex; flex-direction: column; gap: var(--s-2); }
+    .term-status-row {
+      display: flex;
+      align-items: center;
+      gap: var(--s-3);
+      padding: 8px 12px;
+      background: var(--surf-1);
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid transparent;
+      min-height: 38px;
+      box-sizing: border-box;
+    }
+    .term-status-row .status-pill { flex: 0 0 auto; }
+    .term-status-row .activity { flex: 0 0 auto; color: var(--text-dim); font-size: 12px; }
+    .term-status-row .row-tool { flex: 0 0 auto; color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .term-status-row .row-task {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+    }
+    .term-status-row .row-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s-2); margin-left: auto; }
+    .term-status-row .send-to-canvas {
+      all: unset; cursor: var(--cur-pointer);
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; color: var(--text-dim);
+      border: 1px solid var(--border-soft); background: var(--surf-1);
+      transition: color 140ms var(--easing), border-color 140ms var(--easing);
+    }
+    .term-status-row .send-to-canvas:hover { color: var(--accent); border-color: var(--accent); }
+    .term-status-row.on-canvas { border-left-color: var(--accent); }
+    .term-status-row .on-canvas-badge {
+      font-size: 11px; color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 3px;
+      padding: 1px 5px; white-space: nowrap;
+    }
+    /* Collapsible "finished" group keeps terminal sessions out of the way. */
+    .terms-finished-group { border: 0; margin: 0; }
+    .terms-finished-group > summary {
+      cursor: var(--cur-pointer); color: var(--text-dim);
+      font-size: 12px; padding: 6px 4px; list-style: none;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .terms-finished-group > summary::-webkit-details-marker { display: none; }
+    .terms-finished-group[open] > summary { color: var(--text); }
+    .terms-finished-group .term-status-row { opacity: 0.78; }
     /* Standalone icon buttons (open-all / collapse-all / close-finished /
        auto-open). Same height as .btn so the whole toolbar lines up. */
     .term-icon-btn { all: unset; cursor: var(--cur-pointer); display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 38px; color: var(--text-dim); border: 1px solid var(--border-soft); background: var(--surf-1); transition: color 140ms var(--easing), border-color 140ms var(--easing), background-color 140ms var(--easing); box-sizing: border-box; }
@@ -3844,7 +3880,6 @@
         min-height: 44px;
         padding: 10px 12px;
       }
-      .term-layout-group .layout-btn,
       .term-icon-btn {
         min-width: 44px;
         min-height: 44px;
@@ -3892,11 +3927,8 @@
        separate block here would be dead duplication / a second source of truth. */
 
     @media (max-width: 768px) {
-      .terms-grid.layout-split,
-      .terms-grid.layout-grid {
-        grid-template-columns: 1fr;
-      }
-
+      /* Terminals layout selector removed in 5b-1 — no split/grid columns to
+         collapse on mobile anymore. */
       #view-timeline .tl-row,
       body #view-timeline .tl-row {
         grid-template-columns: 1fr;
