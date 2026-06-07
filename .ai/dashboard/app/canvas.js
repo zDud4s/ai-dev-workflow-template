@@ -89,6 +89,230 @@ function saveCanvasState() { /* Task 12 */ }
 function restoreCanvasState() { return Promise.resolve(); }
 function startCanvasHeartbeat() { /* Task 12 */ }
 
+// ─── Gutter geometry ──────────────────────────────────────────────────────────
+// Walk the tree the SAME way SplitTree.computeRects does (row → divide width,
+// col → divide height, offsets accumulate, no gutter subtraction) and emit one
+// gutter descriptor per INTERNAL split boundary. Each descriptor is:
+//   { path, axis, x, y, w, h, parentX, parentY, parentW, parentH }
+// where `path` is the array of child indices from the root to the split node
+// (the address SplitTree.resize expects), `axis` is "row" (a vertical gutter
+// dragged left/right) or "col" (a horizontal gutter dragged up/down), and the
+// rect is a thin band centred on the boundary between child[0] and child[1].
+// parent* is the split node's full pixel extent, used to convert a pixel drag
+// delta into the ratio delta SplitTree.resize wants.
+//
+// SplitTree.splitLeaf only ever creates 2-child splits and SplitTree.resize
+// only shifts the child[0]|child[1] boundary, so we emit exactly ONE gutter per
+// split node (its first boundary). The walk normalises ratios the same way
+// computeRects does so the gutter lands exactly on the rendered seam.
+var CANVAS_GUTTER_PX = 8; // hit-area thickness, centred on the boundary
+function canvasNormalizeRatios(ratios) {
+  var sum = 0;
+  for (var i = 0; i < ratios.length; i++) sum += ratios[i];
+  if (!sum) sum = 1;
+  return ratios.map(function (r) { return r / sum; });
+}
+function canvasComputeGutters(tree, w, h) {
+  var out = [];
+  var walk = function (node, x, y, ww, hh, path) {
+    if (!node || node.leaf !== undefined) return;
+    var ratios = canvasNormalizeRatios(node.ratios);
+    var isRow = node.split === "row";
+    // Boundary between child[0] and child[1] sits after child[0]'s extent.
+    var firstFrac = ratios[0];
+    var half = CANVAS_GUTTER_PX / 2;
+    if (isRow) {
+      var bx = x + ww * firstFrac;
+      out.push({
+        path: path, axis: "row",
+        x: bx - half, y: y, w: CANVAS_GUTTER_PX, h: hh,
+        parentX: x, parentY: y, parentW: ww, parentH: hh,
+      });
+    } else {
+      var byy = y + hh * firstFrac;
+      out.push({
+        path: path, axis: "col",
+        x: x, y: byy - half, w: ww, h: CANVAS_GUTTER_PX,
+        parentX: x, parentY: y, parentW: ww, parentH: hh,
+      });
+    }
+    // Recurse into children to emit their nested gutters.
+    var offset = 0;
+    for (var i = 0; i < node.children.length; i++) {
+      var frac = ratios[i];
+      if (isRow) {
+        var cw = ww * frac;
+        walk(node.children[i], x + offset, y, cw, hh, path.concat([i]));
+        offset += cw;
+      } else {
+        var ch = hh * frac;
+        walk(node.children[i], x, y + offset, ww, ch, path.concat([i]));
+        offset += ch;
+      }
+    }
+  };
+  walk(tree, 0, 0, w, h, []);
+  return out;
+}
+
+// ─── Drag-to-split state ──────────────────────────────────────────────────────
+// The pane key currently being dragged by its head bar (set on dragstart,
+// cleared on dragend/drop). A module var backs up the dataTransfer payload
+// because some browsers withhold dataTransfer.getData during dragover.
+var CANVAS_DRAG_KEY = null;
+// The single reused drop-zone highlight element (lazily created, parented to
+// #canvas-root). pointer-events:none so it never eats the drop.
+var CANVAS_DROPZONE = null;
+
+// Which third of `rect` the cursor (cx,cy, relative to rect origin) is in.
+// Compares horizontal vs vertical edge proximity so the larger pull wins;
+// centre defaults to "right". Returns "left" | "right" | "top" | "bottom".
+function canvasDropDir(cx, cy, w, h) {
+  var fx = cx / w;       // 0..1 across width
+  var fy = cy / h;       // 0..1 down height
+  // Distance into the nearest horizontal / vertical edge band.
+  var left = fx, right = 1 - fx, top = fy, bottom = 1 - fy;
+  var min = Math.min(left, right, top, bottom);
+  // Only treat it as an edge drop when the cursor is within a third of an edge;
+  // otherwise (centre) default to "right".
+  if (min > 1 / 3) return "right";
+  if (min === left) return "left";
+  if (min === right) return "right";
+  if (min === top) return "top";
+  return "bottom";
+}
+
+function canvasEnsureDropzone(root) {
+  if (CANVAS_DROPZONE && CANVAS_DROPZONE.parentNode === root) return CANVAS_DROPZONE;
+  CANVAS_DROPZONE = document.createElement("div");
+  CANVAS_DROPZONE.className = "canvas-dropzone";
+  CANVAS_DROPZONE.style.display = "none";
+  root.appendChild(CANVAS_DROPZONE);
+  return CANVAS_DROPZONE;
+}
+
+// Position the drop-zone highlight over the HALF of `container` that the new
+// pane will occupy for direction `dir`.
+function canvasShowDropzone(root, container, dir) {
+  var zone = canvasEnsureDropzone(root);
+  var left = container.offsetLeft, top = container.offsetTop;
+  var w = container.offsetWidth, h = container.offsetHeight;
+  var zx = left, zy = top, zw = w, zh = h;
+  if (dir === "left") { zw = w / 2; }
+  else if (dir === "right") { zx = left + w / 2; zw = w / 2; }
+  else if (dir === "top") { zh = h / 2; }
+  else if (dir === "bottom") { zy = top + h / 2; zh = h / 2; }
+  zone.style.display = "block";
+  zone.style.left = zx + "px";
+  zone.style.top = zy + "px";
+  zone.style.width = zw + "px";
+  zone.style.height = zh + "px";
+}
+function canvasHideDropzone() {
+  if (CANVAS_DROPZONE) CANVAS_DROPZONE.style.display = "none";
+}
+
+// Wire drag-to-split on a pane container's head + body. dragstart records the
+// key; dragover computes + shows the drop zone; drop moves the pane via
+// remove-then-split; dragend/leave clear the highlight.
+function canvasWireDragToSplit(container, head, key) {
+  head.setAttribute("draggable", "true");
+  head.addEventListener("dragstart", function (e) {
+    CANVAS_DRAG_KEY = key;
+    try { e.dataTransfer.setData("text/plain", key); } catch (_e) {}
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+    container.classList.add("dragging");
+  });
+  head.addEventListener("dragend", function () {
+    CANVAS_DRAG_KEY = null;
+    container.classList.remove("dragging");
+    canvasHideDropzone();
+  });
+  container.addEventListener("dragover", function (e) {
+    if (!CANVAS_DRAG_KEY || CANVAS_DRAG_KEY === key) return;
+    e.preventDefault(); // allow drop
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    var r = container.getBoundingClientRect();
+    var dir = canvasDropDir(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+    var root = document.getElementById("canvas-root");
+    if (root) canvasShowDropzone(root, container, dir);
+  });
+  container.addEventListener("dragleave", function (e) {
+    // Only hide when the cursor actually left the container (dragleave fires
+    // for child elements too).
+    if (e.relatedTarget && container.contains(e.relatedTarget)) return;
+    canvasHideDropzone();
+  });
+  container.addEventListener("drop", function (e) {
+    e.preventDefault();
+    canvasHideDropzone();
+    var dragged = CANVAS_DRAG_KEY;
+    CANVAS_DRAG_KEY = null;
+    if (!dragged || dragged === key) return;
+    var r = container.getBoundingClientRect();
+    var dir = canvasDropDir(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+    // Remove-then-split MOVES the dragged pane next to the target (it does not
+    // duplicate it). The PaneCore handle survives because renderTree only
+    // tears down keys absent from the NEW tree — `dragged` is still present.
+    var ST = window.SplitTree;
+    CanvasApp.setTree(ST.splitLeaf(ST.remove(TREE, dragged), key, dragged, dir));
+    ACTIVE_KEY = dragged;
+    CanvasApp.renderTree();
+    saveCanvasState();
+  });
+}
+
+// Render gutter overlays for the current TREE into #canvas-root. Removes any
+// previous gutters first (they're cheap, position-only divs) and wires each to
+// a live pointer-drag → SplitTree.resize at its split node's path.
+function canvasRenderGutters(root, w, h) {
+  // Clear prior gutters.
+  var old = root.querySelectorAll(".canvas-gutter");
+  for (var i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
+  var gutters = canvasComputeGutters(TREE, w, h);
+  gutters.forEach(function (g) {
+    var el = document.createElement("div");
+    el.className = "canvas-gutter canvas-gutter-" + g.axis;
+    el.style.left = g.x + "px";
+    el.style.top = g.y + "px";
+    el.style.width = g.w + "px";
+    el.style.height = g.h + "px";
+    canvasWireGutter(el, g);
+    root.appendChild(el);
+  });
+}
+
+// Live-drag a single gutter. pointerdown captures the pointer; pointermove
+// converts the pixel delta along the gutter's axis into a fraction of the
+// parent split's extent and calls SplitTree.resize(path, delta); pointerup
+// releases + persists. We resize from a SNAPSHOT of the tree taken at
+// pointerdown so accumulated rounding doesn't drift the boundary.
+function canvasWireGutter(el, g) {
+  el.addEventListener("pointerdown", function (e) {
+    e.preventDefault();
+    var startX = e.clientX, startY = e.clientY;
+    var isRow = g.axis === "row";
+    var extent = isRow ? g.parentW : g.parentH;
+    if (!extent) return;
+    var baseTree = window.SplitTree.serialize(TREE); // snapshot for drift-free resize
+    try { el.setPointerCapture(e.pointerId); } catch (_e) {}
+    var onMove = function (ev) {
+      var deltaPx = isRow ? (ev.clientX - startX) : (ev.clientY - startY);
+      var deltaRatio = deltaPx / extent;
+      CanvasApp.setTree(window.SplitTree.resize(window.SplitTree.deserialize(baseTree), g.path, deltaRatio));
+      CanvasApp.renderTree();
+    };
+    var onUp = function (evUp) {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      try { el.releasePointerCapture(evUp.pointerId); } catch (_e) {}
+      saveCanvasState();
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+  });
+}
+
 // Build + append the canvas-level head bar for a pane container. Carries a
 // short label and a close button that routes to CanvasApp.closePane (the
 // canvas owns tree membership — see the call site in renderTree). Task 11
@@ -283,7 +507,9 @@ window.CanvasApp = {
         // ghost leaf. The canvas owns membership; the head close is the one
         // robust entry point. The head is the FIRST child so the mounted
         // .term-pane stacks below it.
-        appendCanvasPaneHead(container, key);
+        var paneHead = appendCanvasPaneHead(container, key);
+        // Drag the head to move this pane next to another (drop-zone split).
+        canvasWireDragToSplit(container, paneHead, key);
         var kind = canvasResolveKind(key, lookup);
         var meta = canvasResolveMeta(key, lookup);
         try {
@@ -314,6 +540,11 @@ window.CanvasApp = {
       PANES.delete(key);
       CONTAINERS.delete(key);
     });
+
+    // Draw the resizable gutter overlays for the current tree. These are
+    // overlays (pointer-events on themselves only) and do NOT consume layout
+    // space — they sit on top of the seams computeRects produced.
+    canvasRenderGutters(root, w, h);
   },
 };
 

@@ -1269,15 +1269,82 @@
       position: absolute;
       overflow: hidden;
       box-sizing: border-box;
+      /* Stack the canvas head bar above the mounted .term-pane so the pane
+         body fills whatever the head leaves. */
+      display: flex;
+      flex-direction: column;
+    }
+    .canvas-pane.dragging { opacity: 0.5; }
+    .canvas-pane.focused {
+      outline: 1px solid var(--accent, #4fcdcd);
+      outline-offset: -1px;
     }
     /* In the canvas, the mounted pane should fill its absolute host (the
-       dashboard's min/max-height flow constraints don't apply here). */
+       dashboard's min/max-height flow constraints don't apply here). It is the
+       flex remainder under the head bar. */
     .canvas-pane > .term-pane,
     .canvas-pane > .term-pane:not(.collapsed) {
       width: 100%;
-      height: 100%;
+      flex: 1 1 auto;
       min-height: 0;
       max-height: none;
+    }
+
+    /* ── Canvas pane head (drag handle + close) ───────────────────────────── */
+    .canvas-pane > .canvas-pane-head {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 22px;
+      padding: 0 6px;
+      background: var(--surf-3, #11161d);
+      border-bottom: 1px solid var(--border-soft, #243042);
+      cursor: grab;
+      user-select: none;
+      font: 11px/1 var(--ff-mono, monospace);
+      color: var(--ink-2, #9fb0c3);
+    }
+    .canvas-pane > .canvas-pane-head:active { cursor: grabbing; }
+    .canvas-pane-title {
+      flex: 1 1 auto;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .canvas-pane-close {
+      flex: 0 0 auto;
+      background: transparent;
+      border: 0;
+      color: inherit;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    .canvas-pane-close:hover { color: var(--bad, #ff5d6c); }
+
+    /* ── Drag-to-split drop-zone highlight (overlay, never eats the drop) ──── */
+    .canvas-dropzone {
+      position: absolute;
+      z-index: 50;
+      pointer-events: none;
+      background: color-mix(in srgb, var(--accent, #4fcdcd) 22%, transparent);
+      border: 1px solid var(--accent, #4fcdcd);
+      box-sizing: border-box;
+    }
+
+    /* ── Resizable gutters (overlays centred on each split seam) ──────────── */
+    .canvas-gutter {
+      position: absolute;
+      z-index: 40;
+      background: transparent;
+      touch-action: none; /* let pointer events drive the resize, not scroll */
+    }
+    .canvas-gutter-row { cursor: col-resize; }
+    .canvas-gutter-col { cursor: row-resize; }
+    .canvas-gutter:hover {
+      background: color-mix(in srgb, var(--accent, #4fcdcd) 35%, transparent);
     }
 
     .term-pane {
