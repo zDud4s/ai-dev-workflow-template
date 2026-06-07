@@ -216,22 +216,8 @@
     // the cascade) and the pill stayed green for a "disconnected" or
     // failed shell. This helper normalises every transition.
     // Tool-identity classes ("claude", "codex") are preserved.
-    var _PILL_STATE_CLASSES = [
-      "running", "queued", "done", "bad", "warn",
-      "cancelling", "cancelled",
-    ];
-    function termSetPillState(pill, state, text) {
-      if (!pill) return;
-      for (const c of _PILL_STATE_CLASSES) pill.classList.remove(c);
-      if (state) pill.classList.add(state);
-      if (text != null) pill.textContent = text;
-      // Mirror the visible label into dataset.pillText so Close-finished
-      // (and any future feature) can read a stable, i18n-resistant signal
-      // without parsing the rendered text. dataset.state already covers
-      // the class-name dimension; dataset.pillText covers the label.
-      if (text != null) pill.dataset.pillText = String(text).toLowerCase();
-      if (state) pill.dataset.state = state;
-    }
+    // termSetPillState + _PILL_STATE_CLASSES moved to pane-helpers.js
+    // (pure render leaf; loaded before terminals.js, resolves as a global).
 
     function termSetActivity(t, label, cls) {
       if (!t || !t.pane) return;
@@ -1063,56 +1049,8 @@
       if (m) m.textContent = (t._searchIdx + 1) + " / " + hits.length;
     }
 
-    // ----- Export pane as markdown -----
-    function termExportMarkdown(t) {
-      const lines = [];
-      lines.push("# " + (t.task || "Chat") + "\n");
-      lines.push("> session " + (t.jobId || "") + "  ·  " + new Date().toISOString());
-      lines.push("");
-      const messages = t.body.querySelectorAll(".msg");
-      for (const m of messages) {
-        const role = m.classList.contains("assistant") ? "assistant"
-                   : m.classList.contains("user") ? "user"
-                   : m.classList.contains("system") ? "system"
-                   : m.classList.contains("result") ? "result" : "note";
-        const text = m.querySelector(".text")?.innerText || m.innerText;
-        if (!text || !text.trim()) continue;
-        lines.push(`## ${role}\n`);
-        lines.push(text.trim());
-        lines.push("");
-      }
-      const blob = new Blob([lines.join("\n")], { type: "text/markdown" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `chat-${(t.jobId || "session").slice(0, 8)}-${Date.now()}.md`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-
-    function termInitAutoFollow(t) {
-      t.autoFollowBottom = true;
-      t.firstScroll = true;
-      // Use rAF to detect user-initiated scroll (vs our programmatic
-      // scrollTo which also fires the event).
-      let programmatic = false;
-      t._markProgrammaticScroll = () => {
-        programmatic = true;
-        requestAnimationFrame(() => requestAnimationFrame(() => { programmatic = false; }));
-      };
-      const onScroll = () => {
-        if (programmatic) return;
-        const fromBottom = t.body.scrollHeight - t.body.scrollTop - t.body.clientHeight;
-        t.autoFollowBottom = fromBottom < 40;
-      };
-      // Track the listener so termClose / termClosePty can remove it.
-      // Without this, closed panes leak a scroll handler that keeps the
-      // pane and the closure references alive forever.
-      t._autoFollowScrollHandler = onScroll;
-      t.body.addEventListener("scroll", onScroll);
-    }
+    // termExportMarkdown + termInitAutoFollow moved to pane-helpers.js
+    // (pure render leaves; loaded before terminals.js, resolve as globals).
 
     function termSetDead(t, label) {
       // If the subprocess died mid-turn, the placeholder has no streaming
@@ -1556,6 +1494,15 @@
 
     // ----- composer: image paste/drop + @/  autocomplete -----
 
+    // termCloseAutocomplete moved to pane-helpers.js (pure render leaf;
+    // loaded before terminals.js, resolves as a global).
+    //
+    // termRenderAttachments + termPasteImage (+ _IMAGE_PASTE_MAX_BYTES) are
+    // PURE leaves too, but they are PINNED to terminals.js by a static-lint
+    // sanitization test (tests/test_dashboard_sanitization.py asserts the
+    // image-mime allowlist regex and the termRenderAttachments/
+    // _IMAGE_PASTE_MAX_BYTES ordering live in THIS file). Kept here so the
+    // guard stays green; revisit when that test is taught the new location.
     function termRenderAttachments(t) {
       const tray = t.pane.querySelector(".attach-tray");
       if (!tray) return;
@@ -1629,11 +1576,6 @@
         termRenderAttachments(t);
       };
       reader.readAsDataURL(file);
-    }
-
-    function termCloseAutocomplete(t) {
-      const pop = t.pane.querySelector(".composer-pop");
-      if (pop) { pop.remove(); t._popOpen = false; }
     }
 
     function termOpenAutocomplete(t, items, onPick) {
@@ -1785,54 +1727,9 @@
 
     // ----- chat rendering (stream-json -> structured DOM) -----
 
-    // Compact form for the header chip: just the dollar amount, rounded
-    // to 2 decimal places once the cost crosses $0.01 (anything smaller
-    // would round to "$0.00", which reads as broken — keep the 4-decimal
-    // long form there so the user sees something).
-    function termFormatCostCompact(c) {
-      if (!c || c.cost_usd == null) return "";
-      const v = Number(c.cost_usd);
-      return "$" + v.toFixed(v >= 0.01 ? 2 : 4);
-    }
-    // Verbose form for tooltips and the legacy header layout: dollars + turns + duration.
-    function termFormatCost(c) {
-      if (!c) return "";
-      const parts = [];
-      if (c.cost_usd != null) parts.push("$" + Number(c.cost_usd).toFixed(4));
-      if (c.turns != null) parts.push(c.turns + " turn" + (c.turns === 1 ? "" : "s"));
-      if (c.duration_ms != null && c.duration_ms > 0) parts.push((c.duration_ms / 1000).toFixed(1) + "s");
-      return parts.join(" · ");
-    }
-
-    // Trailing-edge debounce per pane so a burst of turn-end events doesn't
-    // hammer /api/jobs/<id> with a refresh per call. 800ms keeps the chip
-    // visibly fresh without amplifying load when several models stream
-    // in parallel.
-    var _COST_REFRESH_DEBOUNCE_MS = 800;
-    async function _termRefreshCostNow(t) {
-      if (!t || !t.pane.isConnected) return;
-      if (t.kind !== "chat" && t.kind !== "chat-codex") return;
-      try {
-        const r = await fetch(`/api/jobs/${t.jobId}?tail=1`, { cache: "no-store" });
-        if (!r.ok) return;
-        const data = await r.json();
-        const pill = t.pane.querySelector(".cost-pill");
-        if (!pill) return;
-        pill.textContent = termFormatCostCompact(data.cost);
-        const verbose = termFormatCost(data.cost);
-        pill.title = verbose
-          ? verbose + "  ·  job " + (t.jobId || "").slice(0, 8)
-          : "aggregated cost / turns / time for this session";
-      } catch (_) { /* ignore */ }
-    }
-    function termRefreshCost(t) {
-      if (!t) return;
-      if (t._costRefreshTimer) clearTimeout(t._costRefreshTimer);
-      t._costRefreshTimer = setTimeout(() => {
-        t._costRefreshTimer = null;
-        _termRefreshCostNow(t);
-      }, _COST_REFRESH_DEBOUNCE_MS);
-    }
+    // termFormatCostCompact / termFormatCost / _termRefreshCostNow /
+    // termRefreshCost (+ _COST_REFRESH_DEBOUNCE_MS) moved to pane-helpers.js
+    // (pure render leaves; loaded before terminals.js, resolve as globals).
 
     function termAutoScroll(t) {
       // Honour the "follow bottom" flag set by user scroll behaviour.
@@ -1899,32 +1796,8 @@
       termAutoScroll(t);
     }
 
-    // Patterns that are pure noise from the operator's POV — Node deprecation
-    // warnings printed to stderr, the `[unhandled rate_limit_event]` line that
-    // claude prints when it hits a rate-limit telemetry frame, blank lines.
-    // Adding patterns here is preferred over surfacing them as "msg system"
-    // blocks that drown the actual conversation.
-    var RAW_NOISE_PATTERNS = [
-      /^\s*$/,                                              // blank
-      /^\(node:\d+\)\s/,                                    // node warnings
-      /^\[unhandled (rate_limit_event|.*)\]\s*$/,           // unhandled telemetry
-      /^DeprecationWarning:/,                               // node deprecation
-      /^\(Use `node --trace-deprecation/,                   // node trace hint
-      /^# job [0-9a-f-]+ kind=/,                            // pump-injected header
-      /^# task:/,                                           // pump-injected task line
-    ];
-    function termRenderRaw(t, line) {
-      // Non-JSON line (rare: e.g. CLI noise). Silence known-noise patterns
-      // entirely; everything else surfaces as a dim system block so we
-      // notice genuinely-unexpected output rather than hiding it.
-      for (const pat of RAW_NOISE_PATTERNS) {
-        if (pat.test(line)) return;
-      }
-      const div = document.createElement("div");
-      div.className = "msg system";
-      div.textContent = line;
-      t.body.appendChild(div);
-    }
+    // termRenderRaw (+ RAW_NOISE_PATTERNS) moved to pane-helpers.js (pure
+    // render leaf; loaded before terminals.js, resolves as a global).
 
     function termRenderUserMessage(t, text) {
       const msg = document.createElement("div");
@@ -2002,10 +1875,8 @@
       termAutoScroll(t);
     }
 
-    function termClearThinkingPlaceholder(t) {
-      if (!t || !t.body) return;
-      t.body.querySelectorAll(".thinking-placeholder").forEach((el) => el.remove());
-    }
+    // termClearThinkingPlaceholder moved to pane-helpers.js (pure render
+    // leaf; loaded before terminals.js, resolves as a global).
 
     function termAssistantBlock(t) {
       if (t.currentAssistant && t.currentAssistant.isConnected) return t.currentAssistant;
@@ -2296,21 +2167,8 @@
       return wrap;
     }
 
-    function renderBashCommand(command, description) {
-      const wrap = document.createElement("div");
-      wrap.className = "tool-detail bash-view";
-      if (description) {
-        const d = document.createElement("div");
-        d.className = "diff-header";
-        d.textContent = description;
-        wrap.appendChild(d);
-      }
-      const c = document.createElement("pre");
-      c.className = "bash-cmd";
-      c.textContent = "$ " + command;
-      wrap.appendChild(c);
-      return wrap;
-    }
+    // renderBashCommand moved to pane-helpers.js (pure render leaf; loaded
+    // before terminals.js, resolves as a global).
 
     function renderGrep(input) {
       const wrap = document.createElement("div");
@@ -2729,17 +2587,8 @@
     // Reused per pane: when xterm/ResizeObserver aren't available
     // (older browsers, blocked CDN) the pane shows an inline error
     // instead of silently appearing broken.
-    function termPtyMissingDeps() {
-      return typeof Terminal === "undefined" || typeof FitAddon === "undefined";
-    }
-
-    function termPtyWsUrl(ptyId, token) {
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      const base = `${proto}//${location.host}/api/ptys/${encodeURIComponent(ptyId)}/io`;
-      return token
-        ? `${base}?token=${encodeURIComponent(token)}`
-        : base;
-    }
+    // termPtyMissingDeps + termPtyWsUrl moved to pane-helpers.js (pure
+    // leaves; loaded before terminals.js, resolve as globals).
 
     function termOpenPty(ptyId, meta, initialCommand) {
       if (TERMS.has(ptyId)) return;

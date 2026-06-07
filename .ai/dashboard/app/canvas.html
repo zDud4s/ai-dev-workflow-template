@@ -11,10 +11,12 @@
   <div id="canvas-root"></div>
 
   <!-- Sibling-relative script srcs (this page is already inside app/).
-       Dependency order: shared engine (core/skills) → PaneCore →
-       canvas engine (split-tree, canvas-bus) → boot file. -->
+       Dependency order: shared engine (core/skills) → pure pane render
+       leaves (pane-helpers) → PaneCore → canvas engine (split-tree,
+       canvas-bus) → boot file. -->
   <script defer src="./core.js"></script>
   <script defer src="./skills.js"></script>
+  <script defer src="./pane-helpers.js"></script>
   <script defer src="./pane-core.js"></script>
   <script defer src="./split-tree.js"></script>
   <script defer src="./canvas-bus.js"></script>
