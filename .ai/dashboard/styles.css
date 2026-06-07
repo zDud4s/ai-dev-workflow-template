@@ -1251,6 +1251,35 @@
     body.density-compact .term-body.chat { gap: 6px; }
     body.density-compact .term-body.chat .msg { margin: 0; padding: 4px 8px; }
     body.density-compact .term-foot { padding: 4px 6px; }
+    /* ── Canvas window (app/canvas.html) ──────────────────────────────────
+       The canvas lays panes out free-form from SplitTree.computeRects rather
+       than the dashboard's flow/grid. #canvas-root is the positioning context;
+       each .canvas-pane is absolutely placed at its computed rect, and the
+       .term-pane PaneCore mounts inside fills it. Gutters are drawn as overlays
+       on top (computeRects does NOT subtract gutter width), so panes tile edge
+       to edge here. */
+    #canvas-root {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--surf-1, #0b0f14);
+    }
+    .canvas-pane {
+      position: absolute;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    /* In the canvas, the mounted pane should fill its absolute host (the
+       dashboard's min/max-height flow constraints don't apply here). */
+    .canvas-pane > .term-pane,
+    .canvas-pane > .term-pane:not(.collapsed) {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      max-height: none;
+    }
+
     .term-pane {
       background: var(--surf-2);
       border: 1px solid var(--border-soft);
