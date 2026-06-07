@@ -1160,53 +1160,14 @@
         status.className = "pill " + (label === "done" ? "done" : "bad") + " status-pill";
         status.textContent = label;
       }
-      // For chat panes with a known session_id the next operator message
-      // resumes the session — the pane is waiting for input, not just
-      // dead. Surface that as "waiting" (warn chip) so the warn color
-      // means "waiting" everywhere on this page. Other dead panes stay
-      // at "done"/"ended" with their respective ok/bad colors.
-      if (t.kind === "chat" && t.sessionId) {
-        termSetActivity(t, "waiting", "waiting");
-      } else {
-        termSetActivity(t, label || "ended", label === "done" ? "ready" : "ended");
-      }
-
-      // For chat panes whose claude subprocess has exited but where the
-      // session_id is known, repurpose the composer as a "resume" entry
-      // point: the next message spawns a fresh job with --resume <sid>,
-      // and the new pane opens alongside (the dead pane stays as history).
-      // Without this, the operator has to manually go back to the Run tab,
-      // copy the session id, and create a new job. Annoying.
-      if (t.kind === "chat" && t.sessionId) {
-        // Auto-expand so the resume composer is reachable without an
-        // extra click — input is required, this is exactly the "specific
-        // case" where the full pane should appear on its own.
-        if (t.pane.classList.contains("collapsed")) {
-          termSetCollapsed(t, false);
-        }
-        t.pane.classList.add("needs-action");
-        t.input.disabled = false;
-        t.sendBtn.disabled = false;
-        t.input.placeholder = "session ended — next message resumes in a fresh job";
-        t.sendBtn.textContent = "resume →";
-        // Flip the pane into resume mode by toggling a flag the regular
-        // send pipeline checks. Previous implementation clone-replaced the
-        // textarea and send button to "drop the original listeners
-        // cleanly", but cloneNode does NOT carry event listeners — so the
-        // autosize handler, paste/drop image handler, /skill + @file
-        // composer, and Ctrl+F search shortcut were all silently lost the
-        // instant a session ended. The operator would type into a
-        // single-row textarea that no longer grew, no longer accepted
-        // pasted images, and no longer autocompleted skills. Instead of
-        // ripping out the listeners we keep the existing composer wiring.
-        // NOTE: Claude chats are unified session panes now, so this legacy
-        // kind === "chat" affordance is unreachable; it is retained only as
-        // a defensive fallback for any stray job-based chat pane.
-        t.deadResume = true;
-      } else {
-        t.input.disabled = true;
-        t.sendBtn.disabled = true;
-      }
+      // A dead pane is history: surface the terminal state and lock the
+      // composer. Claude chats are unified session panes now; the old
+      // job-based "resume on next message" affordance was removed when its
+      // send pipeline (termSendResumeChat) was retired, so there is no
+      // chat-specific dead state left to special-case here.
+      termSetActivity(t, label || "ended", label === "done" ? "ready" : "ended");
+      t.input.disabled = true;
+      t.sendBtn.disabled = true;
     }
 
     function termClose(jobId) {
@@ -3714,9 +3675,9 @@
         });
       });
       // Branch: fork this session into an independent copy. The backend
-      // mints a new sid (claude --fork-session); on success we open that sid
-      // as a fresh session pane so the operator can explore an alternative
-      // without disturbing this conversation.
+      // mints a new sid by copying this session's transcript under it; on
+      // success we open that sid as a fresh session pane so the operator can
+      // explore an alternative without disturbing this conversation.
       pane.querySelector(".branch-btn")?.addEventListener("click", async (e) => {
         e.stopPropagation();
         const btn = e.currentTarget;
