@@ -58,6 +58,186 @@
       }, 250);
     }
 
+    // ----- send-to-canvas bridge (additive) -----
+    //
+    // A pane can be "sent to" the standalone canvas window (app/canvas.html),
+    // which tiles panes via window.PaneCore. The dashboard and the canvas talk
+    // over the cross-window CanvasBus (app/canvas-bus.js, channel/storage key
+    // "dash.canvas.v1"). This block owns the dashboard side of that protocol:
+    //   * a single bus client (created lazily, guarded against double-init),
+    //   * a queue-until-ready buffer so an `open` posted right after we
+    //     window.open()'d the canvas isn't dropped before the canvas boots,
+    //   * inbound handling of opened / closed / ready / activity to paint an
+    //     "on canvas" badge on the matching pane header.
+    // Outbound message shapes (must match canvas.js dispatchBusMessage):
+    //   {type:"open", key, kind}  {type:"focus", key}  {type:"hello"}
+    var _CANVAS_BUS = null;          // CanvasBus.create handle ({post, close})
+    var _CANVAS_QUEUE = null;        // CanvasBus.makeQueue() — buffers until ready
+    var _CANVAS_ON_KEYS = new Set(); // keys currently mounted on the canvas
+    var CANVAS_STALE_INTERVAL_MS = 3000; // mirrors canvas.js heartbeat cadence
+
+    // The pane's term-object → the {key, kind} the bus speaks. Key is
+    // normalized the SAME way the canvas normalizes inbound keys (pty: prefix
+    // stripped) so badge bookkeeping lines up across windows. kind is the
+    // pane's own kind; the canvas refines meta itself via PaneCore.fetchMeta,
+    // so we never send meta.
+    function canvasKeyForTerm(t) {
+      if (!t) return null;
+      var raw = t.jobId;
+      if (typeof raw !== "string" || !raw) return null;
+      if (window.CanvasBus && typeof window.CanvasBus.normalizeKey === "function") {
+        return window.CanvasBus.normalizeKey(raw);
+      }
+      return raw;
+    }
+
+    // Lazily create the dashboard's CanvasBus client + queue. Idempotent: a
+    // second call returns the existing handle. Returns null when CanvasBus
+    // isn't loaded (defensive — index.html loads canvas-bus.js before us).
+    function canvasEnsureBus() {
+      if (_CANVAS_BUS) return _CANVAS_BUS;
+      if (!window.CanvasBus || typeof window.CanvasBus.create !== "function") return null;
+      _CANVAS_QUEUE = window.CanvasBus.makeQueue();
+      _CANVAS_BUS = window.CanvasBus.create({ onMessage: handleCanvasBusMessage });
+      return _CANVAS_BUS;
+    }
+
+    // Reflect "is this key on the canvas?" onto its pane header: toggle the
+    // pane's .on-canvas class and show/hide the badge label. Tolerates a
+    // missing pane (key the dashboard doesn't have open).
+    function setCanvasBadge(key, on) {
+      if (!key) return;
+      if (on) _CANVAS_ON_KEYS.add(key); else _CANVAS_ON_KEYS.delete(key);
+      // The dashboard keys panes by jobId; for terminals the bus key is the
+      // bare id, which already equals jobId. session:/job: keys match directly.
+      var t = TERMS.get(key);
+      if (!t || !t.pane) return;
+      t.pane.classList.toggle("on-canvas", !!on);
+      var head = t.pane.querySelector(".term-head");
+      if (!head) return;
+      var badge = head.querySelector(".on-canvas-badge");
+      if (on) {
+        if (!badge) {
+          badge = document.createElement("span");
+          badge.className = "on-canvas-badge";
+          badge.textContent = "on canvas";
+          badge.title = "This pane is mirrored on the canvas window";
+          // Park it just before the actions cluster so it reads with the head.
+          var actions = head.querySelector(".actions");
+          if (actions) head.insertBefore(badge, actions); else head.appendChild(badge);
+        }
+      } else if (badge) {
+        badge.remove();
+      }
+    }
+
+    // Inbound bus messages from the canvas window. Routed through the queue's
+    // ready gate only for ordering parity with the canvas; badge updates are
+    // idempotent so immediate handling is also safe.
+    function handleCanvasBusMessage(msg) {
+      if (!msg || typeof msg !== "object") return;
+      if (msg.type === "opened") { setCanvasBadge(window.CanvasBus.normalizeKey(msg.key), true); return; }
+      if (msg.type === "closed") { setCanvasBadge(window.CanvasBus.normalizeKey(msg.key), false); return; }
+      if (msg.type === "ready") {
+        // The canvas has booted → flush any `open`/`focus` we queued while it
+        // was starting up. flush() also marks the queue ready, so subsequent
+        // pushes post immediately.
+        if (_CANVAS_QUEUE && !_CANVAS_QUEUE.ready()) {
+          _CANVAS_QUEUE.flush(function (queued) { if (_CANVAS_BUS) _CANVAS_BUS.post(queued); });
+        }
+        // Authoritative open set from the canvas — clear stale badges, set the
+        // listed ones. Snapshot current badges so we can diff-clear.
+        var next = new Set((msg.open || []).map(function (k) { return window.CanvasBus.normalizeKey(k); }));
+        _CANVAS_ON_KEYS.forEach(function (k) { if (!next.has(k)) setCanvasBadge(k, false); });
+        next.forEach(function (k) { setCanvasBadge(k, true); });
+        return;
+      }
+      if (msg.type === "activity") {
+        // Optional: reflect a one-shot activity hint on the badge title.
+        var key = window.CanvasBus.normalizeKey(msg.key);
+        var t = TERMS.get(key);
+        var badge = t && t.pane && t.pane.querySelector(".on-canvas-badge");
+        if (badge && msg.label) badge.title = "on canvas · " + msg.label;
+        return;
+      }
+    }
+
+    // If the canvas window's persisted heartbeat (lastSeen) has gone stale,
+    // the canvas window is gone → clear every badge. Called on load before we
+    // post `hello`, so a crashed/closed canvas doesn't leave ghost badges.
+    function canvasClearStaleBadges() {
+      if (!window.CanvasBus || typeof window.CanvasBus.loadState !== "function") return;
+      var state = window.CanvasBus.loadState();
+      if (!state) return;
+      if (window.CanvasBus.isStale(state, Date.now(), CANVAS_STALE_INTERVAL_MS)) {
+        var keys = [..._CANVAS_ON_KEYS];
+        for (var i = 0; i < keys.length; i++) setCanvasBadge(keys[i], false);
+      }
+    }
+
+    // The send-to-canvas click handler for a pane's term object. Opens (or
+    // focuses) the named canvas window, then posts open/focus over the bus.
+    function termSendToCanvas(t) {
+      var key = canvasKeyForTerm(t);
+      if (!key) return;
+      var bus = canvasEnsureBus();
+      if (!bus) {
+        setMsg("#term-msg", "err", "Canvas bridge unavailable (canvas-bus.js not loaded)", TERM_MSG_DURATION_MS);
+        return;
+      }
+      // Already on the canvas → focus it instead of opening a duplicate pane.
+      if (_CANVAS_ON_KEYS.has(key)) {
+        bus.post({ type: "focus", key: key });
+        // Re-open the named window to bring it forward if it exists.
+        try { window.open("app/canvas.html", "dash-canvas"); } catch (_) {}
+        return;
+      }
+      // Ensure the canvas window exists (named target ⇒ single instance).
+      var win = null;
+      try { win = window.open("app/canvas.html", "dash-canvas"); } catch (_) { win = null; }
+      if (!win) {
+        setMsg("#term-msg", "warn",
+          "Canvas popup blocked — allow popups for this site, then click canvas again",
+          TERM_MSG_DURATION_MS);
+        return;
+      }
+      var openMsg = { type: "open", key: key, kind: (t && t.kind) || undefined };
+      // If the canvas just opened it hasn't sent `ready` yet → queue the open
+      // and flush when ready arrives. If it's already ready (badges live),
+      // post immediately.
+      if (_CANVAS_QUEUE && !_CANVAS_QUEUE.ready()) {
+        _CANVAS_QUEUE.push(openMsg);
+      } else {
+        bus.post(openMsg);
+      }
+    }
+
+    // Append the send-to-canvas button to a freshly-built pane header and wire
+    // its click. Additive: it slots into the existing .actions cluster without
+    // touching any sibling control. Re-paints the badge if the key is already
+    // known to be on the canvas (e.g. pane restored while canvas open).
+    function termWireCanvasButton(t) {
+      if (!t || !t.pane) return;
+      var head = t.pane.querySelector(".term-head");
+      if (!head) return;
+      var actions = head.querySelector(".actions");
+      if (!actions || actions.querySelector(".send-to-canvas")) return;
+      var btn = document.createElement("button");
+      btn.className = "send-to-canvas";
+      btn.type = "button";
+      btn.dataset.action = "send-canvas";
+      btn.title = "Send this pane to the canvas window";
+      btn.textContent = "⊞";
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        termSendToCanvas(t);
+      });
+      actions.appendChild(btn);
+      // If the canvas already announced this key, show the badge immediately.
+      var key = canvasKeyForTerm(t);
+      if (key && _CANVAS_ON_KEYS.has(key)) setCanvasBadge(key, true);
+    }
+
     // One-shot migration of the persisted open-panes store from v1 to v2.
     // v1 logged Claude conversations as either ``transcript`` (id "ide:"+sid)
     // or ``chat`` (id = JOB id) panes; v2 folds both into ``session`` panes
@@ -2628,6 +2808,7 @@
         attached: { images: [], files: [] },
       };
       TERMS.set(ptyId, t);
+      termWireCanvasButton(t);
 
       if (termGetLayout() === "list") pane.classList.add("collapsed");
 
@@ -3046,6 +3227,7 @@
         model: meta?.model || "",  // seed from /api/jobs; replaced on first init/assistant frame
       };
       TERMS.set(jobId, t);
+      termWireCanvasButton(t);
 
       // Initial state depends on the operator's chosen layout. List mode
       // opens collapsed (status-bar reading); grid mode opens expanded
@@ -3482,6 +3664,7 @@
         toolUseEls: new Map(),
       };
       TERMS.set(paneKey, t);
+      termWireCanvasButton(t);
 
       // Start collapsed in list layout; expanded in others (matches chat-pane behaviour).
       if (termGetLayout() === "list") pane.classList.add("collapsed");
@@ -4090,5 +4273,15 @@
       // localStorage by re-fetching their server-side state. Drafts and
       // dispatch trackers are intentionally NOT restored.
       restoreOpenPanes();
+
+      // Wire the dashboard-side CanvasBus client once. On load: clear any
+      // ghost badges if the canvas window's heartbeat is stale, then say
+      // `hello` so an already-open canvas re-announces its `ready` open set
+      // (which repaints badges for panes mirrored there).
+      var bus = canvasEnsureBus();
+      if (bus) {
+        canvasClearStaleBadges();
+        bus.post({ type: "hello" });
+      }
     });
 

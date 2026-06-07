@@ -1560,6 +1560,43 @@
       border-color: var(--bad);
       background: var(--panel-inset);
     }
+    /* Send-to-canvas: an icon-only control (⊞) so it stays compact next to the
+       text action buttons. Narrower min-width than the labelled actions; the
+       glyph carries the meaning, the title carries the words. */
+    .term-head .actions .send-to-canvas {
+      min-width: 30px;
+      padding: 6px 8px;
+      font-size: 13px;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+    .term-head .actions .send-to-canvas:hover {
+      color: var(--accent-2, var(--accent));
+      border-color: var(--accent-2, var(--accent));
+    }
+    /* A pane mirrored on the canvas window shows a small "on canvas" badge in
+       its header. .on-canvas on the pane is the state hook; the badge label is
+       inserted/removed by terminals.js (setCanvasBadge). */
+    .term-head .on-canvas-badge {
+      flex: 0 0 auto;
+      align-self: center;
+      margin-left: 6px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-family: var(--ff-mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent-2, var(--accent));
+      border: 1px solid var(--accent-2, var(--accent));
+      background: var(--accent-bg, transparent);
+      white-space: nowrap;
+    }
+    .term-pane.on-canvas .term-head .send-to-canvas {
+      color: var(--accent-2, var(--accent));
+      border-color: var(--accent-2, var(--accent));
+    }
     /* Narrow pane: progressively drop secondary chrome so the PRIMARY
        actions (close + cancel + stop + expand) stay visible. In split /
        grid layouts the pane width drops below 700px and the original
