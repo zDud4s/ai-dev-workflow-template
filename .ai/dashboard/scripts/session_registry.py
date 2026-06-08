@@ -496,7 +496,24 @@ class SessionRegistry:
     def note_jsonl_gone(self, sid: str) -> None:
         """Called when the watcher finds the .jsonl absent (deleted or rotated away).
         Reconciles to MIRROR + terminated, killing the engine if one is running.
+
+        Exception — brand-new create-on-first-turn startup: when our own engine
+        is still coming up (ACQUIRING) or has just been promoted (ENGINE) and the
+        transcript has never been observed (``last_size == 0``), the file being
+        absent is the *expected* pre-creation state — ``claude --session-id <sid>``
+        only writes ``<sid>.jsonl`` a few seconds after the first turn reaches its
+        stdin. The watcher polls every second and would otherwise reconcile (and
+        kill) the freshly-spawned engine before it could create the transcript,
+        leaving the pane stuck disconnected. Hold MIRROR-reconcile until the
+        transcript exists at least once, so the first turn can be delivered and
+        written. A real rotation/deletion (``last_size > 0``) still reconciles.
         """
         s = self._sessions[sid]
         with s.lock:
+            if (
+                s.engine is not None
+                and s.last_size == 0
+                and s.state in (SessionState.ACQUIRING, SessionState.ENGINE)
+            ):
+                return
             self._reconcile_to_mirror(s)

@@ -583,6 +583,108 @@ def test_note_jsonl_gone_mirror_terminated():
     assert s.engine is None
 
 
+# --- note_jsonl_gone during brand-new create-on-first-turn startup ---
+#
+# Regression guard: a freshly-spawned engine (ACQUIRING, transcript not yet
+# written) must survive the watcher's absent-file poll. The watcher stats
+# ~/.claude/projects/<slug>/<sid>.jsonl every second; for a create-on-first-turn
+# session that file does not exist until claude has received the first turn and
+# emitted SessionStart (a few seconds later). Reconciling on that expected gap
+# killed the engine before it could write the transcript, leaving /stream stuck
+# at 404 forever.
+
+def test_note_jsonl_gone_preserves_acquiring_engine_before_first_write():
+    """ACQUIRING + engine present + last_size==0 (never observed): a missing
+    transcript is the expected pre-creation state, so note_jsonl_gone must NOT
+    kill the engine or leave MIRROR/terminated."""
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ACQUIRING,
+        last_size=0,          # transcript has never been observed yet
+        engine=eng,
+    )
+    reg.note_jsonl_gone("s")
+    assert s.state == sr.SessionState.ACQUIRING, "must stay ACQUIRING while engine starts up"
+    assert eng.killed is False, "freshly-spawned engine must not be killed"
+    assert s.engine is eng
+    assert s.terminated is False
+
+
+def test_note_jsonl_gone_preserves_engine_before_first_write():
+    """ENGINE (just promoted, first turn delivered) + last_size==0: claude is
+    about to create the transcript, so an absent file must not reconcile/kill."""
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ENGINE,
+        last_size=0,
+        engine=eng,
+    )
+    reg.note_jsonl_gone("s")
+    assert s.state == sr.SessionState.ENGINE
+    assert eng.killed is False
+    assert s.engine is eng
+    assert s.terminated is False
+
+
+def test_note_jsonl_gone_still_reconciles_after_transcript_existed():
+    """Once the transcript has been observed (last_size>0), a later disappearance
+    is a real rotation/deletion and MUST still reconcile to MIRROR + terminated."""
+    eng = _FakeEngine()
+    reg, s, clock = _mk_growth(
+        sr.SessionState.ENGINE,
+        last_size=200,        # transcript existed at least once
+        engine=eng,
+    )
+    reg.note_jsonl_gone("s")
+    assert s.state == sr.SessionState.MIRROR
+    assert s.terminated is True
+    assert eng.killed is True
+    assert s.engine is None
+
+
+def test_note_jsonl_gone_reconciles_mirror_with_no_engine():
+    """MIRROR with no engine and last_size==0 still reconciles (no engine to
+    preserve); the guard only protects sessions whose own engine is starting."""
+    reg, s, clock = _mk_growth(sr.SessionState.MIRROR, last_size=0, engine=None)
+    reg.note_jsonl_gone("s")
+    assert s.state == sr.SessionState.MIRROR
+    assert s.terminated is True
+
+
+def test_first_turn_delivered_on_promotion_despite_gone_poll():
+    """End-to-end of the create-on-first-turn fix with a fake engine:
+
+    1. submit_turn on a brand-new MIRROR session spawns a not-yet-ready engine,
+       buffering the first turn (ACQUIRING).
+    2. The watcher polls before claude has written the transcript -> note_jsonl_gone
+       fires while last_size==0; the engine must SURVIVE (this was the bug).
+    3. The engine becomes ready -> mark_engine_ready promotes ACQUIRING -> ENGINE
+       and the buffered first turn is delivered to the engine exactly once.
+    """
+    eng = _FakeEngine()
+    eng._ready = False
+    reg = sr.SessionRegistry(engine_factory=lambda sid, model: eng)
+    s = reg.get_or_create("s", jsonl_path="/tmp/s.jsonl")
+    # Brand-new create-on-first-turn: file never seen (last_size==0) and quiet
+    # (last_growth_ts==0 -> elapsed huge), so submit_turn acquires immediately.
+    status = reg.submit_turn("s", {"text": "hi"}, model="claude-haiku-4-5", owner="diag")
+    assert status == "accepted"
+    assert s.state == sr.SessionState.ACQUIRING
+    assert eng.turns == []                       # buffered, not yet delivered
+
+    # Watcher poll lands during the transcript-creation gap.
+    reg.note_jsonl_gone("s")
+    assert s.state == sr.SessionState.ACQUIRING  # engine preserved (regression guard)
+    assert eng.killed is False
+
+    # Engine comes up; promotion flushes the buffered first turn.
+    eng._ready = True
+    reg.mark_engine_ready("s")
+    assert s.state == sr.SessionState.ENGINE
+    assert eng.turns == [{"text": "hi"}]         # delivered exactly once
+    assert s.turn_in_flight is True
+
+
 # ---------------------------------------------------------------------------
 # Fix 1 (RED): offset-drain term in ENGINE growth attribution
 # ---------------------------------------------------------------------------
