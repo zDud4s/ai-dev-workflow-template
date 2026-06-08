@@ -169,6 +169,12 @@ for js_src in "$SCRIPT_DIR/.ai/dashboard/app/"*.js; do
   copy_if_different "$js_src" "$TARGET_DIR/.ai/dashboard/app/$(basename "$js_src")"
 done
 
+# canvas.html is the standalone multi-pane canvas window (loaded in its own
+# browser window, not by index.html). It lives under app/ but the *.js glob
+# above is JS-only, so it needs an explicit copy or downstream installs 404 the
+# canvas (the Terminals tab's send-to-canvas opens app/canvas.html).
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/app/canvas.html" "$TARGET_DIR/.ai/dashboard/app/canvas.html"
+
 # Vendored third-party assets live in app/vendor/ (e.g. chart.umd.js, which the
 # Analytics tab needs). The app/*.js glob above is top-level only and skips this
 # subdirectory — without an explicit copy the Analytics charts 404 on Chart.js.
