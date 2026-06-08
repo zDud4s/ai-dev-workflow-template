@@ -121,19 +121,11 @@ def test_termSendCodexNextTurn_loadJobs_catches_rejection():
     )
 
 
-def test_termOpen_chat_SSE_end_loadJobs_catches_rejection():
-    """The chat-pane SSE 'end' handler inside termOpen fires loadJobs()
-    so the run list reconciles when a job exits. Wrap it so a server
-    hiccup at exact-end doesn't leak an unhandled rejection.
-    """
+def test_inline_termOpen_sse_handler_removed():
+    """The non-PTY inline job pane was removed when chats moved to canvas."""
     src = _src()
-    # We can't easily isolate just the addEventListener("end") body, so
-    # look for the diagnostic phrase the fix introduces.
-    assert "[terminals] loadJobs after SSE end failed" in src, (
-        "termOpen's SSE 'end' handler must wrap loadJobs() in "
-        'Promise.resolve(loadJobs()).catch(...) with the '
-        '"[terminals] loadJobs after SSE end failed" warn prefix'
-    )
+    assert "function termOpen(" not in src
+    assert "[terminals] loadJobs after SSE end failed" not in src
 
 
 # ---------------------------------------------------------------------------

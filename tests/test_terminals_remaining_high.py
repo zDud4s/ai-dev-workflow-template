@@ -142,27 +142,17 @@ def test_pane_task_query_is_scoped():
     )
 
 
-# ----- Fix 5: SSE heartbeat present -----
+# ----- Fix 5: inline chat SSE heartbeat retired with inline panes -----
 
 
-def test_sse_heartbeat_present():
-    """A heartbeat timestamp must be tracked on the term object so the
-    Firefox half-open EventSource case (readyState stuck at 0) is detected
-    and the pane is forced into the close path."""
+def test_inline_chat_sse_heartbeat_removed_with_inline_panes():
+    """The heartbeat lived in the removed non-PTY inline job pane."""
     src = _src()
-    assert "_lastSSEEvent" in src, (
-        "chat SSE wiring must stamp t._lastSSEEvent (or similar) on each "
-        "event to detect stale connections."
-    )
-    # And there must be a setInterval-style watchdog referencing it.
-    assert "setInterval" in src, (
-        "SSE wiring must run an interval-based watchdog that consults the "
-        "heartbeat timestamp."
-    )
-    # The interval handle must be cleaned up somewhere (termClose et al.)
+    assert "_lastSSEEvent" not in src
+    assert "function termOpen(" not in src
+    # PTY cleanup still tears down heartbeat-style interval handles.
     assert "clearInterval" in src, (
-        "the heartbeat interval must be torn down (clearInterval) when the "
-        "pane closes — otherwise it leaks a timer per closed pane."
+        "interval handles must still be torn down when panes close."
     )
 
 
