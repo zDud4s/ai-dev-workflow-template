@@ -297,10 +297,13 @@ _TRANSCRIPT_PREVIEW_LOCK = threading.Lock()
 # mtime-keyed cache of parsed agent-run .md files: (str(path), st.st_mtime_ns) -> parsed dict.
 _AGENT_RUN_PARSE_CACHE: dict[str, tuple[int, dict]] = {}
 _AGENT_RUN_PARSE_LOCK = threading.Lock()
-# Memo of resolved ~/.claude/projects/<slug> dir (None included), keyed by
-# (str(cwd), str(projects_root)) so a changed projects-root override never
-# returns a dir resolved against a stale root.
-_TRANSCRIPTS_DIR_CACHE: dict[tuple[str, "str | None"], "Path | None"] = {}
+# Memo of resolved ~/.claude/projects/<slug> dir, keyed by (str(cwd),
+# str(projects_root)) so a changed projects-root override never returns a dir
+# resolved against a stale root. Positive entries do not expire; negative
+# entries expire quickly because Claude may create the project dir just after
+# the first lookup.
+_TRANSCRIPTS_DIR_NEG_TTL_S = 3.0
+_TRANSCRIPTS_DIR_CACHE: dict[tuple[str, str | None], tuple[Path | None, float]] = {}
 # Caps concurrent /api/suggestions/<id>/draft + /api/agents/suggest requests.
 # Both endpoints spawn long-running `claude -p` / `codex` subprocesses
 # (timeout_seconds, default 120s) on the request thread; without a cap a
@@ -1255,8 +1258,8 @@ def _claude_projects_root() -> Path | None:
 def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
     """Pick the ``~/.claude/projects/<slug>`` directory matching ``cwd``.
 
-    Claude Code's slug rule (observed): replace ``:``, ``/``, ``\\`` and
-    spaces with ``-``. We try a few common variants because case-folding
+    Claude Code's slug rule (observed): replace ``:``, ``/``, ``\\``, ``.``
+    and spaces with ``-``. We try a few common variants because case-folding
     of the drive letter has been seen both ways across machines."""
     root = _claude_projects_root()
     # Key the memo by BOTH the cwd and the current projects root. The root is
@@ -1264,18 +1267,24 @@ def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
     # OVERRIDE`` to point at a tmp tree); keying on cwd alone would hand back a
     # stale dir resolved against a previous root once that override changes.
     key = (str(cwd), str(root) if root is not None else None)
-    if key in _TRANSCRIPTS_DIR_CACHE:
-        return _TRANSCRIPTS_DIR_CACHE[key]
+    now = time.monotonic()
+    cached = _TRANSCRIPTS_DIR_CACHE.get(key)
+    if cached is not None:
+        cached_path, cached_ts = cached
+        if cached_path is not None:
+            return cached_path
+        if now - cached_ts < _TRANSCRIPTS_DIR_NEG_TTL_S:
+            return None
     if root is None:
-        _TRANSCRIPTS_DIR_CACHE[key] = None
+        _TRANSCRIPTS_DIR_CACHE[key] = (None, time.monotonic())
         return None
     s = str(cwd)
-    slug_lower = (s[0].lower() + s[1:]).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
-    slug_upper = (s[0].upper() + s[1:]).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
+    slug_lower = (s[0].lower() + s[1:]).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-").replace(".", "-")
+    slug_upper = (s[0].upper() + s[1:]).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-").replace(".", "-")
     for slug in (slug_lower, slug_upper, slug_lower.lower()):
         p = root / slug
         if p.is_dir():
-            _TRANSCRIPTS_DIR_CACHE[key] = p
+            _TRANSCRIPTS_DIR_CACHE[key] = (p, time.monotonic())
             return p
     # Last-ditch: scan all subdirs and check if any transcript records this cwd.
     target = str(cwd).lower()
@@ -1295,12 +1304,12 @@ def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
                         except (json.JSONDecodeError, ValueError):
                             continue
                         if str(obj.get("cwd") or "").lower() == target:
-                            _TRANSCRIPTS_DIR_CACHE[key] = sub
+                            _TRANSCRIPTS_DIR_CACHE[key] = (sub, time.monotonic())
                             return sub
                         break  # only peek first record per file
             except OSError:
                 continue
-    _TRANSCRIPTS_DIR_CACHE[key] = None
+    _TRANSCRIPTS_DIR_CACHE[key] = (None, time.monotonic())
     return None
 
 

@@ -107,14 +107,51 @@ def _arm_argv_capture(serve_module, monkeypatch):
     return captured
 
 
+def _claude_project_slug(path: Path) -> str:
+    return str(path).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-").replace(".", "-")
+
+
 def _seed_projects_root(serve_module, monkeypatch, tmp_path):
     """Point transcript discovery at a tmp projects root; return the slug dir."""
     projects = tmp_path / ".claude" / "projects"
-    slug = str(serve_module.ROOT).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
+    slug = _claude_project_slug(serve_module.ROOT)
     sdir = projects / slug
     sdir.mkdir(parents=True)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     return sdir
+
+
+def test_transcripts_dir_encodes_dot_segments(serve_module, monkeypatch, tmp_path):
+    projects = tmp_path / ".claude" / "projects"
+    cwd = tmp_path / "proj" / ".worktrees" / "wt"
+    expected = projects / _claude_project_slug(cwd)
+    expected.mkdir(parents=True)
+    monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    serve_module._TRANSCRIPTS_DIR_CACHE.clear()
+
+    assert serve_module._transcripts_dir_for_cwd(cwd) == expected
+
+
+def test_transcripts_dir_negative_cache_expires(serve_module, monkeypatch, tmp_path):
+    projects = tmp_path / ".claude" / "projects"
+    projects.mkdir(parents=True)
+    cwd = tmp_path / "proj" / ".worktrees" / "wt"
+    monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    serve_module._TRANSCRIPTS_DIR_CACHE.clear()
+
+    assert serve_module._transcripts_dir_for_cwd(cwd) is None
+    key = (str(cwd), str(projects))
+    cached_path, _ = serve_module._TRANSCRIPTS_DIR_CACHE[key]
+    assert cached_path is None
+
+    expected = projects / _claude_project_slug(cwd)
+    expected.mkdir(parents=True)
+    serve_module._TRANSCRIPTS_DIR_CACHE[key] = (
+        None,
+        serve_module.time.monotonic() - serve_module._TRANSCRIPTS_DIR_NEG_TTL_S - 0.1,
+    )
+
+    assert serve_module._transcripts_dir_for_cwd(cwd) == expected
 
 
 def test_engine_factory_builds_resume_argv(serve_module, monkeypatch, tmp_path):
@@ -151,7 +188,7 @@ def test_engine_factory_creates_new_session_when_no_transcript(serve_module, mon
 
 def test_sessions_list_merges_ide_transcripts_and_dashboard(running_server, serve_module, tmp_path, monkeypatch):
     projects = tmp_path / ".claude" / "projects"
-    slug = str(serve_module.ROOT).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
+    slug = _claude_project_slug(serve_module.ROOT)
     (projects / slug).mkdir(parents=True)
     sid = "12345678-1234-1234-1234-1234abcd0001"
     (projects / slug / f"{sid}.jsonl").write_text(
@@ -193,7 +230,7 @@ def _read_sse(base_url, path, until: bytes, timeout=4):
 
 def test_session_stream_tails_jsonl_in_mirror(running_server, serve_module, tmp_path, monkeypatch):
     projects = tmp_path / ".claude" / "projects"
-    slug = str(serve_module.ROOT).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
+    slug = _claude_project_slug(serve_module.ROOT)
     (projects / slug).mkdir(parents=True)
     sid = "12345678-1234-1234-1234-1234abcd0007"
     (projects / slug / f"{sid}.jsonl").write_text(
@@ -811,8 +848,7 @@ def test_stream_leading_frame_carries_pending(running_server, serve_module, tmp_
     asserts 'pending' is present and True.  Because the leading frame is emitted
     synchronously before any file I/O, this test does not depend on timing."""
     projects = tmp_path / ".claude" / "projects"
-    slug = (str(serve_module.ROOT)
-            .replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-"))
+    slug = _claude_project_slug(serve_module.ROOT)
     (projects / slug).mkdir(parents=True)
     sid = "12345678-1234-1234-1234-1234abcd0020"
     (projects / slug / f"{sid}.jsonl").write_text(
@@ -848,8 +884,7 @@ def test_stream_emits_warning_frame(running_server, serve_module, tmp_path, monk
     Warnings are drained on each poll tick.  We append the warning before the
     stream opens, then read until we see 'warning' in the byte stream."""
     projects = tmp_path / ".claude" / "projects"
-    slug = (str(serve_module.ROOT)
-            .replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-"))
+    slug = _claude_project_slug(serve_module.ROOT)
     (projects / slug).mkdir(parents=True)
     sid = "12345678-1234-1234-1234-1234abcd0021"
     (projects / slug / f"{sid}.jsonl").write_text(
