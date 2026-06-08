@@ -94,20 +94,23 @@ def test_picker_open_routes_session_to_canvas():
     assert "termOpenSession(" not in body
 
 
-def test_persistence_is_v2_pty_only_without_legacy_migration():
+def test_persistence_is_canvas_owned_with_legacy_pty_token_migration():
     src = js()
+    assert "dash.ptyTokens.v1" in src
     assert "dash.openPanes.v2" in src
     assert "dash.openPanes.v1" not in src
     assert "migrateOpenPanesV1ToV2" not in src
     persist_body = _slice_function(src, "function persistOpenPanes(")
-    assert 't.kind !== "terminal"' in persist_body
+    assert "Canvas owns durable pane layout now" in persist_body
+    assert "localStorage.setItem(PERSIST_KEY" not in persist_body
 
 
-def test_restore_only_reopens_pty_panes():
+def test_restore_only_migrates_legacy_pty_tokens():
     src = js()
     body = _slice_function(src, "async function restoreOpenPanes(")
-    assert 'entry.kind !== "terminal"' in body
-    assert "termOpenPty(" in body
+    assert "termRememberPtyToken(id, saved.tokens[id])" in body
+    assert 'fetch("/api/ptys/"' not in body
+    assert "termOpenPty(" not in body
     assert "termOpenSession(" not in body
     assert "termOpen(" not in body
 

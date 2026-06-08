@@ -37,6 +37,80 @@ var CONTAINERS = new Map();
 // free to choose either path.
 var KIND_BY_KEY = {};
 var META_BY_KEY = {};
+var INITIAL_CMD_BY_KEY = {};
+
+var PTY_TOKEN_CACHE_KEY = "dash.ptyTokens.v1";
+
+function canvasPtyTokenCacheRead() {
+  try {
+    if (typeof localStorage === "undefined") return {};
+    var raw = localStorage.getItem(PTY_TOKEN_CACHE_KEY);
+    var data = raw ? JSON.parse(raw) : {};
+    return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+  } catch (_e) {
+    return {};
+  }
+}
+
+function canvasPtyTokenCacheWrite(data) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(PTY_TOKEN_CACHE_KEY, JSON.stringify(data || {}));
+  } catch (_e) { /* ignore quota / security errors */ }
+}
+
+window.PtyTokens = window.PtyTokens || {
+  get: function (id) {
+    var key = String(id || "");
+    if (!key) return "";
+    return canvasPtyTokenCacheRead()[key] || "";
+  },
+  set: function (id, token) {
+    var key = String(id || "");
+    if (!key || !token) return;
+    var data = canvasPtyTokenCacheRead();
+    data[key] = String(token);
+    canvasPtyTokenCacheWrite(data);
+  },
+  remove: function (id) {
+    var key = String(id || "");
+    if (!key) return;
+    var data = canvasPtyTokenCacheRead();
+    if (!Object.prototype.hasOwnProperty.call(data, key)) return;
+    delete data[key];
+    canvasPtyTokenCacheWrite(data);
+  },
+};
+
+function canvasRememberPtyToken(id, token) {
+  if (!id || !token) return "";
+  window._PTY_TOKENS = window._PTY_TOKENS || {};
+  window._PTY_TOKENS[id] = token;
+  if (window.PtyTokens && typeof window.PtyTokens.set === "function") {
+    window.PtyTokens.set(id, token);
+  }
+  return token;
+}
+
+function canvasLookupPtyToken(id) {
+  if (!id) return "";
+  if (window._PTY_TOKENS && window._PTY_TOKENS[id]) return window._PTY_TOKENS[id];
+  if (window.PtyTokens && typeof window.PtyTokens.get === "function") {
+    return window.PtyTokens.get(id) || "";
+  }
+  return "";
+}
+
+function canvasForgetPtyToken(id) {
+  var key = String(id || "");
+  if (!key) return;
+  if (window._PTY_TOKENS && Object.prototype.hasOwnProperty.call(window._PTY_TOKENS, key)) {
+    delete window._PTY_TOKENS[key];
+  }
+  if (window.PtyTokens && typeof window.PtyTokens.remove === "function") {
+    try { window.PtyTokens.remove(key); } catch (_e) {}
+  }
+}
 
 // The most-recently mounted / focused pane key. `open` splits the active
 // region (SplitTree.splitLeaf at ACTIVE_KEY); `focus` repoints it. Null
@@ -165,7 +239,7 @@ function restoreCanvasState() {
     window._PTY_TOKENS = window._PTY_TOKENS || {};
     for (var tk in state.tokens) {
       if (Object.prototype.hasOwnProperty.call(state.tokens, tk)) {
-        window._PTY_TOKENS[tk] = state.tokens[tk];
+        canvasRememberPtyToken(tk, state.tokens[tk]);
       }
     }
   }
@@ -529,20 +603,37 @@ async function dispatchBusMessage(msg) {
   if (msg.type === "open") {
     var key = window.CanvasBus.normalizeKey(msg.key);
     if (!key) return;
+    var kind = msg.kind || canvasInferKind(key);
+    if (kind === "terminal") {
+      var msgToken = (msg.meta && msg.meta.token) || canvasLookupPtyToken(key);
+      if (msgToken) canvasRememberPtyToken(key, msgToken);
+    }
     // Already mounted → treat as a focus, don't duplicate the pane.
     if (ST.keys(TREE).indexOf(key) !== -1) {
       CanvasApp.focusPane(key);
       return;
     }
     // Stash the render inputs PaneCore.mount needs but the tree doesn't carry.
-    KIND_BY_KEY[key] = msg.kind || canvasInferKind(key);
+    KIND_BY_KEY[key] = kind;
     META_BY_KEY[key] = msg.meta || null;
+    if (kind === "terminal") {
+      var cachedToken = canvasLookupPtyToken(key);
+      if (cachedToken) META_BY_KEY[key] = Object.assign({}, META_BY_KEY[key] || {}, { token: cachedToken });
+    }
+    if (Object.prototype.hasOwnProperty.call(msg, "initialCommand")) {
+      INITIAL_CMD_BY_KEY[key] = msg.initialCommand;
+    }
     // If no meta was supplied, try to fetch it so the pane mounts with a real
     // server record. fetchMeta returning null is fine — mount falls back to {}.
     if (!META_BY_KEY[key] && window.PaneCore && typeof window.PaneCore.fetchMeta === "function") {
       try {
         var fetched = await window.PaneCore.fetchMeta(key);
-        if (fetched) META_BY_KEY[key] = fetched;
+        if (fetched) {
+          var token = kind === "terminal" ? canvasLookupPtyToken(key) : "";
+          META_BY_KEY[key] = token
+            ? Object.assign({}, fetched, { token: token })
+            : fetched;
+        }
       } catch (_e) { /* mount proceeds with empty meta */ }
     }
     // Insert: first pane fills the canvas; subsequent panes split the active
@@ -618,13 +709,15 @@ window.CanvasApp = {
   // Remove a pane from the tree (the canvas is authoritative over tree
   // membership). renderTree's teardown pass then calls the pane handle's
   // close() — which disconnects the activity observer and tears down the
-  // stream via termClose/termClosePty. Also re-announces the new open set so
+  // stream or PTY resources. Also re-announces the new open set so
   // the status list clears the badge.
   closePane(key) {
     var k = window.CanvasBus.normalizeKey(key);
+    if (KIND_BY_KEY[k] === "terminal") canvasForgetPtyToken(k);
     CanvasApp.setTree(window.SplitTree.remove(TREE, k));
     delete KIND_BY_KEY[k];
     delete META_BY_KEY[k];
+    delete INITIAL_CMD_BY_KEY[k];
     if (ACTIVE_KEY === k) ACTIVE_KEY = window.SplitTree.keys(TREE)[0] || null;
     CanvasApp.renderTree();
     saveCanvasState();
@@ -635,7 +728,7 @@ window.CanvasApp = {
   // node sidecar later) can read/replace TREE and the kind/meta lookups
   // without reaching through closures.
   _state() {
-    return { TREE: TREE, PANES: PANES, CONTAINERS: CONTAINERS, KIND_BY_KEY: KIND_BY_KEY, META_BY_KEY: META_BY_KEY };
+    return { TREE: TREE, PANES: PANES, CONTAINERS: CONTAINERS, KIND_BY_KEY: KIND_BY_KEY, META_BY_KEY: META_BY_KEY, INITIAL_CMD_BY_KEY: INITIAL_CMD_BY_KEY };
   },
   setTree(tree) { TREE = tree; },
 
@@ -683,11 +776,16 @@ window.CanvasApp = {
         canvasWireDragToSplit(container, paneHead, key);
         var kind = canvasResolveKind(key, lookup);
         var meta = canvasResolveMeta(key, lookup);
+        var mountOpts = { kind: kind, key: key, meta: meta };
+        if (Object.prototype.hasOwnProperty.call(INITIAL_CMD_BY_KEY, key)) {
+          mountOpts.initialCommand = INITIAL_CMD_BY_KEY[key];
+          delete INITIAL_CMD_BY_KEY[key];
+        }
         try {
           // Thread the canvas host so PaneCore routes registry / persistence /
           // open / focus through CANVAS_PANE_HOST. The host's register() adds
           // the handle to PANES, so we don't PANES.set() here.
-          window.PaneCore.mount(container, { kind: kind, key: key, meta: meta }, CANVAS_PANE_HOST);
+          window.PaneCore.mount(container, mountOpts, CANVAS_PANE_HOST);
         } catch (err) {
           // A bad/unknown kind shouldn't wedge the whole render. Surface it
           // in the container so the operator sees which pane failed.
@@ -705,6 +803,7 @@ window.CanvasApp = {
     // Tear down panes whose key has left the tree.
     CONTAINERS.forEach(function (container, key) {
       if (present.has(key)) return;
+      if (KIND_BY_KEY[key] === "terminal") canvasForgetPtyToken(key);
       var handle = PANES.get(key);
       if (handle && typeof handle.close === "function") {
         try { handle.close(); } catch (_) {}

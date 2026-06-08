@@ -97,20 +97,20 @@ def test_pill_state_helper_used_in_codex_paths():
 # ---------------------------------------------------------------------------
 
 def test_no_empty_catch_in_terminals():
-    """At least the five high-traffic catch blocks must log via console.warn.
+    """High-traffic dashboard catch blocks must log via console.warn.
 
     We don't require *every* catch to log (per-frame xterm focus / scrollIntoView
     catches would spam the console). The contract is that the high-value catches
-    (SSE close, JSON.parse of stream payloads, PTY ws.send, PTY kill fetch) now
-    surface a "[terminals] ..." warn so silent failures become greppable.
+    still owned by terminals.js surface a "[terminals] ..." warn so silent
+    failures become greppable. PTY WebSocket rendering moved to pane-core.js.
     """
     src = _src()
     warn_in_catch = re.findall(
         r'catch \(e\) \{ console\.warn\("\[terminals\][^"]+"',
         src,
     )
-    assert len(warn_in_catch) >= 5, (
-        f"expected >=5 console.warn-bearing catch blocks for high-traffic "
+    assert len(warn_in_catch) >= 3, (
+        f"expected >=3 console.warn-bearing catch blocks for high-traffic "
         f"sites; found {len(warn_in_catch)}"
     )
 
@@ -123,18 +123,7 @@ def test_no_empty_catch_in_terminals():
         "codex function_call args JSON.parse catch must log so malformed "
         "tool calls are diagnosable"
     )
-    assert "[terminals] PTY control frame JSON parse failed" in src, (
-        "PTY ws.onmessage JSON.parse catch must log so malformed control "
-        "frames are diagnosable"
-    )
-    assert "[terminals] PTY resize send failed" in src, (
-        "PTY resize ws.send catch must log so resize plumbing failures are "
-        "diagnosable"
-    )
-    assert "[terminals] PTY kill fetch failed" in src, (
-        "PTY kill fetch catch must log so leaked server-side shells are "
-        "diagnosable"
-    )
+    assert "function termOpenPty" not in src
 
 
 # ---------------------------------------------------------------------------

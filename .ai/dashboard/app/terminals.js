@@ -5,48 +5,79 @@
     // Each entry: { jobId, source, pane, body, input, sendBtn, status, task }
     var TERMS = new Map();
 
-    // ----- pane persistence (survives F5) -----
+    // ----- shared PTY token cache (survives F5) -----
     //
-    // v2 now covers PTY panes only. Non-PTY conversations live in the
-    // standalone canvas window, which persists its own layout.
+    // The canvas window owns PTY rendering and layout persistence. This
+    // dashboard-side legacy key is read only now, used only to migrate tokens
+    // written before PTYs moved fully into the canvas.
     var PERSIST_KEY = "dash.openPanes.v2";
-    var _persistTimer = null;
+    var PTY_TOKEN_CACHE_KEY = "dash.ptyTokens.v1";
+
+    function ptyTokenCacheRead() {
+      try {
+        if (typeof localStorage === "undefined") return {};
+        const raw = localStorage.getItem(PTY_TOKEN_CACHE_KEY);
+        const data = raw ? JSON.parse(raw) : {};
+        return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+      } catch (_) {
+        return {};
+      }
+    }
+
+    function ptyTokenCacheWrite(data) {
+      try {
+        if (typeof localStorage === "undefined") return;
+        localStorage.setItem(PTY_TOKEN_CACHE_KEY, JSON.stringify(data || {}));
+      } catch (_) { /* ignore quota / security errors */ }
+    }
+
+    window.PtyTokens = window.PtyTokens || {
+      get: function (id) {
+        const key = String(id || "");
+        if (!key) return "";
+        return ptyTokenCacheRead()[key] || "";
+      },
+      set: function (id, token) {
+        const key = String(id || "");
+        if (!key || !token) return;
+        const data = ptyTokenCacheRead();
+        data[key] = String(token);
+        ptyTokenCacheWrite(data);
+      },
+      remove: function (id) {
+        const key = String(id || "");
+        if (!key) return;
+        const data = ptyTokenCacheRead();
+        if (!Object.prototype.hasOwnProperty.call(data, key)) return;
+        delete data[key];
+        ptyTokenCacheWrite(data);
+      },
+    };
+
+    function termRememberPtyToken(id, token) {
+      if (!id || !token) return;
+      window._PTY_TOKENS = window._PTY_TOKENS || {};
+      window._PTY_TOKENS[id] = token;
+      if (window.PtyTokens && typeof window.PtyTokens.set === "function") {
+        window.PtyTokens.set(id, token);
+      }
+    }
+
+    function termLookupPtyToken(id) {
+      if (!id) return "";
+      if (window._PTY_TOKENS && window._PTY_TOKENS[id]) return window._PTY_TOKENS[id];
+      if (window.PtyTokens && typeof window.PtyTokens.get === "function") {
+        return window.PtyTokens.get(id) || "";
+      }
+      return "";
+    }
 
     // (Legacy IDE-transcript status-poll machinery removed — Claude
     // conversations are unified session panes that drive their own SSE
     // stream; there is no separate read-only transcript pane to poll.)
     function persistOpenPanes() {
-      // Debounce so a burst of mutations (open + collapse + scroll) only
-      // serialises once.
-      if (_persistTimer) return;
-      _persistTimer = setTimeout(() => {
-        _persistTimer = null;
-        const entries = [];
-        for (const [id, t] of TERMS.entries()) {
-          if (!t) continue;
-          if (t.isDraft) continue;
-          if (t.kind !== "terminal") continue;
-          entries.push({
-            id,
-            kind: t.kind,
-            collapsed: t.pane && t.pane.classList.contains("collapsed") || false,
-            pinned: t.pane && t.pane.classList.contains("pinned") || false,
-          });
-        }
-        // Persist per-PTY tokens alongside the pane list so a page refresh
-        // can reattach without losing access. Tokens are same-origin secrets,
-        // no weaker than any other localStorage entry the dashboard writes.
-        const tokens = {};
-        if (window._PTY_TOKENS) {
-          for (const e of entries) {
-            if (e.kind === "terminal" && window._PTY_TOKENS[e.id]) {
-              tokens[e.id] = window._PTY_TOKENS[e.id];
-            }
-          }
-        }
-        try { localStorage.setItem(PERSIST_KEY, JSON.stringify({ panes: entries, tokens })); }
-        catch (_) { /* quota exceeded? give up silently */ }
-      }, 250);
+      // Canvas owns durable pane layout now; keep this as a no-op for older
+      // dashboard call sites until the remaining inline job helpers are retired.
     }
 
     // ----- send-to-canvas bridge (additive) -----
@@ -201,7 +232,8 @@
 
     // The send-to-canvas click handler for a pane's term object. Opens (or
     // focuses) the named canvas window, then posts open/focus over the bus.
-    function termSendToCanvas(t) {
+    function termSendToCanvas(t, opts) {
+      opts = opts || {};
       var key = canvasKeyForTerm(t);
       if (!key) return;
       var bus = canvasEnsureBus();
@@ -225,7 +257,17 @@
           TERM_MSG_DURATION_MS);
         return;
       }
-      var openMsg = { type: "open", key: key, kind: (t && t.kind) || undefined };
+      var kind = opts.kind || (t && t.kind) || undefined;
+      var meta = opts.meta || null;
+      if (kind === "terminal") {
+        var token = (meta && meta.token) || termLookupPtyToken(key);
+        if (token) meta = Object.assign({}, meta || {}, { token: token });
+      }
+      var openMsg = { type: "open", key: key, kind: kind };
+      if (meta) openMsg.meta = meta;
+      if (Object.prototype.hasOwnProperty.call(opts, "initialCommand")) {
+        openMsg.initialCommand = opts.initialCommand;
+      }
       // If the canvas just opened it hasn't sent `ready` yet → queue the open
       // and flush when ready arrives. If it's already ready (badges live),
       // post immediately.
@@ -268,51 +310,13 @@
         const raw = localStorage.getItem(PERSIST_KEY);
         saved = raw ? JSON.parse(raw) : null;
       } catch (_) { return; }
-      if (!saved || !Array.isArray(saved.panes) || !saved.panes.length) return;
-      // Rehydrate the per-PTY token cache from the previous session so
-      // restored terminal panes can pass the WS auth check.
+      if (!saved || typeof saved !== "object") return;
+      // Migrate tokens from retired dashboard pane persistence. The canvas
+      // restores its own PTY layout and authenticates from this shared cache.
       if (saved.tokens && typeof saved.tokens === "object") {
-        window._PTY_TOKENS = window._PTY_TOKENS || {};
         for (const id of Object.keys(saved.tokens)) {
-          window._PTY_TOKENS[id] = saved.tokens[id];
+          termRememberPtyToken(id, saved.tokens[id]);
         }
-      }
-      // Fetch every PTY pane's metadata in parallel — sequential awaits made
-      // boot scale linearly with the saved-pane count. Each fetch is
-      // independent and the open+UI-state pass runs in saved order
-      // afterwards so the visual layout is unchanged.
-      const fetchers = saved.panes.map(async (entry) => {
-        if (!entry || !entry.id || !entry.kind) return null;
-        if (TERMS.has(entry.id)) return null;
-        if (entry.kind !== "terminal") return null;
-        try {
-          const r = await fetch("/api/ptys/" + encodeURIComponent(entry.id), { cache: "no-store" });
-          if (!r.ok) return null;
-          const meta = await r.json();
-          if (meta.status && meta.status !== "running") return null;
-          return { entry, ready: { meta } };
-        } catch (_) { /* one pane failed; keep going */ }
-        return null;
-      });
-      const results = await Promise.allSettled(fetchers);
-      for (const res of results) {
-        if (res.status !== "fulfilled" || !res.value) continue;
-        const { entry, ready } = res.value;
-        try {
-          let paneKey = entry.id;
-          termOpenPty(entry.id, ready.meta, null);
-          const t = TERMS.get(paneKey);
-          if (t && t.pane) {
-            if (entry.pinned) {
-              t.pane.classList.add("pinned");
-              const btn = t.pane.querySelector(".pin-btn");
-              if (btn) { btn.classList.add("active"); btn.textContent = "unpin"; }
-            }
-            if (entry.collapsed) {
-              termSetCollapsed(t, true);
-            }
-          }
-        } catch (_) { /* one pane failed; keep going */ }
       }
     }
 
@@ -399,8 +403,7 @@
           try { t.pane.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
         }
       }
-      // Collapsed/expanded state is part of what we persist so the
-      // next F5 restores the same layout the operator left.
+      // Legacy compatibility hook; canvas owns durable pane layout.
       persistOpenPanes();
     }
 
@@ -1043,6 +1046,19 @@
           toolSel.disabled = true;
           modelSel.disabled = true;
           sendBtn.textContent = "opening…";
+          var canvasWin = null;
+          try { canvasWin = window.open("app/canvas.html", "dash-canvas"); } catch (_) { canvasWin = null; }
+          if (!canvasWin) {
+            sendBtn.disabled = false;
+            typeSel.disabled = false;
+            toolSel.disabled = false;
+            modelSel.disabled = false;
+            sendBtn.textContent = "open & send";
+            setMsg("#term-msg", "warn",
+              "Canvas popup blocked - allow popups for this site, then open the shell again",
+              TERM_MSG_DURATION_MS);
+            return;
+          }
           try {
             const res = await postJson("/api/ptys", { shell, cols: 100, rows: 30 });
             TERMS.delete(draftId);
@@ -1076,12 +1092,13 @@
             const launchCmd = termDraftLaunchCommand(tool, model, preSessionId);
             const steps = [{ text: launchCmd, delay: 300 }];
             if (text) steps.push({ text: text, delay: 3000 });
-            // Stash the per-PTY token so a later restoreOpenPanes()
-            // reattach can re-use it without going through /api/ptys/<id>
-            // (which now intentionally omits the token from list/get).
-            window._PTY_TOKENS = window._PTY_TOKENS || {};
-            if (res.token) window._PTY_TOKENS[res.id] = res.token;
-            termOpenPty(res.id, res, steps);
+            // Stash the per-PTY token in memory and the shared same-origin
+            // cache, then let the canvas mount and run the launch sequence.
+            termRememberPtyToken(res.id, res.token);
+            termSendToCanvas(_statusRowTerm("terminal", res.id), {
+              meta: { token: res.token },
+              initialCommand: steps,
+            });
           } catch (err) {
             sendBtn.disabled = false;
             typeSel.disabled = false;
@@ -1174,18 +1191,19 @@
         }
 
         // Codex chats stay job-based (chat-codex); not migrated to sessions.
+        let codexStarted = false;
         try {
           const payload = { kind: "chat-codex", task: text, model };
           const res = await postJson("/api/jobs", payload);
           TERMS.delete(draftId);
           pane.remove();
           termSendToCanvas(_statusRowTerm("chat-codex", res.id));
+          codexStarted = true;
           if (attached.images.length || attached.files.length) {
             setMsg("#term-msg", "warn",
               "Attachments need a text turn to send with; add them in the canvas composer.",
               TERM_MSG_DURATION_MS);
           }
-          await loadJobs();
         } catch (err) {
           sendBtn.disabled = false;
           typeSel.disabled = false;
@@ -1198,6 +1216,14 @@
           note.textContent = "[start failed: " + err.message + "]";
           body.appendChild(note);
           setMsg("#term-msg", "err", "Start failed: " + err.message, TERM_MSG_DURATION_MS);
+          return;
+        }
+        if (codexStarted) {
+          try {
+            await loadJobs();
+          } catch (err) {
+            console.warn("[terminals] loadJobs after codex start failed: " + (err && err.message ? err.message : err));
+          }
         }
       };
 
@@ -1395,13 +1421,6 @@
     function termClose(jobId) {
       const t = TERMS.get(jobId);
       if (!t) return;
-      // PTY panes own additional resources (xterm instance, ResizeObserver,
-      // server-side shell) that the generic close path doesn't know about.
-      // Delegate so the cleanup is symmetric with the dedicated close-btn.
-      if (t.kind === "terminal") {
-        termClosePty(jobId);
-        return;
-      }
       try { t.source && t.source.close(); } catch (e) { console.warn("[terminals] termClose: SSE close failed: " + (e && e.message ? e.message : e)); }
       // Stop the SSE heartbeat watchdog so the closed pane doesn't keep
       // a timer alive that calls termSetDead on an already-removed pane.
@@ -1601,8 +1620,7 @@
           window._JOB_ID_ALIASES = window._JOB_ID_ALIASES || {};
           window._JOB_ID_ALIASES[oldJobId] = res.id;
         }
-        // Re-persist immediately so a F5 between turns won't lose the
-        // pane (the old job id would 404).
+        // Legacy compatibility hook; canvas-owned panes persist elsewhere.
         persistOpenPanes();
         const idEl = t.pane.querySelector(".id");
         if (idEl) idEl.textContent = res.id.slice(0, 8);
@@ -2694,383 +2712,6 @@
       pre.style.margin = "4px 0";
       pre.textContent = "[unhandled " + (type || "?") + "]";
       t.body.appendChild(pre);
-    }
-
-    // ----- PTY (real shell) panes -----
-    //
-    // Created by termOpenDraft when the operator picks Tool=Shell. A
-    // pane hosts an xterm.js instance bound bidirectionally to the
-    // server's PTY master via WebSocket (/api/ptys/<id>/io). All
-    // chat-bubble plumbing is bypassed: bytes in, bytes out.
-
-    // Reused per pane: when xterm/ResizeObserver aren't available
-    // (older browsers, blocked CDN) the pane shows an inline error
-    // instead of silently appearing broken.
-    // termPtyMissingDeps + termPtyWsUrl moved to pane-helpers.js (pure
-    // leaves; loaded before terminals.js, resolve as globals).
-
-    function termOpenPty(ptyId, meta, initialCommand) {
-      if (TERMS.has(ptyId)) return;
-      const grid = $("#terms-grid");
-      if (!grid) return;
-      const shellLabel = (meta?.argv && meta.argv[0]) || meta?.shell || "shell";
-      const shortShell = String(shellLabel).split(/[\\/]/).pop() || shellLabel;
-      const pane = document.createElement("div");
-      pane.className = "term-pane term-pty focus";
-      pane.dataset.jobId = ptyId;
-      pane.innerHTML = `
-        <div class="term-head">
-          <span class="pill running status-pill" title="PTY ${escape(ptyId)}">connecting</span>
-          <span class="task" title="${escape(meta?.cwd || "")}">${escape(shortShell)} · ${escape(meta?.cwd || "")}</span>
-          <span class="activity" title="current activity in this pane">connecting…</span>
-          <span class="id">${escape(ptyId.slice(0, 8))}</span>
-          <span class="actions">
-            <button class="expand-btn" title="Show or hide this terminal">expand</button>
-            <button class="pin-btn" title="Maximise / restore this pane">pin</button>
-            <button class="kill-btn danger" title="Terminate the shell (SIGTERM)">kill</button>
-            <button class="close-btn" title="Close this pane (and kill the shell)">close</button>
-          </span>
-        </div>
-        <div class="term-body term-pty-body" tabindex="0"></div>
-      `;
-      grid.appendChild(pane);
-
-      const body = pane.querySelector(".term-body");
-      const t = {
-        jobId: ptyId,
-        pane, body,
-        input: null, sendBtn: null,
-        source: null,            // WebSocket goes in here
-        task: meta?.cwd || "",
-        kind: "terminal",
-        shell: meta?.shell || "auto",
-        attached: { images: [], files: [] },
-      };
-      TERMS.set(ptyId, t);
-      termWireCanvasButton(t);
-
-      // Always collapsed: layout selector removed in 5b-1 (canvas owns geometry).
-      pane.classList.add("collapsed");
-
-      pane.addEventListener("click", () => {
-        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
-        pane.classList.add("focus");
-      });
-      pane.querySelector(".term-head").addEventListener("click", (e) => {
-        if (e.target.closest("button")) return;
-        termToggleCollapsed(t);
-      });
-      // Single expand-btn listener: toggles collapsed AND re-fits xterm
-      // on the next frame. The previous implementation registered TWO
-      // separate click listeners on the same button (one toggling
-      // collapse, another calling requestAnimationFrame(sendResize)),
-      // which fired in sequence on every click — wasteful and made it
-      // hard to reason about the order of operations. Consolidated here.
-      pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        termToggleCollapsed(t);
-        // The xterm body has display:none while collapsed, so its computed
-        // pixel size is 0 → fit() can't run. Re-fit on the next frame so
-        // the cols/rows match the new pane geometry once layout settles.
-        requestAnimationFrame(() => {
-          if (pane.classList.contains("collapsed")) return;
-          try { t._fitAddon && t._fitAddon.fit(); } catch (_) {}
-        });
-      });
-      pane.querySelector(".pin-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        pane.classList.toggle("pinned");
-        const btn = pane.querySelector(".pin-btn");
-        btn.classList.toggle("active", pane.classList.contains("pinned"));
-        btn.textContent = pane.classList.contains("pinned") ? "unpin" : "pin";
-        // Re-fit xterm to the new pane size on the next frame.
-        requestAnimationFrame(() => t._fitAddon && t._fitAddon.fit());
-      });
-      pane.querySelector(".close-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        termClosePty(ptyId);
-      });
-      pane.querySelector(".kill-btn").addEventListener("click", async (e) => {
-        e.stopPropagation();
-        try {
-          await postJson(`/api/ptys/${ptyId}/kill`, {});
-        } catch (err) {
-          setMsg("#term-msg", "err", "Kill failed: " + err.message, TERM_MSG_DURATION_MS);
-        }
-      });
-
-      if (termPtyMissingDeps()) {
-        body.innerHTML = `<div class="msg system" style="color:var(--bad);padding:12px">
-          xterm.js failed to load (CDN blocked?). Reload the page or check your network.
-        </div>`;
-        return;
-      }
-
-      // ----- xterm.js instance -----
-      const term = new Terminal({
-        cursorBlink: true,
-        fontFamily: "var(--ff-mono), JetBrains Mono, Menlo, Consolas, monospace",
-        fontSize: 13,
-        scrollback: 5000,
-        convertEol: false,
-        // Match the dashboard's dark palette so the terminal doesn't feel pasted-in.
-        theme: {
-          background: "#0b0f14",
-          foreground: "#d8dee9",
-          // Dashboard cyan (--accent ≈ #4fcdcd) so the xterm caret speaks the
-          // same signal color as the rest of the "Targeting HUD" cursor set.
-          cursor: "#4fcdcd",
-          selectionBackground: "#3b4252",
-          black: "#3b4252",
-          red:   "#bf616a",
-          green: "#a3be8c",
-          yellow:"#ebcb8b",
-          blue:  "#81a1c1",
-          magenta:"#b48ead",
-          cyan:  "#88c0d0",
-          white: "#e5e9f0",
-          brightBlack: "#4c566a",
-          brightRed:   "#bf616a",
-          brightGreen: "#a3be8c",
-          brightYellow:"#ebcb8b",
-          brightBlue:  "#81a1c1",
-          brightMagenta:"#b48ead",
-          brightCyan:  "#8fbcbb",
-          brightWhite: "#eceff4",
-        },
-      });
-      const fit = new FitAddon.FitAddon();
-      term.loadAddon(fit);
-      if (typeof WebLinksAddon !== "undefined") {
-        try { term.loadAddon(new WebLinksAddon.WebLinksAddon()); } catch (_) {}
-      }
-      term.open(body);
-      t._term = term;
-      t._fitAddon = fit;
-      // First fit after the next frame so layout has finished.
-      const initialFit = () => {
-        try { fit.fit(); } catch (_) {}
-      };
-      requestAnimationFrame(initialFit);
-
-      // ----- WebSocket -----
-      // meta?.token is set by /api/ptys (POST) for newly-spawned PTYs.
-      // _PTY_TOKENS is the runtime cache for restoreOpenPanes / reattach
-      // — it survives the page lifetime so refreshing the dashboard keeps
-      // existing PTYs reachable as long as the original spawner is the
-      // same browser tab.
-      const token = (meta && meta.token) || (window._PTY_TOKENS && window._PTY_TOKENS[ptyId]);
-      const ws = new WebSocket(termPtyWsUrl(ptyId, token));
-      ws.binaryType = "arraybuffer";
-      t.source = ws;
-      // ``stream: true`` is critical: bytes from the PTY arrive as
-      // arbitrary chunks and a single multi-byte char (Portuguese accents,
-      // emoji, line-drawing glyphs) may straddle two WebSocket frames.
-      // Without streaming mode the decoder emits a U+FFFD replacement for
-      // the split char on each end, corrupting the output. With stream:
-      // true the incomplete trailing bytes are buffered and joined with
-      // the start of the next chunk.
-      const decoder = new TextDecoder("utf-8", { fatal: false });
-      const statusPill = pane.querySelector(".status-pill");
-
-      ws.onopen = () => {
-        termSetPillState(statusPill, "running", "live");
-        termSetActivity(t, "live", "busy");
-        // Sync the server PTY to our actual rendered geometry.
-        sendResize();
-        // ``initialCommand`` accepts three shapes:
-        //   string     -> sent once, followed by Enter
-        //   array      -> sequence of { text, delay, appendCR? } steps
-        //   {text,...} -> single object treated as a one-step sequence
-        const steps = Array.isArray(initialCommand)
-          ? initialCommand
-          : (initialCommand
-              ? (typeof initialCommand === "string"
-                  ? [{ text: initialCommand }]
-                  : [initialCommand])
-              : []);
-        // Steps go as BINARY frames: text frames are reserved for JSON
-        // control messages (resize, etc.) and would be silently dropped
-        // by the server's parser. \r at the end fires Enter.
-        const enc = new TextEncoder();
-        // Track every queued initial-command timer so termClosePty can
-        // cancel them. Otherwise a recursive runStep tail keeps ws + term
-        // alive until the last delay fires even after the user closed
-        // the pane.
-        t._runStepTimers = t._runStepTimers || [];
-        const runStep = (i) => {
-          if (i >= steps.length) return;
-          if (t._closed) return;
-          const s = steps[i] || {};
-          const text = s.text != null ? String(s.text) : "";
-          const appendCR = s.appendCR !== false;
-          const payload = appendCR ? text + "\r" : text;
-          if (ws.readyState === WebSocket.OPEN && payload) {
-            try { ws.send(enc.encode(payload)); } catch (_) {}
-          }
-          if (i + 1 < steps.length) {
-            const nextDelay = Math.max(0, Number(steps[i + 1].delay) || 0);
-            const tm = setTimeout(() => runStep(i + 1), nextDelay);
-            t._runStepTimers.push(tm);
-          }
-        };
-        if (steps.length) {
-          const firstDelay = Math.max(0, Number(steps[0].delay) || 0);
-          const tm = setTimeout(() => runStep(0), firstDelay);
-          t._runStepTimers.push(tm);
-        }
-        term.focus();
-      };
-
-      ws.onmessage = (ev) => {
-        if (typeof ev.data === "string") {
-          // Control frame from server (JSON).
-          let msg;
-          try { msg = JSON.parse(ev.data); } catch (e) { console.warn("[terminals] PTY control frame JSON parse failed: " + (e && e.message ? e.message : e)); return; }
-          if (msg.type === "exit") {
-            termSetPillState(statusPill, "done", "ended");
-            termSetActivity(t, "ended", "ended");
-            pane.classList.add("dead");
-          }
-          return;
-        }
-        // Binary frame: raw bytes from the PTY master. Pass stream:true
-        // so the decoder buffers a partial trailing multi-byte sequence
-        // until the next chunk completes it.
-        const buf = ev.data instanceof ArrayBuffer ? ev.data : new Uint8Array(ev.data);
-        const text = decoder.decode(buf, { stream: true });
-        if (text) term.write(text);
-      };
-
-      ws.onerror = () => {
-        termSetPillState(statusPill, "warn", "disconnected");
-        termSetActivity(t, "disconnected", "ended");
-      };
-
-      ws.onclose = () => {
-        if (!pane.classList.contains("dead")) {
-          // No state class survived the open->close path — drop into the
-          // neutral "cancelled" colour so it visually matches the "this
-          // shell is gone" semantics.
-          termSetPillState(statusPill, "cancelled", "closed");
-          termSetActivity(t, "closed", "ended");
-          pane.classList.add("dead");
-        }
-      };
-
-      // ----- keystroke pipe (xterm -> ws) -----
-      term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          // Send as binary so the server treats it as raw bytes, not
-          // a JSON control message.
-          ws.send(new TextEncoder().encode(data));
-        }
-      });
-
-      // ----- resize plumbing -----
-      let lastCols = 0, lastRows = 0;
-      const sendResize = () => {
-        try { fit.fit(); } catch (_) {}
-        const cols = term.cols, rows = term.rows;
-        if (!cols || !rows) return;
-        if (cols === lastCols && rows === lastRows) return;
-        lastCols = cols; lastRows = rows;
-        if (ws.readyState === WebSocket.OPEN) {
-          try {
-            ws.send(JSON.stringify({ type: "resize", cols, rows }));
-          } catch (e) { console.warn("[terminals] PTY resize send failed: " + (e && e.message ? e.message : e)); }
-        }
-      };
-      term.onResize(({ cols, rows }) => {
-        if (cols === lastCols && rows === lastRows) return;
-        lastCols = cols; lastRows = rows;
-        if (ws.readyState === WebSocket.OPEN) {
-          try {
-            ws.send(JSON.stringify({ type: "resize", cols, rows }));
-          } catch (e) { console.warn("[terminals] PTY resize send failed: " + (e && e.message ? e.message : e)); }
-        }
-      });
-      // Debounce so a window-drag burst (~60 Hz of resize events) collapses
-      // into a handful of fit.fit() calls instead of one per frame. xterm's
-      // fit() reflows + repaints the cell grid, which is the expensive bit —
-      // the WS resize message itself is already deduped via lastCols/Rows.
-      // 80 ms is short enough that the terminal still feels alive during a
-      // drag (user sees a settle within ~5 frames) and long enough to absorb
-      // typical burst patterns. Uses window.debounce (defined in core.js,
-      // loaded earlier in defer order).
-      const debouncedResize = (typeof window.debounce === "function")
-        ? window.debounce(sendResize, 80)
-        : sendResize;
-      if (typeof ResizeObserver !== "undefined") {
-        const ro = new ResizeObserver(() => debouncedResize());
-        ro.observe(body);
-        t._resizeObserver = ro;
-      } else {
-        // Capture the fallback listener so termClosePty can remove it.
-        // Without this, every closed PTY pane leaks a window-level
-        // resize handler that keeps the term object alive forever.
-        t._resizeFallback = debouncedResize;
-        window.addEventListener("resize", debouncedResize);
-      }
-      // (The expand button's own click listener already re-fits xterm on
-      // the post-expand frame; the ResizeObserver above catches every
-      // other geometry change — no extra listener needed here.)
-
-      termRenderEmptyState();
-      persistOpenPanes();
-    }
-
-    function termClosePty(ptyId) {
-      const t = TERMS.get(ptyId);
-      if (!t) return;
-      t._closed = true;
-      // Cancel any pending initial-command timers so their closures
-      // release ws + term references instead of keeping them alive
-      // until the last delay fires.
-      if (Array.isArray(t._runStepTimers)) {
-        for (const tm of t._runStepTimers) {
-          try { clearTimeout(tm); } catch (_) {}
-        }
-        t._runStepTimers = [];
-      }
-      if (t._costRefreshTimer) { clearTimeout(t._costRefreshTimer); t._costRefreshTimer = null; }
-      if (t._autoFollowScrollHandler && t.body) {
-        try { t.body.removeEventListener("scroll", t._autoFollowScrollHandler); } catch (_) {}
-        t._autoFollowScrollHandler = null;
-      }
-      try { t._resizeObserver && t._resizeObserver.disconnect(); } catch (_) {}
-      // Mirror the ResizeObserver cleanup for the legacy window-resize fallback.
-      if (t._resizeFallback) {
-        try { window.removeEventListener("resize", t._resizeFallback); } catch (_) {}
-        t._resizeFallback = null;
-      }
-      try { t.source && t.source.close(); } catch (_) {}
-      // Fire-and-forget kill on the server side too so we don't leak shells.
-      // Both the synchronous throw (rare) AND the Promise rejection (mid-flight
-      // network drop, 4xx/5xx response) need to be surfaced — otherwise the
-      // operator's "close" appears to succeed locally while the shell keeps
-      // running server-side with no diagnostic trail. The earlier guard only
-      // caught the synchronous arm.
-      try {
-        const _killPromise = fetch(`/api/ptys/${ptyId}/kill`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-        if (_killPromise && typeof _killPromise.catch === "function") {
-          _killPromise.catch((e) => console.warn("[terminals] PTY kill fetch rejected: " + (e && e.message ? e.message : e)));
-        }
-      } catch (e) { console.warn("[terminals] PTY kill fetch failed: " + (e && e.message ? e.message : e)); }
-      try { t._term && t._term.dispose(); } catch (_) {}
-      t.pane.remove();
-      TERMS.delete(ptyId);
-      // Prune the in-memory PTY token so the runtime cache mirrors the
-      // localStorage pruning (persistOpenPanes rebuilds tokens from open
-      // panes only). Otherwise closed-shell secrets linger in
-      // window._PTY_TOKENS for the life of the session.
-      if (window._PTY_TOKENS) delete window._PTY_TOKENS[ptyId];
-      // Same suppression as termClose — a PTY pane the operator closed
-      // should stay closed across reloads, even if the shell is still
-      // running on the server side.
-      suppressAutoOpen(ptyId);
-      termRenderEmptyState();
-      persistOpenPanes();
     }
 
     // ----- Unified session panes -----

@@ -129,50 +129,16 @@ def test_inline_termOpen_sse_handler_removed():
 
 
 # ---------------------------------------------------------------------------
-# Target 2 — fetch kill silent failure in termClosePty
+# Target 2 — dashboard inline PTY cleanup retired
 # ---------------------------------------------------------------------------
 
 
-def test_termClosePty_kill_fetch_catches_async_rejection():
-    """The fire-and-forget /api/ptys/<id>/kill fetch must chain .catch
-    on its returned Promise — the prior try/catch only covered the
-    synchronous arm, so a mid-flight network drop OR a 4xx/5xx that
-    the browser fetch surfaces as a rejected Promise (rarely) used to
-    vanish with no console trace, leaving the operator unsure whether
-    the shell actually died on the server side.
-    """
-    body = _slice_function(_src(), "function termClosePty(")
-    # Capture the fetch construct and assert .catch attaches downstream
-    # (either directly or via an intermediate variable / Promise.resolve).
-    # Accept any of these shapes:
-    #   const _p = fetch(...); _p.catch(...)
-    #   fetch(...).catch(...)
-    #   Promise.resolve(fetch(...)).catch(...)
-    has_async_catch = bool(
-        re.search(
-            r"fetch\(`/api/ptys/\$\{ptyId\}/kill`[^)]*\)\s*\)?\s*\.catch\(",
-            body,
-        )
-        or re.search(
-            r"_killPromise\s*\.?catch\(",
-            body,
-        )
-        or re.search(
-            r"Promise\.resolve\(\s*fetch\(`/api/ptys",
-            body,
-        )
-    )
-    assert has_async_catch, (
-        "termClosePty must chain .catch on the fire-and-forget kill "
-        "fetch's returned Promise so async rejections surface in the "
-        "console; the existing try/catch only covers synchronous throws"
-    )
-    # Diagnostic phrase the fix introduces.
-    assert "[terminals] PTY kill fetch rejected" in body, (
-        "termClosePty's async kill catch handler must use the "
-        '"[terminals] PTY kill fetch rejected"  warn prefix so '
-        "leaked-shell incidents are greppable in the console"
-    )
+def test_dashboard_inline_pty_cleanup_removed():
+    """PTY panes are canvas-owned; terminals.js should not retain dead cleanup."""
+    src = _src()
+    assert "function termOpenPty" not in src
+    assert "function termClosePty" not in src
+    assert "/api/ptys/${ptyId}/kill" not in src
 
 
 # ---------------------------------------------------------------------------
