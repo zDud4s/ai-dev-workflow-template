@@ -720,12 +720,15 @@
       row.className = "term-status-row";
       row.dataset.key = opts.key;
       row.dataset.kind = opts.kind;
-      const pillCls = opts.pillState ? " " + escape(opts.pillState) : "";
+      // escHtml (not the ambiguous `escape`, which reads like window.escape's
+      // URL-encoder) HTML-escapes the server-supplied fields below — a session
+      // title / job task can carry arbitrary text, so this is the XSS guard.
+      const pillCls = opts.pillState ? " " + escHtml(opts.pillState) : "";
       row.innerHTML =
-        `<span class="pill status-pill${pillCls}">${escape(opts.pill || "")}</span>` +
-        `<span class="activity${opts.activityCls ? " " + escape(opts.activityCls) : ""}">${escape(opts.activity || "")}</span>` +
-        `<span class="row-tool" title="${escape(opts.toolTitle || "")}">${escape(opts.tool || "")}</span>` +
-        `<span class="row-task" title="${escape(opts.title || "")}">${escape(opts.preview || "")}</span>` +
+        `<span class="pill status-pill${pillCls}">${escHtml(opts.pill || "")}</span>` +
+        `<span class="activity${opts.activityCls ? " " + escHtml(opts.activityCls) : ""}">${escHtml(opts.activity || "")}</span>` +
+        `<span class="row-tool" title="${escHtml(opts.toolTitle || "")}">${escHtml(opts.tool || "")}</span>` +
+        `<span class="row-task" title="${escHtml(opts.title || "")}">${escHtml(opts.preview || "")}</span>` +
         `<span class="row-actions">` +
           `<button class="send-to-canvas" type="button" data-action="send-canvas" title="Open this in the canvas window">⊞</button>` +
         `</span>`;

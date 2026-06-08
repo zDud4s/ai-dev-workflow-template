@@ -366,11 +366,13 @@
         setMsg("#run-msg", "ok", "job " + res.id.slice(0, 8) + " started", 4000);
         _selectedJobId = res.id;
         // Compare side-by-side: also spin up the same task on the other tool.
-        let compareRes = null;
+        // The result is intentionally not bound — the Terminals tab is a status
+        // list (Chunk 5b-1), so the compare job surfaces as its own row via the
+        // loadJobs()/loadSessions() refresh below; nothing reads the response.
         if (compare && (kind === "chat" || kind === "chat-codex")) {
           const otherKind = kind === "chat" ? "chat-codex" : "chat";
           try {
-            compareRes = await postJson("/api/jobs", { ...basePayload, kind: otherKind, resume_session_id: undefined });
+            await postJson("/api/jobs", { ...basePayload, kind: otherKind, resume_session_id: undefined });
           } catch (cmpErr) {
             setMsg("#run-msg", "warn", "compare job failed: " + cmpErr.message, 4000);
           }
