@@ -35,11 +35,18 @@ from pathlib import Path
 TERMINALS_JS = (
     Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "app" / "terminals.js"
 )
+PANE_CORE_JS = (
+    Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "app" / "pane-core.js"
+)
 STYLES_CSS = Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "styles.css"
 
 
 def _src() -> str:
     return TERMINALS_JS.read_text(encoding="utf-8")
+
+
+def _pane_core_src() -> str:
+    return PANE_CORE_JS.read_text(encoding="utf-8")
 
 
 def _css() -> str:
@@ -261,9 +268,12 @@ def test_skills_cache_invalidated_on_error_regression():
 
 def test_sse_heartbeat_watchdog_regression():
     """Regression guard for the SSE heartbeat watchdog from batch 3."""
-    src = _src()
-    assert "_lastSSEEvent" in src
-    assert "setInterval" in src and "clearInterval" in src
+    body = _slice_function(_pane_core_src(), "function paneCoreMountChat(")
+    assert "new EventSource" in body
+    assert "t._lastSSEEvent = Date.now()" in body
+    assert "Date.now() - (t._lastSSEEvent || 0) < SSE_STALE_MS" in body
+    assert "setInterval(heartbeatTick" in body
+    assert "clearInterval(t._sseHeartbeat)" in body
 
 
 def test_composer_pick_caret_recheck_regression():
