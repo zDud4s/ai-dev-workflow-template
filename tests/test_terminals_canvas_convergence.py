@@ -10,6 +10,9 @@ TERMINALS_JS = (
     Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "app" / "terminals.js"
 )
 CANVAS_JS = Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "app" / "canvas.js"
+PANE_CORE_JS = (
+    Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "app" / "pane-core.js"
+)
 
 
 def _src() -> str:
@@ -18,6 +21,10 @@ def _src() -> str:
 
 def _canvas_src() -> str:
     return CANVAS_JS.read_text(encoding="utf-8")
+
+
+def _pane_core_src() -> str:
+    return PANE_CORE_JS.read_text(encoding="utf-8")
 
 
 def _slice_function(src: str, header: str) -> str:
@@ -82,6 +89,37 @@ def test_start_conversation_claude_posts_input_then_routes_canvas():
     assert 'termSendToCanvas(_statusRowTerm("session", "session:" + sid))' in body
     assert "termOpenSession(" not in body
     assert "termSendSession(" not in body
+
+
+def test_canvas_session_stream_retries_transient_startup_404():
+    body = _slice_function(_pane_core_src(), "function paneCoreMountSession(")
+    open_pos = body.find("t.openStream = () =>")
+    close_pos = body.find("t.closeStream = () =>", open_pos)
+    collapsed_pos = body.find("if (opts && opts.collapsed)", close_pos)
+    assert open_pos != -1 and close_pos != -1 and collapsed_pos != -1
+
+    open_body = body[open_pos:close_pos]
+    close_body = body[close_pos:collapsed_pos]
+    assert re.search(r"SESSION_STREAM_RECONNECT_MAX\s*=\s*12", body)
+    assert re.search(r"SESSION_STREAM_RECONNECT_DELAY_MS\s*=\s*600", body)
+    assert "_sessReconnectTimer" in open_body
+    assert "_sessReconnectN" in open_body
+    assert "setTimeout" in open_body
+    assert "t.openStream()" in open_body
+    assert "EventSource.CLOSED" in open_body
+    assert 'termSetPillState(statusPill, "running", "connecting")' in open_body
+    assert 'termSetPillState(statusPill, "warn", "disconnected")' in open_body
+
+    onopen_pos = open_body.find("es.onopen")
+    onmessage_pos = open_body.find("es.onmessage")
+    assert open_body.find("t._sessReconnectN = 0", onopen_pos, onmessage_pos) != -1
+    assert open_body.find("t._sessReconnectN = 0", onmessage_pos) != -1
+
+    end_pos = open_body.find('es.addEventListener("end"')
+    error_pos = open_body.find("es.onerror")
+    assert end_pos != -1 and error_pos != -1 and end_pos < error_pos
+    assert "setTimeout" not in open_body[end_pos:error_pos]
+    assert "clearTimeout(t._sessReconnectTimer)" in close_body
 
 
 def test_start_conversation_codex_routes_job_to_canvas():

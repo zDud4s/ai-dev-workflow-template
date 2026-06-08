@@ -1312,6 +1312,11 @@ function paneCoreCloseStreamPane(t) {
   try { t.source && t.source.close(); } catch (e) { console.warn("[pane-core] close: SSE close failed: " + (e && e.message ? e.message : e)); }
   if (t._sseHeartbeat) { clearInterval(t._sseHeartbeat); t._sseHeartbeat = null; }
   if (t._costRefreshTimer) { clearTimeout(t._costRefreshTimer); t._costRefreshTimer = null; }
+  if (t._sessReconnectTimer) { clearTimeout(t._sessReconnectTimer); t._sessReconnectTimer = null; }
+  if (t.kind === "session") t._sessReconnectStopped = true;
+  if (typeof t._sessReconnectN === "number") {
+    t._sessReconnectN = 0;
+  }
   if (t._autoFollowScrollHandler && t.body) {
     try { t.body.removeEventListener("scroll", t._autoFollowScrollHandler); } catch (_) {}
     t._autoFollowScrollHandler = null;
@@ -2038,25 +2043,34 @@ function paneCoreMountSession(container, opts, h) {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); doSend(); }
   });
 
+  const SESSION_STREAM_RECONNECT_DELAY_MS = 600;
+  const SESSION_STREAM_RECONNECT_MAX = 12;
+
   t.openStream = () => {
     if (t.source) return;
-    t.body.innerHTML = "";
-    t.currentAssistant = null;
-    t.toolUseEls = new Map();
-    t.autoFollowBottom = true;
-    t.firstScroll = true;
+    t._sessReconnectStopped = false;
+    if (!t._sessReconnectN) {
+      t.body.innerHTML = "";
+      t.currentAssistant = null;
+      t.toolUseEls = new Map();
+      t.autoFollowBottom = true;
+      t.firstScroll = true;
+    }
     const es = new EventSource("/api/sessions/" + encodeURIComponent(sid) + "/stream");
     t.source = es;
     es.onopen = () => {
+      t._sessReconnectN = 0;
       termSetPillState(statusPill, "running", "connecting");
       paneCoreSetActivity(t, "connecting…", "busy");
     };
     es.onmessage = (ev) => {
+      t._sessReconnectN = 0;
       let obj;
       try { obj = JSON.parse(ev.data); } catch (_) { return; }
       paneCoreHandleSessionEvent(t, obj);
     };
     es.addEventListener("end", () => {
+      t._sessReconnectStopped = true;
       try { es.close(); } catch (_) {}
       t.source = null;
       termSetPillState(statusPill, "done", "ended");
@@ -2064,13 +2078,35 @@ function paneCoreMountSession(container, opts, h) {
     });
     es.onerror = () => {
       if (es.readyState !== EventSource.CLOSED) return;
+      if (t._sessReconnectStopped) return;
+      t.source = null;
+      if ((t._sessReconnectN || 0) < SESSION_STREAM_RECONNECT_MAX) {
+        t._sessReconnectN = (t._sessReconnectN || 0) + 1;
+        termSetPillState(statusPill, "running", "connecting");
+        paneCoreSetActivity(t, "connecting…", "busy");
+        if (!t._sessReconnectTimer) {
+          t._sessReconnectTimer = setTimeout(() => {
+            t._sessReconnectTimer = null;
+            if (t._sessReconnectStopped) return;
+            t.openStream();
+          }, SESSION_STREAM_RECONNECT_DELAY_MS);
+        }
+        return;
+      }
+      t._sessReconnectN = 0;
       termSetPillState(statusPill, "warn", "disconnected");
       paneCoreSetActivity(t, "disconnected", "ended");
-      t.source = null;
     };
   };
   t.closeStream = () => {
-    if (!t.source) return;
+    if (t._sessReconnectTimer) { clearTimeout(t._sessReconnectTimer); t._sessReconnectTimer = null; }
+    t._sessReconnectN = 0;
+    t._sessReconnectStopped = true;
+    if (!t.source) {
+      termSetPillState(statusPill, "done", "paused");
+      paneCoreSetActivity(t, "paused (expand to resume)", "ready");
+      return;
+    }
     try { t.source.close(); } catch (_) {}
     t.source = null;
     termSetPillState(statusPill, "done", "paused");
