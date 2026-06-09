@@ -162,6 +162,71 @@ def test_canvas_terminal_close_prunes_pty_token_cache():
     assert "canvasForgetPtyToken(key)" in render_body
 
 
+def test_canvas_session_empty_distinct_from_disconnect():
+    """No-transcript (never-connected) → calm empty state + forget, no retry;
+    a real drop after connecting → the existing 'disconnected' warn state."""
+    body = _slice_function(_pane_core_src(), "function paneCoreMountSession(")
+    open_pos = body.find("t.openStream = () =>")
+    close_pos = body.find("t.closeStream = () =>", open_pos)
+    open_body = body[open_pos:close_pos]
+
+    # The "ever connected" flag is set on every success signal and reset on a
+    # fresh open (mid-reconnect retries must NOT reset it).
+    fresh_reset = open_body.find("t._sessEverConnected = false")
+    assert fresh_reset != -1
+    onopen_pos = open_body.find("es.onopen")
+    onmessage_pos = open_body.find("es.onmessage")
+    end_pos = open_body.find('es.addEventListener("end"')
+    error_pos = open_body.find("es.onerror")
+    assert fresh_reset < onopen_pos, "reset must live in the fresh-open guard, not a handler"
+    assert open_body.find("t._sessEverConnected = true", onopen_pos, onmessage_pos) != -1
+    assert open_body.find("t._sessEverConnected = true", onmessage_pos, end_pos) != -1
+    assert open_body.find("t._sessEverConnected = true", end_pos, error_pos) != -1
+
+    # Budget-exhausted branch: never-connected → calm empty state (neutral
+    # "done" pill, not warn), no further retry, and forget the dead key.
+    err_body = open_body[error_pos:]
+    assert "if (!t._sessEverConnected)" in err_body
+    assert 'termSetPillState(statusPill, "done", "empty")' in err_body
+    assert 'paneCoreSetActivity(t, "no transcript", "ready")' in err_body
+    assert "paneCoreSessionEmptyNote(t)" in err_body
+    assert "paneCoreT_host(t).forget(t.jobId)" in err_body
+    # The real-drop fallback keeps the warn "disconnected" state.
+    assert 'termSetPillState(statusPill, "warn", "disconnected")' in err_body
+    # The never-connected branch returns before reaching the disconnect line.
+    empty_pos = err_body.find("if (!t._sessEverConnected)")
+    disconnect_pos = err_body.find('termSetPillState(statusPill, "warn", "disconnected")')
+    assert empty_pos < disconnect_pos
+
+    # The calm "no transcript" note helper exists.
+    assert "function paneCoreSessionEmptyNote(" in _pane_core_src()
+    # The host shim exposes a guarded forget() seam (no-op on a bare host).
+    host_body = _slice_function(_pane_core_src(), "function paneCoreHost(")
+    assert "forget(key)" in host_body
+    assert "if (host.forget) host.forget(key)" in host_body
+
+
+def test_canvas_host_forget_unpersists_dead_session_key():
+    """The canvas host wires a forget hook that drops a dead key from the
+    persisted layout without removing the visible (live TREE) pane."""
+    src = _canvas_src()
+    host_body = _slice_function(src, "var CANVAS_PANE_HOST = {")
+    assert "forget: function (key) { CanvasApp.forgetPane(key); }" in host_body
+
+    forget_body = _slice_function(src, "\n  forgetPane(key)")
+    # Drops the render-input maps for the key.
+    assert "delete KIND_BY_KEY[k]" in forget_body
+    assert "delete META_BY_KEY[k]" in forget_body
+    assert "delete INITIAL_CMD_BY_KEY[k]" in forget_body
+    # Rewrites the persisted snapshot to the current tree MINUS the key.
+    assert "window.SplitTree.remove(TREE, k)" in forget_body
+    assert "window.CanvasBus.loadState()" in forget_body
+    assert "window.CanvasBus.saveState(state)" in forget_body
+    # Must NOT tear down the visible pane: no live TREE mutation / renderTree.
+    assert "CanvasApp.setTree" not in forget_body
+    assert "CanvasApp.renderTree" not in forget_body
+
+
 def test_legacy_v1_persistence_removed():
     src = _src()
     assert "migrateOpenPanesV1ToV2" not in src

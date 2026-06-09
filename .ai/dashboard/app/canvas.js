@@ -582,6 +582,15 @@ var CANVAS_PANE_HOST = {
     saveCanvasState();
     if (BUS) BUS.post({ type: "opened", key: k });
   },
+  // FORGET a key from the persisted layout WITHOUT tearing down the visible
+  // pane. PaneCore calls this when a session pane turns out to have no
+  // transcript (never-connected, reconnect budget exhausted): the user can
+  // still read the "no transcript" note and close the pane manually, but the
+  // dead key is dropped from the saved state so it is NOT re-opened (and
+  // re-404-spammed) on the next reload. We prune the key from both the live
+  // TREE snapshot we persist and the render-input maps. The on-screen pane
+  // (a live TREE leaf) is left alone — closePane() is the teardown path.
+  forget: function (key) { CanvasApp.forgetPane(key); },
 };
 
 // Cross-window message handler. Wired into the bus at create-time, but every
@@ -722,6 +731,27 @@ window.CanvasApp = {
     CanvasApp.renderTree();
     saveCanvasState();
     if (BUS) BUS.post({ type: "closed", key: k });
+  },
+
+  // Forget a key from the PERSISTED layout without removing it from the live
+  // TREE — the on-screen pane stays so the user can read its state and close
+  // it manually. Used for dead session panes (no transcript) so they are not
+  // restored + re-404-spammed on reload. We drop the render-input maps for the
+  // key and rewrite the saved state's tree/open to a snapshot of the CURRENT
+  // tree minus this key (we don't touch the live TREE, so we can't lean on the
+  // TREE-serialising saveCanvasState here).
+  forgetPane(key) {
+    var k = window.CanvasBus.normalizeKey(key);
+    if (KIND_BY_KEY[k] === "terminal") canvasForgetPtyToken(k);
+    delete KIND_BY_KEY[k];
+    delete META_BY_KEY[k];
+    delete INITIAL_CMD_BY_KEY[k];
+    if (typeof window === "undefined" || !window.CanvasBus) return;
+    var pruned = window.SplitTree.remove(TREE, k);
+    var state = window.CanvasBus.loadState() || {};
+    state.tree = window.SplitTree.serialize(pruned);
+    state.open = window.SplitTree.keys(pruned);
+    window.CanvasBus.saveState(state);
   },
 
   // Test/Task-10 seam: expose the module maps so the bus handler (and the

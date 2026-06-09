@@ -64,6 +64,11 @@ function paneCoreHost(host) {
     focusNewPane(key) { try { if (host.focusNewPane) host.focusNewPane(key); } catch (_) {} },
     renderEmptyState() { try { if (host.renderEmptyState) host.renderEmptyState(); } catch (_) {} },
     openPane(kind, key, meta) { try { if (host.openPane) host.openPane(kind, key, meta); } catch (_) {} },
+    // Ask the host to FORGET a key from its persisted layout WITHOUT tearing
+    // down the visible pane. Used when a session pane is found to have no
+    // transcript (never-connected, budget exhausted) so a dead key is not
+    // re-opened on the next reload. Degrades to a no-op on a bare/partial host.
+    forget(key) { try { if (host.forget) host.forget(key); } catch (_) {} },
   };
 }
 
@@ -112,6 +117,20 @@ function paneCoreSetActivity(t, label, cls) {
   if (operatorWaiting && prevCls !== "waiting" && t.pane.classList.contains("collapsed")) {
     paneCoreT_host(t).setCollapsed(t.jobId, false);
   }
+}
+
+// Render a calm one-line "no transcript" note into a session pane body when
+// the stream never connected (the session has no history yet). Idempotent:
+// it replaces any prior note rather than appending duplicates.
+function paneCoreSessionEmptyNote(t) {
+  if (!t || !t.body) return;
+  let note = t.body.querySelector(".session-empty-note");
+  if (!note) {
+    note = document.createElement("div");
+    note.className = "session-empty-note";
+    t.body.appendChild(note);
+  }
+  note.textContent = "This session has no transcript yet — nothing to show.";
 }
 
 function paneCoreSetDead(t, label) {
@@ -2055,22 +2074,29 @@ function paneCoreMountSession(container, opts, h) {
       t.toolUseEls = new Map();
       t.autoFollowBottom = true;
       t.firstScroll = true;
+      // Fresh open (not a mid-reconnect retry): reset the "ever connected"
+      // flag so the never-connected vs. real-drop decision below is scoped
+      // to THIS attempt cycle.
+      t._sessEverConnected = false;
     }
     const es = new EventSource("/api/sessions/" + encodeURIComponent(sid) + "/stream");
     t.source = es;
     es.onopen = () => {
       t._sessReconnectN = 0;
+      t._sessEverConnected = true;
       termSetPillState(statusPill, "running", "connecting");
       paneCoreSetActivity(t, "connecting…", "busy");
     };
     es.onmessage = (ev) => {
       t._sessReconnectN = 0;
+      t._sessEverConnected = true;
       let obj;
       try { obj = JSON.parse(ev.data); } catch (_) { return; }
       paneCoreHandleSessionEvent(t, obj);
     };
     es.addEventListener("end", () => {
       t._sessReconnectStopped = true;
+      t._sessEverConnected = true;
       try { es.close(); } catch (_) {}
       t.source = null;
       termSetPillState(statusPill, "done", "ended");
@@ -2093,7 +2119,23 @@ function paneCoreMountSession(container, opts, h) {
         }
         return;
       }
+      // Reconnect budget exhausted. Distinguish a session that NEVER produced
+      // a transcript (every retry 404'd — no onopen / message / end ever
+      // fired) from a stream that was live and then dropped.
       t._sessReconnectN = 0;
+      t._sessReconnectStopped = true;
+      if (!t._sessEverConnected) {
+        // Never connected → this session has no transcript. Show a CALM "no
+        // history" state (neutral "done"-style pill, not the warn/error
+        // style) and stop retrying. Ask the host to forget this key so a
+        // dead/aborted session id is not re-opened on the next reload.
+        termSetPillState(statusPill, "done", "empty");
+        paneCoreSetActivity(t, "no transcript", "ready");
+        paneCoreSessionEmptyNote(t);
+        paneCoreT_host(t).forget(t.jobId);
+        return;
+      }
+      // Was live, then dropped → a real disconnect.
       termSetPillState(statusPill, "warn", "disconnected");
       paneCoreSetActivity(t, "disconnected", "ended");
     };
