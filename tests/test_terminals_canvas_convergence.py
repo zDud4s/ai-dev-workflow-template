@@ -66,29 +66,51 @@ def test_terminals_shared_pty_token_cache_and_send_payload():
     assert "openMsg.initialCommand = opts.initialCommand" in send_body
 
 
-def test_start_conversation_shell_routes_pty_to_canvas_with_token_and_steps():
-    body = _slice_function(_src(), "const startConversation = async ()")
-    shell_pos = body.find('if (typeSelected.kind === "shell")')
-    post_pos = body.find('postJson("/api/ptys"', shell_pos)
-    open_pos = body.find('window.open("app/canvas.html", "dash-canvas")', shell_pos)
-    assert shell_pos != -1 and post_pos != -1 and open_pos != -1
-    assert open_pos < post_pos, "canvas must be opened in the user gesture before awaiting PTY creation"
+def test_launcher_terminal_creates_pty_and_launched_row():
+    # The launcher's Terminal path creates the PTY now and stashes a launched
+    # row (token + the tool launch steps). It does NOT open the canvas itself —
+    # the operator opens the row with ⊞. The steps run on open.
+    body = _slice_function(_src(), "function termOpenDraft(")
+    assert 'postJson("/api/ptys"' in body
     assert "termRememberPtyToken(res.id, res.token)" in body
-    assert 'termSendToCanvas(_statusRowTerm("terminal", res.id)' in body
-    assert "meta: { token: res.token }" in body
-    assert "initialCommand: steps" in body
+    assert "termDraftLaunchCommand(tool, model" in body
+    assert 'kind: "terminal"' in body
+    assert "token: res.token" in body
+    assert "steps" in body
+    assert "addLaunched(" in body
+    assert "termSendToCanvas(" not in body, "launch must not open the canvas itself"
     assert "termOpenPty(" not in body
 
 
-def test_start_conversation_claude_posts_input_then_routes_canvas():
-    body = _slice_function(_src(), "const startConversation = async ()")
-    assert 'window.open("app/canvas.html", "dash-canvas")' in body
-    assert '"/api/sessions/" + encodeURIComponent(sid) + "/input"' in body
-    assert "owner: termClientId()" in body
-    assert "payload.model = model" in body
-    assert 'termSendToCanvas(_statusRowTerm("session", "session:" + sid))' in body
-    assert "termOpenSession(" not in body
-    assert "termSendSession(" not in body
+def test_launcher_ai_chat_launches_pending_session_no_first_turn():
+    # Launching an AI chat mints a sid + adds a pending session row, and does
+    # NOT post the first turn (decoupled — the message is typed on the canvas).
+    body = _slice_function(_src(), "function termOpenDraft(")
+    assert "termMintSid()" in body
+    assert 'kind: "session"' in body
+    assert "addLaunched(" in body
+    assert "/input" not in body, "launch must not POST the first turn"
+    assert "termSendToCanvas(" not in body
+
+
+def test_open_launched_materialises_on_canvas():
+    body = _slice_function(_src(), "function openLaunched(")
+    assert 'e.kind === "terminal"' in body
+    assert 'termSendToCanvas(_statusRowTerm("terminal", e.id)' in body
+    assert "initialCommand" in body
+    assert "termRouteSessionToCanvas(e.id)" in body
+    # Keeps the launched row (re-openable, "on canvas" badge) — does not drop it.
+    assert "removeLaunched(id)" not in body
+
+
+def test_canvas_session_pane_rearms_stream_after_first_send():
+    # A launched session opened on the canvas 404s until its first turn creates
+    # the transcript; paneCoreSendSession must re-arm the stream after the turn
+    # is accepted so the conversation renders.
+    body = _slice_function(_pane_core_src(), "async function paneCoreSendSession(")
+    assert "accepted" in body
+    assert "t.openStream()" in body
+    assert "_sessReconnectStopped = false" in body
 
 
 def test_canvas_session_stream_retries_transient_startup_404():
@@ -122,16 +144,13 @@ def test_canvas_session_stream_retries_transient_startup_404():
     assert "clearTimeout(t._sessReconnectTimer)" in close_body
 
 
-def test_start_conversation_codex_routes_job_to_canvas():
-    body = _slice_function(_src(), "const startConversation = async ()")
-    assert 'postJson("/api/jobs", payload)' in body
-    assert '{ kind: "chat-codex", task: text, model }' in body
-    assert 'termSendToCanvas(_statusRowTerm("chat-codex", res.id))' in body
-    assert "termOpen(res.id" not in body
-    success_pos = body.find('termSendToCanvas(_statusRowTerm("chat-codex", res.id))')
-    catch_pos = body.find("} catch (err) {", success_pos)
-    load_pos = body.find("await loadJobs()", catch_pos)
-    assert load_pos > catch_pos, "loadJobs must run outside the start-success try/catch"
+def test_launcher_codex_launches_as_shell_not_job():
+    # Codex direct-chat (the old chat-codex job posted with a first message) is
+    # gone — codex now launches as a real shell running `codex`.
+    body = _slice_function(_src(), "function termOpenDraft(")
+    assert '{ kind: "chat-codex"' not in body
+    assert 'postJson("/api/jobs"' not in body
+    assert 'postJson("/api/ptys"' in body
 
 
 def test_canvas_terminal_open_stashes_token_and_threads_initial_command_once():
@@ -231,3 +250,57 @@ def test_legacy_v1_persistence_removed():
     src = _src()
     assert "migrateOpenPanesV1ToV2" not in src
     assert "dash.openPanes.v1" not in src
+
+
+def test_canvas_window_reused_not_reloaded():
+    """Regression: opening the canvas a second time must NOT re-navigate the
+    named window (that reloaded canvas.html, tearing down panes and dropping the
+    in-flight `open` so the canvas could never grow past one pane). termSendToCanvas
+    routes through canvasOpenWindow, which focuses a live handle / empty-URL window
+    instead of re-passing the canvas URL."""
+    src = _src()
+    assert "function canvasOpenWindow" in src
+    assert "_CANVAS_WIN" in src
+    # The focus-existing path must use an empty URL (no navigation/reload).
+    assert 'window.open("", "dash-canvas")' in src
+    # termSendToCanvas must not bare-open the canvas URL itself anymore.
+    send_body = _slice_function(src, "function termSendToCanvas")
+    assert 'window.open("app/canvas.html"' not in send_body
+    assert "canvasOpenWindow()" in send_body
+
+
+def test_canvas_2x2_grid_cap_and_placement():
+    """The canvas tiles panes into a 2x2 grid and rejects a fifth pane."""
+    src = _canvas_src()
+    assert "CANVAS_MAX_PANES = 4" in src
+    assert "function canvasPlacementFor" in src
+    assert "function canvasFlashNote" in src
+    # The open handler enforces the cap and uses the placement helper.
+    assert "ST.keys(TREE).length >= CANVAS_MAX_PANES" in src
+    assert "canvasPlacementFor(TREE)" in src
+
+
+def test_auto_open_transcript_mirror_removed():
+    """The poll-driven external-IDE-transcript auto-mirror is gone — it flooded
+    the canvas with every recently-touched session (incl. the one driving the
+    dashboard). The Terminals tab is a manual launcher now."""
+    src = _src()
+    assert "function termAutoOpenActiveTranscripts" not in src
+    assert "termAutoOpenActiveTranscripts()" not in src
+
+
+def test_canvas_does_not_restore_panes_on_boot():
+    """Reopening the canvas must come up CLEAN — only what the operator opens
+    now, not a resurrected snapshot. restoreCanvasState no longer deserialises /
+    re-mounts the saved tree; it drops it. beforeunload also marks the heartbeat
+    dead and clears the tree so a fast close→reopen reopens fresh."""
+    src = _canvas_src()
+    restore = _slice_function(src, "function restoreCanvasState")
+    # No pane rehydration: the saved tree is neither deserialised nor mounted.
+    assert "SplitTree.deserialize" not in restore
+    assert "PaneCore.fetchMeta" not in restore
+    assert "CanvasApp.setTree" not in restore
+    # It drops the persisted tree instead.
+    assert "state.tree = null" in restore
+    # beforeunload marks the window dead immediately so canvasOpenWindow reopens.
+    assert "state.lastSeen = 0" in src

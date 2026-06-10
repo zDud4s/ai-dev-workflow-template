@@ -222,12 +222,9 @@
             _jobsListDelegationWired = true;
           }
         }
-        // Feed the terminals picker.
+        // Feed the Terminals status list (no auto-open — the operator launches
+        // and opens panes manually; the canvas owns interactive panes).
         termRefreshPicker(jobs);
-        // Auto-open every active chat / chat-codex job that we haven't
-        // touched before. Once the operator closes a pane, its id stays
-        // in AUTO_OPENED_ONCE so we don't keep popping it back open.
-        termAutoOpenActive(jobs);
 
         // Background poll if any job is running and a relevant tab is visible.
         const anyRunning = jobs.some((j) => j.status === "running" || j.status === "queued" || j.status === "cancelling");
@@ -238,9 +235,10 @@
         if (_jobsTimer) { clearTimeout(_jobsTimer); _jobsTimer = null; }
         if (anyRunning && (runTabActive || termsTabActive)) {
           _jobsTimer = setTimeout(loadJobs, 2000);
-        } else if (termsTabActive && termAutoOpenEnabled()) {
+        } else if (termsTabActive) {
           // Even with nothing running, keep polling on the Terminals view so
-          // newly-created chats (e.g. spawned externally) pop into view.
+          // newly-launched sessions / externally-started chats appear in the
+          // status list without a manual reload.
           _jobsTimer = setTimeout(loadJobs, 4000);
         } else if (runTabActive) {
           // Background poll at slower cadence so externally-started jobs

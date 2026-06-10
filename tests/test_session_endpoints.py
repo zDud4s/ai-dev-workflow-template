@@ -121,6 +121,50 @@ def _seed_projects_root(serve_module, monkeypatch, tmp_path):
     return sdir
 
 
+def test_jsonl_line_emits_tool_use_with_name_and_input(serve_module):
+    """An assistant turn with text + tool_use blocks must expand to one message
+    event plus one tool_use event PER block, each carrying id/name/input — so
+    the canvas renders a named pill with its arguments instead of an empty
+    'tool' chip + '{}'."""
+    line = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "Let me look."},
+        {"type": "tool_use", "id": "tu_1", "name": "Read", "input": {"file_path": "/x.py"}},
+        {"type": "tool_use", "id": "tu_2", "name": "Bash", "input": {"command": "ls"}},
+    ]}})
+    evs = serve_module._jsonl_line_to_session_events(line)
+    kinds = [e["kind"] for e in evs]
+    assert kinds == ["message", "tool_use", "tool_use"], evs
+    assert evs[0]["text"] == "Let me look."
+    assert evs[1]["id"] == "tu_1" and evs[1]["name"] == "Read"
+    assert evs[1]["input"] == {"file_path": "/x.py"}
+    assert evs[2]["name"] == "Bash" and evs[2]["input"] == {"command": "ls"}
+
+
+def test_jsonl_line_tool_result_carries_tool_use_id(serve_module):
+    """A tool_result block must keep its tool_use_id so the client can bind the
+    result back to the pill it belongs to."""
+    line = json.dumps({"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "tu_1", "is_error": False,
+         "content": [{"type": "text", "text": "file contents"}]},
+    ]}})
+    evs = serve_module._jsonl_line_to_session_events(line)
+    assert len(evs) == 1 and evs[0]["kind"] == "tool_result"
+    assert evs[0]["tool_use_id"] == "tu_1"
+    assert evs[0]["content"] == "file contents"
+    assert evs[0]["is_error"] is False
+
+
+def test_jsonl_line_skips_thinking_and_empty(serve_module):
+    """Thinking blocks and blank/unknown lines emit nothing."""
+    thinking = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "secret"},
+    ]}})
+    assert serve_module._jsonl_line_to_session_events(thinking) == []
+    assert serve_module._jsonl_line_to_session_events("") == []
+    assert serve_module._jsonl_line_to_session_events("not json") == []
+    assert serve_module._jsonl_line_to_session_events('{"type":"weird"}') == []
+
+
 def test_transcripts_dir_encodes_dot_segments(serve_module, monkeypatch, tmp_path):
     projects = tmp_path / ".claude" / "projects"
     cwd = tmp_path / "proj" / ".worktrees" / "wt"

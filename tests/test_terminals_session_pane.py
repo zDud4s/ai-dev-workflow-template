@@ -53,45 +53,56 @@ def test_session_endpoints_and_state_handlers_remain():
     assert '"warning"' in src
 
 
-def test_new_claude_chat_posts_first_turn_and_routes_canvas():
+def test_launcher_ai_chat_launches_pending_session():
+    # "New terminal" → launcher. Launching an AI chat mints a sid and adds a
+    # pending session row WITHOUT sending the first turn — the conversation is
+    # materialised (create-on-first-turn) when the operator types in the canvas
+    # session pane. Launch never opens the canvas itself (decoupled).
     src = js()
-    body = _slice_function(src, "const startConversation = async ()")
-    assert "randomUUID" in body
-    assert 'window.open("app/canvas.html", "dash-canvas")' in body
-    assert '"/api/sessions/" + encodeURIComponent(sid) + "/input"' in body
-    assert "owner: termClientId()" in body
-    assert "payload.model = model" in body
-    assert 'termSendToCanvas(_statusRowTerm("session", "session:" + sid))' in body
+    body = _slice_function(src, "function termOpenDraft(")
+    assert "termMintSid()" in body
+    assert 'kind: "session"' in body
+    assert "addLaunched(" in body
+    assert "/input" not in body, "launch must not POST the first turn (decoupled)"
+    assert "termSendToCanvas(" not in body, "launch must not open the canvas itself"
     assert "termOpenSession(" not in body
-    assert "termSendSession(" not in body
 
 
-def test_codex_chat_routes_job_to_canvas():
+def test_launcher_codex_launches_as_shell_terminal():
+    # Codex direct-chat is gone. Codex launches as a real shell running `codex`
+    # (created via /api/ptys); no chat-codex job is POSTed at launch.
     src = js()
-    body = _slice_function(src, "const startConversation = async ()")
-    assert '{ kind: "chat-codex", task: text, model }' in body
-    assert 'termSendToCanvas(_statusRowTerm("chat-codex", res.id))' in body
-    assert "termOpen(res.id" not in body
+    body = _slice_function(src, "function termOpenDraft(")
+    assert '{ kind: "chat-codex"' not in body
+    assert 'postJson("/api/jobs"' not in body
+    assert 'postJson("/api/ptys"' in body
+    assert "termDraftLaunchCommand(tool, model" in body
 
 
-def test_picker_unified_sessions_group():
+def test_open_launched_routes_to_canvas_and_keeps_row():
+    # ⊞ on a launched row opens it on the canvas and KEEPS the row (now with an
+    # "on canvas" badge), re-openable after the canvas pane is closed. It must
+    # NOT remove the entry on open (a launched terminal would otherwise vanish,
+    # since terminals don't appear in /api/sessions).
     src = js()
-    assert "/api/sessions" in src, "picker should fetch /api/sessions"
-    assert 'value="session:' in src, "picker should emit session:<sid> option values"
-    assert "s.state" in src or ".state" in src, "picker should show a per-session state chip"
+    body = _slice_function(src, "function openLaunched(")
+    assert 'e.kind === "terminal"' in body
+    assert 'termSendToCanvas(_statusRowTerm("terminal", e.id)' in body
+    assert "termRouteSessionToCanvas(e.id)" in body
+    assert "removeLaunched(id)" not in body
+    assert "termRenderStatusList()" in body
+
+
+def test_status_list_renders_session_rows():
+    src = js()
+    assert "/api/sessions" in src, "status list should fetch /api/sessions"
+    assert '"session:" + sid' in src, "status rows key sessions as session:<sid>"
+    assert "s.state" in src or ".state" in src, "status rows show a per-session state chip"
 
 
 def test_picker_jobs_group_excludes_claude_chat():
     src = js()
-    assert 'kind !== "chat"' in src, "Jobs group should exclude kind=='chat' (now sessions)"
-
-
-def test_picker_open_routes_session_to_canvas():
-    src = js()
-    body = _slice_function(src, '$("#term-open")?.addEventListener("click", async ()')
-    assert 'source === "session"' in body
-    assert "termRouteSessionToCanvas(id)" in body
-    assert "termOpenSession(" not in body
+    assert 'j.kind !== "chat"' in src, "status list should exclude kind=='chat' (now sessions)"
 
 
 def test_persistence_is_canvas_owned_with_legacy_pty_token_migration():

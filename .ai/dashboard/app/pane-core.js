@@ -130,7 +130,7 @@ function paneCoreSessionEmptyNote(t) {
     note.className = "session-empty-note";
     t.body.appendChild(note);
   }
-  note.textContent = "This session has no transcript yet — nothing to show.";
+  note.textContent = "No messages yet — type below to start the conversation.";
 }
 
 function paneCoreSetDead(t, label) {
@@ -1233,6 +1233,7 @@ async function paneCoreSendSession(t, text) {
   if (t._sessionSendInFlight) return;
   t._sessionSendInFlight = true;
   t.sendBtn.disabled = true;
+  let accepted = false;
   try {
     const payload = { text: trimmed, owner: paneCoreClientId() };
     if (t.model) payload.model = t.model;
@@ -1240,6 +1241,7 @@ async function paneCoreSendSession(t, text) {
       "/api/sessions/" + encodeURIComponent(t.sid) + "/input",
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }
     );
+    if (r.status === 202 || r.ok) accepted = true;
     if (r.status === 202) {
       t.input.value = "";
       if (t.input.tagName === "TEXTAREA") t.input.style.height = "";
@@ -1276,6 +1278,15 @@ async function paneCoreSendSession(t, text) {
   } finally {
     t._sessionSendInFlight = false;
     t.sendBtn.disabled = false;
+    // A freshly-launched session opened on the canvas before it had a
+    // transcript: its stream 404'd and gave up (the "no transcript" empty
+    // state). Now that the first turn was accepted the transcript is about to
+    // appear, so re-arm the stream to render the conversation as it streams in.
+    if (accepted && !t.source && typeof t.openStream === "function") {
+      t._sessReconnectStopped = false;
+      t._sessReconnectN = 0;
+      t.openStream();
+    }
     try { t.input.focus(); } catch (_) {}
   }
 }

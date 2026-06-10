@@ -1181,6 +1181,43 @@
       flex: 1 1 280px;
       max-width: 480px;
     }
+    /* Launcher controls live in the toolbar now: pick what to launch, the tool
+       and the model, then "New terminal" (pinned to the right edge) launches. */
+    .terms-toolbar .term-launch-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+    .terms-toolbar .term-launch-field .draft-label {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    .terms-toolbar .term-launch-field select {
+      background: var(--surf-2);
+      color: var(--text);
+      border: 1px solid var(--border-soft);
+      padding: 6px 8px;
+      font: inherit;
+      font-size: 13px;
+    }
+    .terms-toolbar .term-launch-field select:focus {
+      outline: 1px solid var(--accent);
+      border-color: var(--accent);
+    }
+    .terms-toolbar .term-launch-hint {
+      align-self: end;
+      color: var(--text-dim);
+      font-size: 12px;
+      max-width: 280px;
+    }
+    /* "New terminal" sits at the far right of the launcher bar. */
+    .terms-toolbar #term-new {
+      margin-left: auto;
+      align-self: end;
+    }
     /* Status-bar list layout: each pane is a row. Collapsed rows are
        one-line status indicators; expanded rows reveal the full
        body + composer. Replaces the old 2-col grid. */

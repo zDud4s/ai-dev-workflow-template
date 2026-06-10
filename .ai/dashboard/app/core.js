@@ -763,8 +763,8 @@
     //   Codex  — https://developers.openai.com/codex/models
     var MODELS_BY_TOOL = {
       claude: [
-        "claude-opus-4-7",     // most capable, agentic coding flagship
-        "claude-opus-4-6",
+        "claude-opus-4-8",     // most capable, agentic coding flagship
+        "claude-opus-4-7",
         "claude-sonnet-4-6",   // 1M ctx, balanced speed/intelligence
         "claude-haiku-4-5",    // fastest / cheapest
       ],

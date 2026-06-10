@@ -392,25 +392,32 @@ MAX_SSE_SESSION_S = 1800  # 30 minutes
 MAX_TRANSCRIPT_CATCHUP_BYTES = 4 * 1024 * 1024  # 4 MiB
 
 
-def _jsonl_line_to_session_event(line: str, seq: int) -> "dict | None":
-    """Normalize one JSONL line from a Claude transcript into a SessionEvent dict.
+def _jsonl_line_to_session_events(line: str) -> "list[dict]":
+    """Normalize one JSONL line from a Claude transcript into SessionEvent dicts.
 
-    Returns None for lines that should be skipped (empty, parse errors, unknown
-    types). The seq counter is supplied by the caller and incremented externally.
+    Returns a list (possibly empty) of events WITHOUT a ``seq`` field — the
+    caller assigns ``seq`` per emitted event, since one transcript line can
+    expand into several events (an assistant turn carries text + one or more
+    tool_use blocks; a user turn carries tool_result blocks). Emitting one
+    event per block — rather than collapsing the whole line into a single
+    event — is what lets the canvas render a tool_use pill with its real name
+    and input, and attach each tool_result to the pill it belongs to.
 
-    SessionEvent schema:
-      {"seq": int, "kind": str, "role": str|null, "text": str|null,
-       "partial": bool, "state": str|null}
+    SessionEvent schema (seq added by caller):
+      message:     {"kind":"message","role":str,"text":str,"partial":False,"state":None}
+      tool_use:    {"kind":"tool_use","role":str,"id":str,"name":str,"input":dict,"text":str}
+      tool_result: {"kind":"tool_result","role":str,"tool_use_id":str,"is_error":bool,"content":str,"text":str}
+      system:      {"kind":"system","role":"system","text":str,"partial":False,"state":None}
     """
     line = line.strip()
     if not line:
-        return None
+        return []
     try:
         obj = json.loads(line)
     except (json.JSONDecodeError, ValueError):
-        return None
+        return []
     if not isinstance(obj, dict):
-        return None
+        return []
 
     msg_type = obj.get("type")
     message = obj.get("message") or {}
@@ -419,55 +426,72 @@ def _jsonl_line_to_session_event(line: str, seq: int) -> "dict | None":
     # user / assistant message lines
     if msg_type in ("user", "assistant"):
         content = message.get("content")
-        text: "str | None" = None
         if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            # Concatenate all text blocks; handle tool_use / tool_result blocks.
-            text_parts = []
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "text":
-                    text_parts.append(block.get("text") or "")
-                elif btype == "tool_use":
-                    # Emit a separate tool_use event.
-                    return {
-                        "seq": seq,
-                        "kind": "tool_use",
-                        "role": role,
-                        "text": block.get("name"),
-                        "partial": False,
-                        "state": None,
-                    }
-                elif btype == "tool_result":
-                    result_content = block.get("content")
-                    result_text: "str | None" = None
-                    if isinstance(result_content, str):
-                        result_text = result_content
-                    elif isinstance(result_content, list):
-                        result_text = " ".join(
-                            b.get("text") or "" for b in result_content
-                            if isinstance(b, dict) and b.get("type") == "text"
-                        )
-                    return {
-                        "seq": seq,
-                        "kind": "tool_result",
-                        "role": role,
-                        "text": result_text,
-                        "partial": False,
-                        "state": None,
-                    }
-            text = "".join(text_parts) if text_parts else None
-        return {
-            "seq": seq,
-            "kind": "message",
-            "role": role or msg_type,
-            "text": text,
-            "partial": False,
-            "state": None,
-        }
+            text = content.strip()
+            if not text:
+                return []
+            return [{
+                "kind": "message", "role": role or msg_type, "text": content,
+                "partial": False, "state": None,
+            }]
+        if not isinstance(content, list):
+            return []
+        # One event per block, in transcript order: text -> message, tool_use ->
+        # tool_use (with id/name/input so the pill renders), tool_result ->
+        # tool_result (with tool_use_id so it binds to the pill).
+        events: "list[dict]" = []
+        text_buf: "list[str]" = []
+
+        def _flush_text():
+            joined = "".join(text_buf)
+            text_buf.clear()
+            if joined.strip():
+                events.append({
+                    "kind": "message", "role": role or msg_type, "text": joined,
+                    "partial": False, "state": None,
+                })
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text_buf.append(block.get("text") or "")
+            elif btype == "thinking":
+                # Skip raw thinking blocks — they aren't part of the visible
+                # conversation and carry no tool/text the operator needs.
+                continue
+            elif btype == "tool_use":
+                _flush_text()
+                name = block.get("name") or "tool"
+                tinput = block.get("input")
+                if not isinstance(tinput, dict):
+                    tinput = {}
+                events.append({
+                    "kind": "tool_use", "role": role,
+                    "id": block.get("id") or "", "name": name, "input": tinput,
+                    "text": name, "partial": False, "state": None,
+                })
+            elif btype == "tool_result":
+                _flush_text()
+                result_content = block.get("content")
+                result_text = ""
+                if isinstance(result_content, str):
+                    result_text = result_content
+                elif isinstance(result_content, list):
+                    result_text = " ".join(
+                        b.get("text") or "" for b in result_content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                events.append({
+                    "kind": "tool_result", "role": role,
+                    "tool_use_id": block.get("tool_use_id") or "",
+                    "is_error": bool(block.get("is_error")),
+                    "content": result_text, "text": result_text,
+                    "partial": False, "state": None,
+                })
+        _flush_text()
+        return events
 
     # system / init lines
     if msg_type in ("system", "init"):
@@ -477,17 +501,15 @@ def _jsonl_line_to_session_event(line: str, seq: int) -> "dict | None":
                 b.get("text") or "" for b in content
                 if isinstance(b, dict) and b.get("type") == "text"
             )
-        return {
-            "seq": seq,
-            "kind": "system",
-            "role": "system",
-            "text": content if isinstance(content, str) else None,
-            "partial": False,
-            "state": None,
-        }
+        if not isinstance(content, str) or not content.strip():
+            return []
+        return [{
+            "kind": "system", "role": "system", "text": content,
+            "partial": False, "state": None,
+        }]
 
     # Unknown or empty type — skip
-    return None
+    return []
 
 
 # Directories the fallback ``ROOT.rglob("*")`` walk in ``_handle_files_list``
@@ -8923,7 +8945,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         Emits a leading state_change frame with the session's current registry
         state, then tails the session's .jsonl normalizing each line via
-        _jsonl_line_to_session_event.
+        _jsonl_line_to_session_events (one line can expand to several events).
 
         For Phase 1 both mirror/acquiring and engine states fall through to the
         same .jsonl tail path — the engine writes to the same file, so the
@@ -9029,16 +9051,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         seq = 1
         if existing:
             for raw_line in existing.decode("utf-8", "replace").replace("\r\n", "\n").split("\n"):
-                evt = _jsonl_line_to_session_event(raw_line, seq)
-                if evt is None:
-                    continue
-                if not self._write_sse_frame(json.dumps(evt)):
-                    try:
-                        fh.close()
-                    except Exception as e:
-                        print(f"[serve] session stream close failed: {e}", flush=True)
-                    return
-                seq += 1
+                for evt in _jsonl_line_to_session_events(raw_line):
+                    evt["seq"] = seq
+                    if not self._write_sse_frame(json.dumps(evt)):
+                        try:
+                            fh.close()
+                        except Exception as e:
+                            print(f"[serve] session stream close failed: {e}", flush=True)
+                        return
+                    seq += 1
 
         # Live tail: poll for appended bytes, normalize each new line.
         session_start = time.monotonic()
@@ -9122,12 +9143,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         break
                     text = chunk.decode("utf-8", "replace").replace("\r\n", "\n")
                     for raw_line in text.split("\n"):
-                        evt = _jsonl_line_to_session_event(raw_line, seq)
-                        if evt is None:
-                            continue
-                        if not self._write_sse_frame(json.dumps(evt)):
-                            return
-                        seq += 1
+                        for evt in _jsonl_line_to_session_events(raw_line):
+                            evt["seq"] = seq
+                            if not self._write_sse_frame(json.dumps(evt)):
+                                return
+                            seq += 1
                     last_size = st.st_size
                 else:
                     idle_ticks += 1
@@ -9261,6 +9281,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             reg = registry_snapshot.get(sid)
             entry["state"] = reg[0] if reg is not None else "mirror"
             entry["has_engine"] = reg[1] if reg is not None else False
+
+        # A session minted via POST /input (create-on-first-turn) lives in the
+        # registry for a couple of seconds before claude writes its transcript —
+        # and it has no JOBS entry. Without this it would be invisible in the
+        # list during that window, so a just-launched terminal "disappears"
+        # until the .jsonl lands. Surface registry-known sessions immediately.
+        _now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+        for sid, (state, has_engine) in registry_snapshot.items():
+            if sid in by_sid:
+                continue
+            by_sid[sid] = {
+                "session_id": sid, "kind": "ide", "task": "", "model": None,
+                # A live registry session is "now" — stamp modified so it sorts
+                # to the top of the active list instead of the bottom.
+                "started_at": _now_iso, "ended_at": None, "status": None,
+                "last_job_id": None, "sid": sid, "title": None,
+                "modified": _now_iso, "size": None, "source": "registry",
+                "state": state, "has_engine": has_engine,
+            }
 
         sessions = list(by_sid.values())
         # Sort: prefer modified timestamp (IDE), fall back to started_at (dashboard).

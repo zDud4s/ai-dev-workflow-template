@@ -139,6 +139,55 @@ function canvasInferKind(key) {
   return "terminal";
 }
 
+// The canvas tiles panes into a 2x2 grid; opening beyond four is rejected so
+// panes never shrink to slivers.
+var CANVAS_MAX_PANES = 4;
+
+// Given the current tree, pick the (target leaf, direction) that grows the
+// layout toward a clean 2x2 grid:
+//   1 pane  -> full
+//   2 panes -> left | right        (split the single leaf to the right)
+//   3 panes -> split the LEFT column down  (top-left / bottom-left + right)
+//   4 panes -> split the RIGHT column down (full 2x2)
+// Targets are chosen geometrically (leftmost leaf, then tallest leaf) so the
+// result is correct regardless of insertion order or prior drag-rearrangement.
+function canvasPlacementFor(tree) {
+  var ST = window.SplitTree;
+  var keys = ST.keys(tree);
+  if (keys.length <= 1) return { target: keys[0], dir: "right" };
+  var rects = ST.computeRects(tree, 1, 1);
+  if (keys.length === 2) {
+    var leftmost = rects.slice().sort(function (a, b) { return a.x - b.x; })[0];
+    return { target: leftmost.key, dir: "down" };
+  }
+  // 3 panes → split the full-height (tallest) leaf, i.e. the right column.
+  var tallest = rects.slice().sort(function (a, b) { return b.h - a.h; })[0];
+  return { target: tallest.key, dir: "down" };
+}
+
+// Brief, non-blocking banner centred at the top of the canvas (e.g. the
+// "canvas full" rejection). Inline-styled so it needs no stylesheet change.
+function canvasFlashNote(text) {
+  if (typeof document === "undefined") return;
+  var root = document.getElementById("canvas-root") || document.body;
+  if (!root) return;
+  var n = document.createElement("div");
+  n.className = "canvas-flash-note";
+  n.textContent = text;
+  n.style.cssText = "position:absolute;left:50%;top:16px;transform:translateX(-50%);"
+    + "z-index:9999;background:rgba(20,24,32,0.96);color:#e6edf3;"
+    + "border:1px solid #2d3340;border-radius:6px;padding:8px 14px;"
+    + "font:13px system-ui,-apple-system,sans-serif;"
+    + "box-shadow:0 4px 16px rgba(0,0,0,0.45);pointer-events:none;opacity:0;"
+    + "transition:opacity .15s ease;";
+  root.appendChild(n);
+  requestAnimationFrame(function () { n.style.opacity = "1"; });
+  setTimeout(function () {
+    n.style.opacity = "0";
+    setTimeout(function () { if (n.parentNode) n.parentNode.removeChild(n); }, 220);
+  }, 2600);
+}
+
 function canvasResolveKind(key, lookup) {
   if (lookup) {
     if (typeof lookup.kind === "function") return lookup.kind(key);
@@ -217,59 +266,38 @@ function startCanvasHeartbeat() {
       }
       var state = window.CanvasBus.loadState() || {};
       state.open = [];
+      // Also drop the persisted pane tree and mark the heartbeat dead NOW. The
+      // canvas does not restore panes on reopen (see restoreCanvasState), and a
+      // stale lastSeen would otherwise make the dashboard treat the just-closed
+      // window as still alive for up to ~9s — long enough that the next ⊞ click
+      // would try to focus the dead window instead of opening a fresh one.
+      state.tree = null;
+      state.lastSeen = 0;
       window.CanvasBus.saveState(state);
     });
   }
 }
 
-// Restore the persisted layout (called by boot() BEFORE posting `ready`).
-// Deserialises the saved tree, rehydrates window._PTY_TOKENS, then fetches
-// each key's meta in parallel; keys whose meta is null (session gone, shell
-// dead) are pruned from the tree. Survivors get KIND_BY_KEY / META_BY_KEY
-// seeded so renderTree mounts them with a real record. Returns a Promise so
-// boot() can chain the ready-post + queue-flush after restore settles.
+// The canvas intentionally does NOT restore previously-open panes on boot.
+// Closing the canvas page and reopening it (typically by opening a terminal
+// from the dashboard) brings the canvas up CLEAN — showing only what the
+// operator opens now, not a resurrected snapshot of an earlier session. We drop
+// any persisted pane tree so even a manual reopen is empty; the heartbeat
+// (startCanvasHeartbeat) still keeps the liveness timestamp fresh for the
+// dashboard's badge logic. Returns a resolved Promise so boot() can chain the
+// ready-post + queue-flush exactly as before.
 function restoreCanvasState() {
-  if (typeof window === "undefined" || !window.CanvasBus) return Promise.resolve();
-  var state = window.CanvasBus.loadState();
-  if (!state || !state.tree) return Promise.resolve();
-  var t = window.SplitTree.deserialize(state.tree);
-  if (!t) return Promise.resolve();
-  // Rehydrate the per-PTY token cache so restored terminal panes pass WS auth.
-  if (state.tokens && typeof state.tokens === "object") {
-    window._PTY_TOKENS = window._PTY_TOKENS || {};
-    for (var tk in state.tokens) {
-      if (Object.prototype.hasOwnProperty.call(state.tokens, tk)) {
-        canvasRememberPtyToken(tk, state.tokens[tk]);
+  try {
+    if (typeof window !== "undefined" && window.CanvasBus) {
+      var state = window.CanvasBus.loadState() || {};
+      if (state.tree || (state.open && state.open.length)) {
+        state.tree = null;
+        state.open = [];
+        window.CanvasBus.saveState(state);
       }
     }
-  }
-  var keys = window.SplitTree.keys(t);
-  var hasFetch = window.PaneCore && typeof window.PaneCore.fetchMeta === "function";
-  var fetchers = keys.map(function (key) {
-    if (!hasFetch) return Promise.resolve({ key: key, meta: null });
-    return Promise.resolve(window.PaneCore.fetchMeta(key))
-      .then(function (meta) { return { key: key, meta: meta }; })
-      .catch(function () { return { key: key, meta: null }; });
-  });
-  return Promise.all(fetchers).then(function (results) {
-    results.forEach(function (res) {
-      if (!res.meta) {
-        // Dead session / shell → prune the key from the tree.
-        t = window.SplitTree.remove(t, res.key);
-        return;
-      }
-      // Prefer the kind the server reports (chat vs chat-codex, terminal,
-      // transcript, session) over the prefix inference.
-      KIND_BY_KEY[res.key] = res.meta.kind || canvasInferKind(res.key);
-      META_BY_KEY[res.key] = res.meta;
-    });
-    CanvasApp.setTree(t);
-    var survivors = window.SplitTree.keys(t);
-    ACTIVE_KEY = survivors.length ? survivors[survivors.length - 1] : null;
-    CanvasApp.renderTree();
-    // Persist the pruned tree so the next boot doesn't re-attempt dead keys.
-    saveCanvasState();
-  });
+  } catch (_e) { /* ignore storage errors — boot proceeds with an empty canvas */ }
+  return Promise.resolve();
 }
 
 // ─── Gutter geometry ──────────────────────────────────────────────────────────
@@ -622,6 +650,12 @@ async function dispatchBusMessage(msg) {
       CanvasApp.focusPane(key);
       return;
     }
+    // Cap at a 2x2 grid — a new pane beyond four would shrink everything to
+    // slivers. Reject (the operator closes one first) and flash a note.
+    if (ST.keys(TREE).length >= CANVAS_MAX_PANES) {
+      canvasFlashNote("Canvas is full (2×2). Close a pane to open another.");
+      return;
+    }
     // Stash the render inputs PaneCore.mount needs but the tree doesn't carry.
     KIND_BY_KEY[key] = kind;
     META_BY_KEY[key] = msg.meta || null;
@@ -645,15 +679,13 @@ async function dispatchBusMessage(msg) {
         }
       } catch (_e) { /* mount proceeds with empty meta */ }
     }
-    // Insert: first pane fills the canvas; subsequent panes split the active
-    // region to the right.
+    // Insert toward a 2x2 grid: 1=full, 2=left|right, 3=split the left column
+    // down, 4=split the right column down (clean 2x2). See canvasPlacementFor.
     if (ST.keys(TREE).length === 0) {
       CanvasApp.setTree(ST.insertFirst(ST.empty(), key));
     } else {
-      var target = (ACTIVE_KEY && ST.keys(TREE).indexOf(ACTIVE_KEY) !== -1)
-        ? ACTIVE_KEY
-        : ST.keys(TREE)[ST.keys(TREE).length - 1];
-      CanvasApp.setTree(ST.splitLeaf(TREE, target, key, "right"));
+      var place = canvasPlacementFor(TREE);
+      CanvasApp.setTree(ST.splitLeaf(TREE, place.target, key, place.dir));
     }
     ACTIVE_KEY = key;
     CanvasApp.renderTree();
@@ -680,10 +712,10 @@ window.CanvasApp = {
     QUEUE = window.CanvasBus.makeQueue();
     BUS = window.CanvasBus.create({ onMessage: handleBusMessage });
 
-    // Restore persisted layout (Task 12) before announcing readiness so the
-    // `ready` we post reflects the rehydrated open set. restoreCanvasState is
-    // async (it fetches per-pane meta); we chain the ready-post + flush after
-    // it resolves so a restore-then-open race can't drop the queued opens.
+    // Clear any persisted pane layout before announcing readiness (the canvas
+    // boots CLEAN — see restoreCanvasState), so the `ready` we post reflects an
+    // empty open set. Kept async + chained so the ready-post + queue-flush still
+    // run after it settles and a boot-time `open` can't be dropped.
     var finish = function () {
       // Start the lastSeen heartbeat + beforeunload teardown (Task 12).
       startCanvasHeartbeat();

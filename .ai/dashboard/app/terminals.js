@@ -97,6 +97,52 @@
     var _CANVAS_QUEUE = null;        // CanvasBus.makeQueue() — buffers until ready
     var _CANVAS_ON_KEYS = new Set(); // keys currently mounted on the canvas
     var CANVAS_STALE_INTERVAL_MS = 3000; // mirrors canvas.js heartbeat cadence
+    var _CANVAS_WIN = null;          // handle to the opened canvas window
+
+    // Open (or focus) the single named canvas window WITHOUT ever reloading it.
+    //
+    // CRITICAL: calling window.open("app/canvas.html", "dash-canvas") when the
+    // window already exists RE-NAVIGATES it — reloading canvas.html, tearing
+    // down every mounted pane and dropping the in-flight `open` message. So
+    // adding a terminal would reload the whole canvas. We must NEVER pass the
+    // canvas URL to an existing window.
+    //
+    // Instead always reacquire via an EMPTY url: window.open("", "dash-canvas")
+    // returns the existing window WITHOUT navigating it (verified: no reload),
+    // or a fresh blank window if none exists. We only navigate to canvas.html
+    // when the window is genuinely blank (i.e. we just created it) — detected
+    // by reading its same-origin location. A reused live canvas is left exactly
+    // as it is. (We don't rely on the heartbeat for liveness here: a backgrounded
+    // canvas throttles its heartbeat and would look "dead", which previously
+    // forced the reloading URL path.)
+    function canvasOpenWindow() {
+      try {
+        if (_CANVAS_WIN && !_CANVAS_WIN.closed) {
+          try { _CANVAS_WIN.focus(); } catch (_) {}
+          return _CANVAS_WIN;
+        }
+        var w = window.open("", "dash-canvas");
+        if (!w) {
+          // Empty-url open can be blocked on the very first user gesture in some
+          // browsers; fall back to a real open so the canvas still appears.
+          _CANVAS_WIN = window.open("app/canvas.html", "dash-canvas");
+          return _CANVAS_WIN;
+        }
+        try {
+          var href = (w.location && w.location.href) || "";
+          // Navigate ONLY when the window isn't already our canvas (a freshly
+          // created blank window). A live canvas keeps its panes — no reload.
+          if (href === "" || href === "about:blank" || href.indexOf("canvas.html") === -1) {
+            w.location.href = "app/canvas.html";
+          }
+        } catch (_) { /* same-origin popup; shouldn't throw */ }
+        try { w.focus(); } catch (_) {}
+        _CANVAS_WIN = w;
+      } catch (_) {
+        _CANVAS_WIN = null;
+      }
+      return _CANVAS_WIN;
+    }
 
     // The pane's term-object → the {key, kind} the bus speaks. Key is
     // normalized the SAME way the canvas normalizes inbound keys (pty: prefix
@@ -244,13 +290,13 @@
       // Already on the canvas → focus it instead of opening a duplicate pane.
       if (_CANVAS_ON_KEYS.has(key)) {
         bus.post({ type: "focus", key: key });
-        // Re-open the named window to bring it forward if it exists.
-        try { window.open("app/canvas.html", "dash-canvas"); } catch (_) {}
+        // Bring the window forward WITHOUT reloading it (see canvasOpenWindow).
+        canvasOpenWindow();
         return;
       }
-      // Ensure the canvas window exists (named target ⇒ single instance).
-      var win = null;
-      try { win = window.open("app/canvas.html", "dash-canvas"); } catch (_) { win = null; }
+      // Ensure the canvas window exists (named target ⇒ single instance) and
+      // bring it forward without ever reloading an already-open canvas.
+      var win = canvasOpenWindow();
       if (!win) {
         setMsg("#term-msg", "warn",
           "Canvas popup blocked — allow popups for this site, then click canvas again",
@@ -471,88 +517,22 @@
     var TERM_MSG_DURATION_MS = 4000;
 
     async function termRefreshPicker(jobs) {
-      const sel = $("#term-picker");
-      if (!sel) return;
-      // If the operator is mid-pick (dropdown open) we must NOT replace
-      // innerHTML — that closes the dropdown under their cursor. Postpone
-      // and retry on the next poll.
-      if (document.activeElement === sel) return;
-      const prev = sel.value;
-      const openKeys = new Set(TERMS.keys());
-
-      // Sessions: IDE + dashboard Claude chats, unified from /api/sessions
-      // (deduped by sid, each annotated with its baton state). This single
-      // group replaces the old "IDE chats" group AND the chat-kind dashboard
-      // jobs — every Claude conversation opens as one writable session pane.
-      let sessions = [];
-      let totalSessions = 0;
+      // The Terminals tab is a launcher + status list now — there is no picker
+      // <select> to populate. We still fetch the unified session snapshot and
+      // feed the status renderer the FULL session + job set (the renderer drops
+      // kind === "chat" itself, since chats are sessions). Kept named
+      // termRefreshPicker for the existing call sites (loadJobs, the shim).
       let allSessions = [];
       try {
         const r = await fetch("/api/sessions", { cache: "no-store" });
         if (r.ok) {
           const data = await r.json();
-          // Sessions are Claude conversations only. Codex (chat-codex) is NOT a
-          // claude --resume session; exclude it here so it stays in the Jobs
-          // group and clicking it never spins up a Claude pane on a codex id.
+          // Codex (chat-codex) is not a claude --resume session — keep it out of
+          // the session set so it renders as a job row, not a Claude pane target.
           allSessions = (data.sessions || []).filter((s) => s.kind !== "chat-codex" && s.sid);
-          const all = allSessions.filter((s) => !openKeys.has("session:" + s.sid));
-          totalSessions = all.length;
-          sessions = all.slice(0, PICKER_MAX_PER_GROUP);
         }
-      } catch (_) { /* ignore — picker still works for jobs */ }
-
-      // Feed the status list (the Terminals tab's primary content). Pass the
-      // FULL session/job snapshot — unlike the picker we want every row,
-      // including ones the operator has routed to the canvas. Chat jobs are
-      // sessions now, so the renderer drops kind === "chat" itself.
+      } catch (_) { /* ignore — the status list still renders the job rows */ }
       termRenderStatusList(allSessions, jobs || []);
-
-      // Jobs spawned by the dashboard that are NOT Claude chats: orchestrate /
-      // plan / codex. Claude chats (kind === "chat") are sessions now and live
-      // in the Sessions group above, so they are excluded here.
-      const nonChatJobs = (jobs || []).filter((j) => j.kind !== "chat" && !openKeys.has(j.id));
-      const jobChoices = nonChatJobs.slice(0, PICKER_MAX_PER_GROUP);
-      const totalJobs = nonChatJobs.length;
-
-      if (!sessions.length && !jobChoices.length) {
-        sel.innerHTML = `<option value="">— nothing to open —</option>`;
-        sel.disabled = true;
-        const termOpenBtn = $("#term-open");
-        if (termOpenBtn) termOpenBtn.disabled = true;
-        return;
-      }
-      const parts = [];
-      if (sessions.length) {
-        // Label surfaces truncation ("N of M newest") so the cap is never silent.
-        const label = totalSessions > sessions.length
-          ? `Sessions (${sessions.length} of ${totalSessions} newest)`
-          : "Sessions";
-        parts.push(`<optgroup label="${escape(label)}">` + sessions.map((s) => {
-          const sid = s.sid;
-          const state = s.state || "mirror";
-          const title = (s.title || s.task || "").replace(/\s+/g, " ").slice(0, 50);
-          const when = (s.modified || s.started_at || "").slice(11, 16);
-          const shown = title || (sid.slice(0, 8) + "…");
-          return `<option value="session:${escape(sid)}">[${escape(state)}] ${escape(shown)}${when ? " (" + escape(when) + ")" : ""}</option>`;
-        }).join("") + `</optgroup>`);
-      }
-      if (jobChoices.length) {
-        const label = totalJobs > jobChoices.length
-          ? `Jobs (${jobChoices.length} of ${totalJobs} newest)`
-          : "Jobs";
-        parts.push(`<optgroup label="${escape(label)}">` + jobChoices.map((j) => {
-          const preview = (j.task || "").replace(/\s+/g, " ").slice(0, 60);
-          return `<option value="job:${escape(j.id)}">[${escape(j.status)}] ${escape(j.kind)} — ${escape(preview)}</option>`;
-        }).join("") + `</optgroup>`);
-      }
-      sel.innerHTML = parts.join("");
-      sel.disabled = false;
-      const termOpenBtn = $("#term-open");
-      if (termOpenBtn) termOpenBtn.disabled = false;
-      // Restore by value comparison, not a data-built CSS selector: a `prev`
-      // containing selector metacharacters would make querySelector throw a
-      // SyntaxError and abort the picker refresh.
-      if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
     }
 
     // Back-compat shim so existing call sites that only refresh the
@@ -601,18 +581,91 @@
     // (on-canvas state) without re-fetching.
     var _STATUS_LAST = { sessions: [], jobs: [] };
 
+    // ----- launched-but-not-yet-opened resources -----
+    // "New terminal" is a pure launcher: the operator picks what to launch
+    // (AI chat / shell), tool and model, hits Launch, and the resource is
+    // CREATED but NOT shown on the canvas. It lands here and renders as a
+    // status row with a ⊞ so the operator opens it on the canvas when they
+    // want. Persisted so a dashboard reload doesn't lose the launch.
+    //   entry = { id, kind:"session"|"terminal", tool, model, label, ts,
+    //             token?, steps? }   (token/steps only for kind:"terminal")
+    var LAUNCHED_KEY = "dash.launched.v1";
+    var _LAUNCHED = [];
+    (function loadLaunched() {
+      try {
+        var raw = localStorage.getItem(LAUNCHED_KEY);
+        var arr = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(arr)) _LAUNCHED = arr.filter((e) => e && e.id && e.kind);
+      } catch (_) { _LAUNCHED = []; }
+    })();
+    function persistLaunched() {
+      try { localStorage.setItem(LAUNCHED_KEY, JSON.stringify(_LAUNCHED)); } catch (_) {}
+    }
+    function addLaunched(entry) {
+      _LAUNCHED.unshift(entry);
+      persistLaunched();
+      termRenderStatusList();
+    }
+    function removeLaunched(id) {
+      var n = _LAUNCHED.length;
+      _LAUNCHED = _LAUNCHED.filter((e) => e.id !== id);
+      if (_LAUNCHED.length !== n) persistLaunched();
+    }
+    // Open a launched entry on the canvas, then drop it from the pending list
+    // (the canvas owns it now; a session also reappears via /api/sessions).
+    function openLaunched(id) {
+      var e = _LAUNCHED.find((x) => x.id === id);
+      if (!e) return;
+      if (e.kind === "terminal") {
+        if (e.token) termRememberPtyToken(e.id, e.token);
+        var opts = { meta: e.token ? { token: e.token } : null };
+        if (e.steps && e.steps.length) opts.initialCommand = e.steps;
+        termSendToCanvas(_statusRowTerm("terminal", e.id), opts);
+      } else {
+        // Claude session: route the (still transcript-less) sid to the canvas;
+        // the operator types the first message in the canvas pane, which
+        // create-on-first-turn materialises.
+        termRouteSessionToCanvas(e.id);
+      }
+      // Keep the launched entry in the list so the row stays visible (now with
+      // an "on canvas" badge) and re-openable after the canvas pane is closed.
+      // A launched SESSION is auto-dropped once it materialises in /api/sessions
+      // (dedup in termRenderStatusList); a launched TERMINAL stays until the
+      // operator dismisses it (the ✕ on its row). Re-render to paint the badge.
+      termRenderStatusList();
+    }
+
     // Active vs finished partition. A session/job is "active" while it is
     // running / queued / cancelling / mirror (a live IDE session) — anything
     // terminal (done / failed / cancelled) drops to the finished group.
     var _STATUS_ACTIVE_JOB = new Set(["running", "queued", "cancelling"]);
     function _statusIsActiveJob(j) { return _STATUS_ACTIVE_JOB.has(j.status); }
+    // A passive IDE transcript counts as "active" (top of the list) only if it
+    // was touched within this window — otherwise the Terminals tab fills with
+    // every Claude conversation ever recorded in the project dir. The archive
+    // is still reachable in the collapsed "inactive" group below.
+    var _STATUS_SESSION_FRESH_MS = 15 * 60 * 1000;
+    function _statusModifiedWithinMs(s, ms) {
+      var iso = s.modified || s.started_at || "";
+      if (!iso) return false;
+      var t = Date.parse(iso);
+      if (isNaN(t)) return false;
+      return (Date.now() - t) <= ms;
+    }
     function _statusIsActiveSession(s) {
-      // Sessions carry a baton state (owned / mirror / idle / done …). Treat a
-      // session as finished only when it explicitly reports "done"; everything
-      // else (a live or resumable conversation) stays active so the operator
-      // can pick it up.
+      // "Active" = work the operator is genuinely driving right now, not the
+      // whole transcript archive. A session is active when an engine is
+      // attached (dashboard/canvas is live on it), the registry baton is held
+      // (owned/acquiring/engine), a dashboard-launched chat is still running,
+      // or the transcript was touched very recently. Everything else — the
+      // passive IDE mirrors and anything explicitly done — drops to the
+      // collapsed "inactive" group so the live work stays at the top.
       var st = (s.state || "mirror").toLowerCase();
-      return st !== "done";
+      if (st === "done") return false;
+      if (s.has_engine) return true;
+      if (st === "owned" || st === "acquiring" || st === "engine") return true;
+      if (s.source === "dashboard" && _STATUS_ACTIVE_JOB.has(s.status)) return true;
+      return _statusModifiedWithinMs(s, _STATUS_SESSION_FRESH_MS);
     }
 
     // Pseudo-term for a status row so the existing canvas bridge
@@ -650,7 +703,9 @@
     }
 
     function _statusRowEl(opts) {
-      // opts: { key, kind, pill, pillState, activity, tool, preview, title }
+      // opts: { key, kind, pill, pillState, activity, tool, preview, title,
+      //         onOpen? }  — onOpen overrides the default ⊞ behavior (used by
+      //         launched-but-not-opened rows, which materialise on open).
       const row = document.createElement("div");
       row.className = "term-status-row";
       row.dataset.key = opts.key;
@@ -680,8 +735,20 @@
       const sendBtn = row.querySelector(".send-to-canvas");
       sendBtn.addEventListener("click", (e) => {
         e.stopPropagation();
+        if (typeof opts.onOpen === "function") { opts.onOpen(); return; }
         termSendToCanvas(_statusRowTerm(opts.kind, opts.key));
       });
+      // Optional dismiss control (launched rows): a ✕ that removes the row.
+      if (typeof opts.onDismiss === "function") {
+        const x = document.createElement("button");
+        x.className = "row-dismiss";
+        x.type = "button";
+        x.dataset.action = "dismiss";
+        x.title = "Dismiss this launch";
+        x.textContent = "✕";
+        x.addEventListener("click", (e) => { e.stopPropagation(); opts.onDismiss(); });
+        row.querySelector(".row-actions").appendChild(x);
+      }
       return row;
     }
 
@@ -705,6 +772,35 @@
         grid.insertBefore(container, grid.firstChild);
       }
       container.innerHTML = "";
+
+      // Drop launched SESSIONS that have since materialised in /api/sessions
+      // (first message sent) — the real row takes over, so we don't show both.
+      const _sessionSids = new Set((sessions || []).map((s) => s && s.sid).filter(Boolean));
+      const _dropped = _LAUNCHED.filter((e) => e.kind === "session" && _sessionSids.has(e.id));
+      if (_dropped.length) { _dropped.forEach((e) => removeLaunched(e.id)); }
+
+      // Launched rows render first (the freshest operator intent). Their ⊞
+      // materialises + opens on the canvas; the ✕ dismisses the launch.
+      const launchedEls = [];
+      for (const e of _LAUNCHED) {
+        const isTerm = e.kind === "terminal";
+        const onCanvas = _CANVAS_ON_KEYS.has(e.id);
+        const el = _statusRowEl({
+          key: e.id,
+          kind: e.kind,
+          pill: "launched",
+          pillState: "queued",
+          activity: onCanvas ? "on canvas" : "open on canvas →",
+          activityCls: "waiting",
+          tool: e.tool || (isTerm ? "shell" : "claude"),
+          toolTitle: e.model || e.tool || "",
+          preview: e.label || (isTerm ? "shell" : "AI chat"),
+          title: e.label || e.id,
+          onOpen: () => openLaunched(e.id),
+          onDismiss: () => { removeLaunched(e.id); termRenderStatusList(); },
+        });
+        launchedEls.push(el);
+      }
 
       const active = [];
       const finished = [];
@@ -745,18 +841,19 @@
         (_statusIsActiveJob(j) ? active : finished).push(el);
       }
 
-      if (!active.length && !finished.length) {
+      if (!launchedEls.length && !active.length && !finished.length) {
         // No rows AND no inline panes → show the placeholder.
         if (TERMS.size === 0 && !grid.querySelector(".term-empty")) {
           const empty = document.createElement("div");
           empty.className = "term-empty";
-          empty.innerHTML = "No sessions yet. Click <em>New terminal</em>, or start one in <em>Run</em>. Send a row to the canvas to interact with it.";
+          empty.innerHTML = "Nothing launched yet. Click <em>New terminal</em> to launch an AI chat or a shell, then open it on the canvas with ⊞.";
           container.appendChild(empty);
         }
         termUpdateTerminalsCount();
         return;
       }
 
+      for (const el of launchedEls) container.appendChild(el);
       for (const el of active) container.appendChild(el);
 
       if (finished.length) {
@@ -764,7 +861,7 @@
         details.className = "terms-finished-group";
         details.open = _statusFinishedOpen;
         const summary = document.createElement("summary");
-        summary.textContent = "finished (" + finished.length + ")";
+        summary.textContent = "inactive (" + finished.length + ")";
         details.appendChild(summary);
         for (const el of finished) details.appendChild(el);
         details.addEventListener("toggle", () => {
@@ -797,7 +894,7 @@
     var DRAFT_MODELS_BY_TOOL = (typeof MODELS_BY_TOOL === "object" && MODELS_BY_TOOL)
       ? MODELS_BY_TOOL
       : {
-          claude: ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+          claude: ["claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
           codex:  ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
         };
 
@@ -874,370 +971,112 @@
       return `claude${sid} --model ${safeModel}`;
     }
 
-    function termOpenDraft() {
-      _draftCounter += 1;
-      const draftId = "draft:" + Date.now() + ":" + _draftCounter;
-      const grid = $("#terms-grid");
-      if (!grid) return;
+    // Mint a client-side session id. crypto.randomUUID where available; the
+    // biased Math.random fallback is fine for a session SELECTOR (never a
+    // security token) on the rare browser without crypto.randomUUID.
+    function termMintSid() {
+      if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+      return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+        const r = Math.random() * 16 | 0;
+        const v = c === "x" ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
 
-      // Defaults. Editable before sending.
-      const defaultTool = "claude";
-      const defaultModel = (DRAFT_MODELS_BY_TOOL[defaultTool] || [""])[0] || "claude-sonnet-4-6";
-      const defaultType = "ai";
+    // "New terminal" → a compact LAUNCHER (not a chat). The operator picks what
+    // to launch (AI chat / Terminal), the tool and the model, then clicks
+    // Launch. The resource is CREATED and added to the status list as a
+    // launched row — it is NOT shown on the canvas. The operator opens it on
+    // the canvas with ⊞ and interacts there (first message / shell). Decoupling
+    // launch from open matches the converged model: the dashboard launches, the
+    // canvas hosts the interactive panes.
+    // Wire the launcher controls that live in the Terminals toolbar (#term-
+    // launchtype / #term-tool / #term-model / #term-shell). Populates the model
+    // list, shows the Shell field only for terminals, and constrains AI chat to
+    // Claude (Codex's native UX is its CLI — launch it as a shell). Called once
+    // on boot.
+    function wireLauncherToolbar() {
+      const launchSel = $("#term-launchtype");
+      const toolSel = $("#term-tool");
+      const modelSel = $("#term-model");
+      const shellSel = $("#term-shell");
+      const shellField = document.querySelector(".term-shell-field");
+      const hint = $("#term-launch-hint");
+      if (!launchSel || !toolSel || !modelSel) return;
+      if (shellSel) shellSel.innerHTML = termDraftShellOptions("auto");
+      const codexOpt = [...toolSel.options].find((o) => o.value === "codex");
 
-      const pane = document.createElement("div");
-      pane.className = "term-pane term-draft focus";
-      pane.dataset.jobId = draftId;
-      pane.innerHTML = `
-        <div class="term-head">
-          <span class="pill status-pill" title="not yet started — pick tool, model and type">draft</span>
-          <span class="task">New terminal</span>
-          <span class="activity waiting" title="will start when you send the first message">unsent</span>
-          <span class="id">${escape(draftId.slice(-6))}</span>
-          <span class="actions">
-            <button class="close-btn" title="Discard this draft">close</button>
-          </span>
-        </div>
-        <div class="term-draft-config">
-          <label class="draft-field">
-            <span class="draft-label">Tool</span>
-            <select class="draft-tool">
-              <option value="claude"${defaultTool === "claude" ? " selected" : ""}>Claude</option>
-              <option value="codex"${defaultTool === "codex" ? " selected" : ""}>Codex</option>
-            </select>
-          </label>
-          <label class="draft-field">
-            <span class="draft-label">Model</span>
-            <select class="draft-model">
-              ${termDraftModelOptions(defaultTool, defaultModel)}
-            </select>
-          </label>
-          <label class="draft-field">
-            <span class="draft-label">Type</span>
-            <select class="draft-type">
-              ${termDraftTypeOptionsHtml(defaultType)}
-            </select>
-          </label>
-          <span class="draft-hint draft-hint-ai">Conversation starts when you send the first message.</span>
-          <span class="draft-hint draft-hint-shell" hidden>Opens a real PTY, runs the chosen tool inside, then types your first message into the running TUI.</span>
-        </div>
-        <div class="term-body chat" tabindex="0">
-          <div class="msg system draft-placeholder">Pick tool, model and type, then send your first message.</div>
-        </div>
-        <div class="attach-tray" style="display:none"></div>
-        <div class="term-foot">
-          <textarea class="stdin-input" rows="1" placeholder="type your first message — Enter starts the conversation · Shift+Enter newline"></textarea>
-          <button class="send-btn">start</button>
-        </div>
-      `;
-      grid.appendChild(pane);
-
-      const body = pane.querySelector(".term-body");
-      const input = pane.querySelector(".stdin-input");
-      const sendBtn = pane.querySelector(".send-btn");
-      const toolSel = pane.querySelector(".draft-tool");
-      const modelSel = pane.querySelector(".draft-model");
-      const typeSel = pane.querySelector(".draft-type");
-      const hintAi = pane.querySelector(".draft-hint-ai");
-      const hintShell = pane.querySelector(".draft-hint-shell");
-      const placeholder = body.querySelector(".draft-placeholder");
-
-      // Auto-grow the textarea exactly like real panes do.
-      const autosize = () => {
-        input.style.height = "auto";
-        const next = Math.min(input.scrollHeight, COMPOSER_AUTOSIZE_MAX_PX);
-        input.style.height = next + "px";
-      };
-      input.addEventListener("input", autosize);
-
-      const t = {
-        jobId: draftId,
-        pane, body, input, sendBtn,
-        source: null,
-        task: "",
-        kind: "draft",
-        isDraft: true,
-        attached: { images: [], files: [] },
-      };
-      TERMS.set(draftId, t);
-
-      // Parse the Type select value: "ai" | "shell:<name>".
-      const parseType = () => {
-        const v = typeSel.value || "ai";
-        if (v === "ai") return { kind: "ai" };
-        const [k, ...rest] = v.split(":");
-        return { kind: k, id: rest.join(":") };
-      };
-
-      const refreshType = () => {
-        const isShell = parseType().kind === "shell";
-        hintAi.hidden = isShell;
-        hintShell.hidden = !isShell;
-        if (isShell) {
-          sendBtn.textContent = "open & send";
-          if (placeholder) placeholder.textContent = "Opens the shell, runs the tool with the chosen model, then types your first message into the TUI.";
-        } else {
-          sendBtn.textContent = "start";
-          if (placeholder) placeholder.textContent = "Pick tool, model and type, then send your first message.";
+      const refresh = () => {
+        const isShell = launchSel.value === "shell";
+        if (shellField) shellField.hidden = !isShell;
+        if (codexOpt) codexOpt.disabled = !isShell;
+        if (!isShell && toolSel.value === "codex") toolSel.value = "claude";
+        if (hint) {
+          hint.textContent = isShell
+            ? "Launches a real shell" + (toolSel.value === "claude" || toolSel.value === "codex" ? " running " + toolSel.value : "") + " — open it on the canvas with ⊞."
+            : "Launches a Claude chat — open it on the canvas with ⊞ and send your first message there.";
         }
       };
-      typeSel.addEventListener("change", refreshType);
-
-      // Tool change repopulates the Model list (claude vs codex models).
-      toolSel.addEventListener("change", () => {
+      const repopulateModels = () => {
         const tool = toolSel.value;
-        const list = DRAFT_MODELS_BY_TOOL[tool] || [];
-        modelSel.innerHTML = termDraftModelOptions(tool, list[0] || "");
-      });
-
-      // Image paste / drop reuses the real-pane plumbing (AI chat only —
-      // shell-mode messages are typed into the TUI and don't accept
-      // multimodal input from the dashboard composer).
-      input.addEventListener("paste", (e) => {
-        if (parseType().kind !== "ai") return;
-        const items = e.clipboardData?.items || [];
-        for (const it of items) {
-          if (it.kind === "file" && it.type.startsWith("image/")) {
-            const f = it.getAsFile();
-            if (f) { termPasteImage(t, f); e.preventDefault(); }
-          }
-        }
-      });
-      pane.addEventListener("dragover", (e) => { e.preventDefault(); pane.classList.add("dragover"); });
-      pane.addEventListener("dragleave", () => pane.classList.remove("dragover"));
-      pane.addEventListener("drop", (e) => {
-        e.preventDefault();
-        pane.classList.remove("dragover");
-        if (parseType().kind !== "ai") return;
-        for (const f of e.dataTransfer.files || []) {
-          if (f.type.startsWith("image/")) termPasteImage(t, f);
-        }
-      });
-
-      pane.addEventListener("click", () => {
-        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
-        pane.classList.add("focus");
-      });
-
-      pane.querySelector(".close-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        TERMS.delete(draftId);
-        pane.remove();
-        termRenderEmptyState();
-      });
-
-      const startConversation = async () => {
-        const tool = toolSel.value;
-        const model = modelSel.value;
-        const typeSelected = parseType();
-        const text = input.value.trim();
-        if (!model) {
-          setMsg("#term-msg", "err", "Pick a model before sending.", TERM_MSG_DURATION_MS);
-          return;
-        }
-
-        if (typeSelected.kind === "shell") {
-          // Shell-with-AI path: spawn the PTY, then launch the chosen
-          // tool inside it with the chosen model, then type the user's
-          // message into the running TUI.
-          const shell = typeSelected.id || "auto";
-          sendBtn.disabled = true;
-          typeSel.disabled = true;
-          toolSel.disabled = true;
-          modelSel.disabled = true;
-          sendBtn.textContent = "opening…";
-          var canvasWin = null;
-          try { canvasWin = window.open("app/canvas.html", "dash-canvas"); } catch (_) { canvasWin = null; }
-          if (!canvasWin) {
-            sendBtn.disabled = false;
-            typeSel.disabled = false;
-            toolSel.disabled = false;
-            modelSel.disabled = false;
-            sendBtn.textContent = "open & send";
-            setMsg("#term-msg", "warn",
-              "Canvas popup blocked - allow popups for this site, then open the shell again",
-              TERM_MSG_DURATION_MS);
-            return;
-          }
-          try {
-            const res = await postJson("/api/ptys", { shell, cols: 100, rows: 30 });
-            TERMS.delete(draftId);
-            pane.remove();
-            // For Claude: pre-allocate the session-id so we can mark it
-            // as already-handled BEFORE the IDE-transcript auto-opener
-            // notices the new JSONL file. Without this, opening
-            // Type=shell + Tool=Claude spawns a second pane mirroring
-            // the same session.
-            let preSessionId = null;
-            if (tool === "claude") {
-              preSessionId = (window.crypto && crypto.randomUUID)
-                ? crypto.randomUUID()
-                // Fallback for very old browsers without crypto.randomUUID.
-                // Math.random is biased and NOT cryptographically random — the
-                // session-id collision space is large enough (~10^36) that this
-                // is acceptable for a session selector but it must not be used
-                // for security tokens. Modern browsers always take the
-                // crypto.randomUUID branch above.
-                : ("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-                    const r = Math.random() * 16 | 0;
-                    const v = c === "x" ? r : (r & 0x3 | 0x8);
-                    return v.toString(16);
-                  }));
-              suppressAutoOpen("ide:" + preSessionId);
-            }
-            // Build the sequence the PTY runs once the prompt appears:
-            //   1. Launch the tool with the model flag.
-            //   2. After a beat (TUI warm-up), type the first message
-            //      so the operator sees it land inside the running AI.
-            const launchCmd = termDraftLaunchCommand(tool, model, preSessionId);
-            const steps = [{ text: launchCmd, delay: 300 }];
-            if (text) steps.push({ text: text, delay: 3000 });
-            // Stash the per-PTY token in memory and the shared same-origin
-            // cache, then let the canvas mount and run the launch sequence.
-            termRememberPtyToken(res.id, res.token);
-            termSendToCanvas(_statusRowTerm("terminal", res.id), {
-              meta: { token: res.token },
-              initialCommand: steps,
-            });
-          } catch (err) {
-            sendBtn.disabled = false;
-            typeSel.disabled = false;
-            toolSel.disabled = false;
-            modelSel.disabled = false;
-            sendBtn.textContent = "open & send";
-            const note = document.createElement("div");
-            note.className = "msg system";
-            note.style.color = "var(--bad)";
-            note.textContent = "[open shell failed: " + err.message + "]";
-            body.appendChild(note);
-            setMsg("#term-msg", "err", "Open shell failed: " + err.message, TERM_MSG_DURATION_MS);
-          }
-          return;
-        }
-
-        // AI chat (direct) path: POST /api/jobs with stream-json.
-        // The /api/jobs endpoint only accepts a plain-text ``task`` for
-        // the first turn (server requires a non-empty ``task``). The
-        // previous implementation accepted image paste / file drag into
-        // the draft pane but then silently dropped them on POST — the
-        // operator saw their attachments in the tray, hit Send, and the
-        // first model turn went text-only with no warning. Now: require
-        // text on the draft AND carry any tray attachments over to the
-        // newly-opened pane so the operator can include them in their
-        // very next turn.
-        const attached = t.attached || { images: [], files: [] };
-        if (!text) {
-          if (attached.images.length || attached.files.length) {
-            setMsg("#term-msg", "warn",
-              "Type a first message — attachments need a text turn to send with.",
-              TERM_MSG_DURATION_MS);
-          }
-          input.focus();
-          return;
-        }
-        sendBtn.disabled = true;
-        typeSel.disabled = true;
-        toolSel.disabled = true;
-        modelSel.disabled = true;
-        sendBtn.textContent = "starting…";
-
-        // Claude chats open in the standalone canvas. Mint a fresh sid and
-        // POST the first turn directly to the session input endpoint; the
-        // backend create-on-first-turn path materialises it.
-        if (tool !== "codex") {
-          const sid = (window.crypto && crypto.randomUUID)
-            ? crypto.randomUUID()
-            // Fallback for very old browsers without crypto.randomUUID — a
-            // session selector only, never a security token, so the biased
-            // Math.random generator is acceptable (modern browsers take the
-            // crypto.randomUUID branch above).
-            : ("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-                const r = Math.random() * 16 | 0;
-                const v = c === "x" ? r : (r & 0x3 | 0x8);
-                return v.toString(16);
-              }));
-          // Pre-suppress both keys so the IDE-transcript auto-opener doesn't
-          // spawn a duplicate pane the moment claude writes its first JSONL.
-          suppressAutoOpen("session:" + sid);
-          suppressAutoOpen("ide:" + sid);
-          TERMS.delete(draftId);
-          pane.remove();
-          try { window.open("app/canvas.html", "dash-canvas"); } catch (_) {}
-          try {
-            const payload = { text: text, owner: termClientId() };
-            if (model) payload.model = model;
-            const r = await fetch(
-              "/api/sessions/" + encodeURIComponent(sid) + "/input",
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-              },
-            );
-            if (!r.ok && r.status !== 202) {
-              const body = await r.text().catch(() => "");
-              throw new Error("HTTP " + r.status + (body ? ": " + body.slice(0, 120) : ""));
-            }
-            termSendToCanvas(_statusRowTerm("session", "session:" + sid));
-            if (attached.images.length || attached.files.length) {
-              setMsg("#term-msg", "warn",
-                "Attachments need a text turn to send with; add them in the canvas composer.",
-                TERM_MSG_DURATION_MS);
-            }
-          } catch (err) {
-            setMsg("#term-msg", "err", "Start failed: " + err.message, TERM_MSG_DURATION_MS);
-          }
-          return;
-        }
-
-        // Codex chats stay job-based (chat-codex); not migrated to sessions.
-        let codexStarted = false;
-        try {
-          const payload = { kind: "chat-codex", task: text, model };
-          const res = await postJson("/api/jobs", payload);
-          TERMS.delete(draftId);
-          pane.remove();
-          termSendToCanvas(_statusRowTerm("chat-codex", res.id));
-          codexStarted = true;
-          if (attached.images.length || attached.files.length) {
-            setMsg("#term-msg", "warn",
-              "Attachments need a text turn to send with; add them in the canvas composer.",
-              TERM_MSG_DURATION_MS);
-          }
-        } catch (err) {
-          sendBtn.disabled = false;
-          typeSel.disabled = false;
-          toolSel.disabled = false;
-          modelSel.disabled = false;
-          sendBtn.textContent = "start";
-          const note = document.createElement("div");
-          note.className = "msg system";
-          note.style.color = "var(--bad)";
-          note.textContent = "[start failed: " + err.message + "]";
-          body.appendChild(note);
-          setMsg("#term-msg", "err", "Start failed: " + err.message, TERM_MSG_DURATION_MS);
-          return;
-        }
-        if (codexStarted) {
-          try {
-            await loadJobs();
-          } catch (err) {
-            console.warn("[terminals] loadJobs after codex start failed: " + (err && err.message ? err.message : err));
-          }
-        }
+        modelSel.innerHTML = termDraftModelOptions(tool, (DRAFT_MODELS_BY_TOOL[tool] || [""])[0] || "");
       };
+      repopulateModels();
+      refresh();
+      launchSel.addEventListener("change", refresh);
+      toolSel.addEventListener("change", () => { repopulateModels(); refresh(); });
+    }
 
-      sendBtn.addEventListener("click", startConversation);
-      input.addEventListener("keydown", (e) => {
-        // !e.isComposing keeps mid-IME-composition Enter (Japanese, Chinese,
-        // Korean, etc.) from sending half-typed text — matches the
-        // transcript fork at the other composer site.
-        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); startConversation(); }
-      });
+    // "New terminal" = launch the resource configured in the toolbar selects.
+    // It is CREATED and added to the status list as a launched row — NOT shown
+    // on the canvas. The operator opens it on the canvas with ⊞ (and, for an AI
+    // chat, types the first message there → create-on-first-turn).
+    async function termOpenDraft() {
+      const launchType = ($("#term-launchtype") || {}).value || "ai";
+      const tool = ($("#term-tool") || {}).value || "claude";
+      const model = ($("#term-model") || {}).value || "";
 
-      termRenderEmptyState();
-      // Drop focus into the message field so the operator can start typing.
-      requestAnimationFrame(() => { try { input.focus(); } catch (_) {} });
+      if (launchType === "ai") {
+        // Direct Claude session. Nothing is sent now — the conversation
+        // materialises (create-on-first-turn) when the operator types the first
+        // message in the canvas session pane.
+        if (!model) { setMsg("#term-msg", "err", "Pick a model before launching.", TERM_MSG_DURATION_MS); return; }
+        const sid = termMintSid();
+        addLaunched({ id: sid, kind: "session", tool: "claude", model,
+                      label: "Claude · " + model, ts: Date.now() });
+        setMsg("#term-msg", "ok", "Claude chat launched — open it on the canvas (⊞) and send your first message there.", TERM_MSG_DURATION_MS);
+        return;
+      }
+
+      // Terminal (shell): create the PTY now; the tool launch command (if any)
+      // runs when the operator opens the row on the canvas.
+      if ((tool === "claude" || tool === "codex") && !model) {
+        setMsg("#term-msg", "err", "Pick a model before launching.", TERM_MSG_DURATION_MS); return;
+      }
+      const shell = ($("#term-shell") || {}).value || "auto";
+      const btn = $("#term-new");
+      if (btn) { btn.disabled = true; }
+      try {
+        const res = await postJson("/api/ptys", { shell, cols: 100, rows: 30 });
+        termRememberPtyToken(res.id, res.token);
+        let steps = [];
+        let label = "Shell (" + shell + ")";
+        if (tool === "claude" || tool === "codex") {
+          // Pin a session-id for Claude so its transcript is identifiable.
+          const preSid = tool === "claude" ? termMintSid() : null;
+          // 600ms (was 300) so the shell prompt + PSReadLine are fully ready
+          // before the launch line is typed — avoids a mangled command on a
+          // still-initialising PowerShell.
+          steps = [{ text: termDraftLaunchCommand(tool, model, preSid), delay: 600 }];
+          label = (tool === "claude" ? "Claude" : "Codex") + " · " + model + " (shell)";
+        }
+        addLaunched({ id: res.id, kind: "terminal", tool, model, token: res.token, steps, label, ts: Date.now() });
+        setMsg("#term-msg", "ok", "Terminal launched — open it on the canvas (⊞).", TERM_MSG_DURATION_MS);
+      } catch (err) {
+        setMsg("#term-msg", "err", "Launch failed: " + err.message, TERM_MSG_DURATION_MS);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
     }
 
     function termAppendChunk(t, chunk) {
@@ -2961,76 +2800,17 @@
       if (!id) return;
       if (AUTO_OPENED_ONCE.delete(id)) persistSuppressAutoOpen();
     }
-    // User preference: if disabled, auto-open does nothing.
-    function termAutoOpenEnabled() {
-      return localStorage.getItem("dash.autoOpenChats") !== "0";
-    }
-    function termSetAutoOpen(enabled) {
-      localStorage.setItem("dash.autoOpenChats", enabled ? "1" : "0");
-      const btn = $("#term-autoopen-toggle");
-      if (!btn) return;
-      btn.classList.toggle("active", !!enabled);
-      btn.setAttribute("aria-pressed", enabled ? "true" : "false");
-      btn.setAttribute(
-        "title",
-        enabled
-          ? "Auto-open new chats: ON (click to disable)"
-          : "Auto-open new chats: OFF (click to enable)",
-      );
-    }
-    function termAutoOpenActive(jobs) {
-      if (!termAutoOpenEnabled()) return;
-      // Only auto-open when the operator is actually on the Terminals view,
-      // so we don't yank focus while they're reading Memory or Decisions.
-      if (!$("#view-terminals").classList.contains("active")) return;
-      for (const j of (jobs || [])) {
-        if (j.kind !== "chat" && j.kind !== "chat-codex") continue;
-        if (j.status !== "running" && j.status !== "queued") continue;
-        const target = termJobCanvasTarget(j.id, j);
-        if (TERMS.has(j.id) || TERMS.has(target.key) || _CANVAS_ON_KEYS.has(target.key)) continue;
-        if (AUTO_OPENED_ONCE.has(j.id) || AUTO_OPENED_ONCE.has(target.key)) continue;
-        suppressAutoOpen(j.id);
-        if (target.key !== j.id) suppressAutoOpen(target.key);
-        if (j.kind === "chat" && j.session_id) suppressAutoOpen("ide:" + j.session_id);
-        termSendToCanvas(_statusRowTerm(target.kind, target.key));
-      }
-      // Also mirror live IDE Claude Code sessions running outside the
-      // dashboard (any transcript file written-to in the last 5 minutes).
-      termAutoOpenActiveTranscripts();
-    }
+    // Auto-open is GONE. The dashboard never pushes panes onto the canvas by
+    // itself — not dashboard chat jobs, not external IDE transcripts. The
+    // Terminals tab is a manual launcher + status list: the operator launches
+    // what they want and opens each row on the canvas with the ⊞ control. The
+    // suppressAutoOpen bookkeeping above is retained only so the launch paths
+    // can mark freshly-minted ids without re-introducing any auto-open.
 
-    // IDE transcript files touched within this window count as "live".
-    // Claude Code writes to the JSONL on every user/assistant turn, so a
-    // few minutes of silence is a safe "abandoned" threshold.
+    // IDE transcript files touched within this window count as "live" for the
+    // explicit "open all running" button below. (Auto-open no longer uses this —
+    // the poll-driven transcript mirror was removed; see termAutoOpenActive.)
     var TRANSCRIPT_ACTIVE_WINDOW_MS = 5 * 60 * 1000;
-    async function termAutoOpenActiveTranscripts() {
-      if (!termAutoOpenEnabled()) return;
-      if (!$("#view-terminals").classList.contains("active")) return;
-      try {
-        const r = await fetch("/api/transcripts", { cache: "no-store" });
-        if (!r.ok) return;
-        const data = await r.json();
-        const now = Date.now();
-        for (const t of (data.transcripts || [])) {
-          const sid = t.session_id;
-          if (!sid) continue;
-          // Claude transcripts open as session panes now. Dedup + suppress on
-          // the actual pane key ("session:"+sid) — the legacy "ide:"+sid key
-          // is also checked so an entry suppressed before the convergence is
-          // still honoured and we never double-open.
-          const sessionKey = "session:" + sid;
-          const ideKey = "ide:" + sid;
-          if (TERMS.has(sessionKey) || TERMS.has(ideKey) || _CANVAS_ON_KEYS.has(sessionKey)) continue;
-          if (AUTO_OPENED_ONCE.has(sessionKey) || AUTO_OPENED_ONCE.has(ideKey)) continue;
-          const mtime = t.modified ? Date.parse(t.modified) : 0;
-          if (!Number.isFinite(mtime) || mtime <= 0) continue;
-          if ((now - mtime) > TRANSCRIPT_ACTIVE_WINDOW_MS) continue;
-          suppressAutoOpen(sessionKey);
-          termRouteSessionToCanvas(sid);
-        }
-      } catch (_) { /* ignore - we'll retry next poll */ }
-    }
-
     async function termOpenAllRunning() {
       // Combines two sources of "active chat":
       //   1. Dashboard chat jobs (running / queued / cancelling).
@@ -3154,55 +2934,17 @@
     }
 
     document.addEventListener("DOMContentLoaded", () => {
-      $("#term-open")?.addEventListener("click", async () => {
-        const raw = $("#term-picker").value;
-        if (!raw) return;
-        const sep = raw.indexOf(":");
-        const source = raw.slice(0, sep);
-        const id = raw.slice(sep + 1);
-        // Picker click = "I explicitly want this pane". Lift any prior
-        // suppression so the pane behaves like a fresh open: re-closes
-        // re-suppress, auto-open paths take the id back into account.
-        if (source === "session") {
-          unsuppressAutoOpen("session:" + id);
-          unsuppressAutoOpen("ide:" + id);  // a session may have been auto-suppressed under its ide key
-          termRouteSessionToCanvas(id);
-          return;
-        }
-        if (source === "ide") {
-          // Legacy "ide:" picker values now open the unified session pane.
-          unsuppressAutoOpen("session:" + id);
-          unsuppressAutoOpen("ide:" + id);
-          termRouteSessionToCanvas(id);
-          return;
-        }
-        // Default: dashboard-spawned job.
-        try {
-          unsuppressAutoOpen(id);
-          const r = await fetch("/api/jobs", { cache: "no-store" });
-          const data = await r.json();
-          const meta = (data.jobs || []).find((j) => j.id === id);
-          const target = termRouteJobToCanvas(id, meta || { task: "" });
-          if (target.key !== id) unsuppressAutoOpen(target.key);
-          await loadJobs();
-        } catch (e) {
-          setMsg("#term-msg", "err", e.message, TERM_MSG_DURATION_MS);
-        }
-      });
+      // The Terminals tab is now a launcher + status list. "New terminal" opens
+      // the launcher; the old "open a pane" picker and the inline-pane controls
+      // (open-all / collapse-all / auto-open / close-all) were removed when
+      // panes moved entirely into the canvas window.
+      // Launcher controls now live in the toolbar; "New terminal" launches the
+      // configured resource into the status list (open it on the canvas later).
+      wireLauncherToolbar();
       $("#term-new")?.addEventListener("click", termOpenDraft);
-      $("#term-open-all")?.addEventListener("click", termOpenAllRunning);
-      // Restore the auto-open preference and wire its toggle.
-      termSetAutoOpen(termAutoOpenEnabled());
-      $("#term-autoopen-toggle")?.addEventListener("click", () => {
-        termSetAutoOpen(!termAutoOpenEnabled());
-      });
-      $("#term-close-all")?.addEventListener("click", termCloseAllFinished);
-      $("#term-collapse-all")?.addEventListener("click", termCollapseAll);
-      // Layout selector removed in 5b-1: the Terminals tab is a status list,
-      // multi-pane geometry lives in the canvas window. Render the status
-      // rows from the current job/session state.
+      // Render the status rows from the current job/session state.
       termRenderStatusList();
-      // Initial picker fill (single unified source).
+      // Initial status-list fill (single unified source).
       termRefreshTranscriptPicker();
       // Restore panes that were open at the last unload. Fires once on
       // boot; rebuilds chat / PTY / IDE-transcript panes from
