@@ -79,6 +79,7 @@ if _SCRIPTS_DIR not in sys.path:
 # behind one interface.
 import pty_session as _pty_session  # noqa: E402 — scripts/ helper
 import todos_parser as _todos_parser  # noqa: E402 — scripts/ helper
+import auto_select_scorer  # noqa: E402 — scripts/ helper
 import session_registry  # noqa: E402 — scripts/ helper
 import session_lock  # noqa: E402 — scripts/ helper
 
@@ -5667,48 +5668,8 @@ def _lookup_session_title(session_id: str) -> str | None:
     return title
 
 
-def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 3) -> dict:
-    """Aggregate METRICS_FILE into per-(phase, size, risk, budget) rankings.
-
-    Mirrors the planner's adaptive scorer from
-    `.claude/skills/planner/SKILL.md` "Adaptive scoring" so the dashboard
-    surfaces the same information the scorer would see.
-
-    Schema returned::
-
-        {
-          "samples": <int>,         # total records considered (post-tail)
-          "groups": [
-            {
-              "key": {
-                "phase": "execute" | ...,
-                "size":  "small" | ... | null,
-                "risk":  "low" | "elevated" | null,
-                "budget": "low" | "medium" | "high" | null
-              },
-              "candidates": [
-                {
-                  "tool": "<str>",
-                  "model": "<str>",
-                  "reasoning_effort": "<str|null>",
-                  "samples": <int>,
-                  "success_rate": <float 0..1>,
-                  "mean_duration_ms": <int>,
-                  "score": <float 0..1>     # 0.6 sr + 0.2 (1-norm_dur) + 0.2 budget_align(1)
-                },
-                ... up to top 3 ...
-              ]
-            },
-            ...
-          ]
-        }
-
-    `success_rate` counts records where `exit_code == 0` AND
-    `handoff_complete` is `True` or `None` AND `review_verdict` is `approve`,
-    `null`, or absent. `mean_duration_ms` averages `duration_ms` across the
-    group. Candidates with fewer than `min_samples` records are dropped; if a
-    group ends up empty it is omitted.
-    """
+def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 5) -> dict:
+    """Aggregate METRICS_FILE into adaptive auto-select rankings."""
     empty = {
         "samples": 0,
         "min_samples": min_samples,
@@ -5725,90 +5686,13 @@ def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 3) -> d
     rows = _load_jsonl_cached(METRICS_FILE)
     if not rows:
         return empty
-    tail = rows[-max_records:] if len(rows) > max_records else rows
-
-    groups: dict[tuple, dict[tuple, list[dict]]] = {}
-    sample_count = 0
-    last_ts: str | None = None
-    for rec in tail:
-        if not isinstance(rec, dict):
-            continue
-        phase = rec.get("phase")
-        if not phase:
-            continue
-        sample_count += 1
-        ts = rec.get("ts")
-        if isinstance(ts, str) and (last_ts is None or ts > last_ts):
-            last_ts = ts
-        group_key = (
-            phase,
-            rec.get("size"),
-            rec.get("risk"),
-            rec.get("budget"),
-        )
-        cand_key = (
-            rec.get("tool") or "unknown",
-            rec.get("model") or "unknown",
-            rec.get("reasoning_effort"),
-        )
-        groups.setdefault(group_key, {}).setdefault(cand_key, []).append(rec)
-
-    out_groups: list[dict] = []
-    dropped = 0
-    for gkey, cands in groups.items():
-        scored: list[dict] = []
-        for ckey, records in cands.items():
-            n = len(records)
-            if n < min_samples:
-                dropped += 1
-                continue
-            successes = sum(
-                1
-                for r in records
-                if r.get("exit_code") == 0
-                and r.get("handoff_complete") in (True, None)
-                and r.get("review_verdict") in (None, "approve")
-            )
-            sr = successes / n
-            durations = [r.get("duration_ms") for r in records if isinstance(r.get("duration_ms"), int)]
-            mean_dur = int(sum(durations) / len(durations)) if durations else 0
-            scored.append({
-                "tool": ckey[0],
-                "model": ckey[1],
-                "reasoning_effort": ckey[2],
-                "samples": n,
-                "success_rate": round(sr, 3),
-                "mean_duration_ms": mean_dur,
-            })
-        if not scored:
-            continue
-        # Normalize duration across this group to compute score, then keep top 3.
-        durs = [c["mean_duration_ms"] for c in scored]
-        dmin, dmax = min(durs), max(durs)
-        spread = (dmax - dmin) or 1
-        for c in scored:
-            norm_dur = (c["mean_duration_ms"] - dmin) / spread
-            # budget_alignment baseline = 1 (controller already filtered by budget)
-            c["score"] = round(0.6 * c["success_rate"] + 0.2 * (1 - norm_dur) + 0.2, 3)
-        scored.sort(key=lambda c: c["score"], reverse=True)
-        out_groups.append({
-            "key": {
-                "phase": gkey[0],
-                "size": gkey[1],
-                "risk": gkey[2],
-                "budget": gkey[3],
-            },
-            "candidates": scored[:3],
-        })
-
-    out_groups.sort(key=lambda g: (g["key"]["phase"], g["key"]["size"] or "", g["key"]["risk"] or "", g["key"]["budget"] or ""))
-    return {
-        "samples": sample_count,
-        "min_samples": min_samples,
-        "groups": out_groups,
-        "dropped_candidates": dropped,
-        "last_record_ts": last_ts,
-    }
+    return auto_select_scorer.score_groups(
+        rows,
+        min_samples=min_samples,
+        effective_budget=None,
+        per_group_tail=max_records,
+        static_pick=None,
+    )
 
 
 def _load_timeline_runs(max_events: int = 500) -> list[dict]:
@@ -7241,12 +7125,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _handle_auto_select(self, parsed) -> None:
         """Auto-select scorer ranking — aggregated from .ai/ledgers/metrics.jsonl.
         Powers the Auto-select view. Accepts `?min_samples=N` (clamp 1..50,
-        default 3); invalid values fall back to the default."""
+        default 5); invalid values fall back to the default."""
         raw = urllib.parse.parse_qs(parsed.query or "").get("min_samples", [None])[0]
         try:
             min_samples = max(1, min(50, int(raw)))
         except (TypeError, ValueError):
-            min_samples = 3
+            min_samples = 5
         self._json(200, _load_auto_select_ranking(min_samples=min_samples))
 
     # ----- settings (workflow update) helpers -----

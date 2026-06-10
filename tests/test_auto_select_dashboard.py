@@ -58,15 +58,20 @@ def test_loader_returns_empty_when_file_missing(serve_module, tmp_path, monkeypa
     assert result["groups"] == []
 
 
-def test_loader_groups_by_phase_size_risk_budget(serve_module, tmp_path, monkeypatch):
-    """Distinct (phase, size, risk, budget) keys produce distinct groups."""
+def test_loader_groups_by_phase_size_risk(serve_module, tmp_path, monkeypatch):
+    """Distinct (phase, size, risk) keys produce distinct groups."""
     records = [
-        # group A: execute/small/low/medium, codex/gpt-5.4 with 5 successes
+        # group A: execute/small/low, codex/gpt-5.4 with 5 successes.
+        # Differing budgets are intentionally collapsed into the same group.
+        *[{"phase": "execute", "size": "small", "risk": "low", "budget": "high",
+           "tool": "codex", "model": "gpt-5.4", "reasoning_effort": "medium",
+           "exit_code": 0, "duration_ms": 5000, "handoff_complete": True,
+           "review_verdict": "approve"} for _ in range(3)],
         *[{"phase": "execute", "size": "small", "risk": "low", "budget": "medium",
            "tool": "codex", "model": "gpt-5.4", "reasoning_effort": "medium",
            "exit_code": 0, "duration_ms": 5000, "handoff_complete": True,
-           "review_verdict": "approve"} for _ in range(5)],
-        # group B: review/medium/low/medium, claude/opus-4-6 with 5 successes
+           "review_verdict": "approve"} for _ in range(2)],
+        # group B: review/medium/low, claude/opus-4-6 with 5 successes
         *[{"phase": "review", "size": "medium", "risk": "low", "budget": "medium",
            "tool": "claude", "model": "claude-opus-4-6", "reasoning_effort": None,
            "exit_code": 0, "duration_ms": 3000, "handoff_complete": None,
@@ -76,19 +81,19 @@ def test_loader_groups_by_phase_size_risk_budget(serve_module, tmp_path, monkeyp
     monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     assert result["samples"] == 10
-    keys = {(g["key"]["phase"], g["key"]["size"], g["key"]["risk"], g["key"]["budget"])
+    keys = {(g["key"]["phase"], g["key"]["size"], g["key"]["risk"])
             for g in result["groups"]}
     assert keys == {
-        ("execute", "small", "low", "medium"),
-        ("review", "medium", "low", "medium"),
+        ("execute", "small", "low"),
+        ("review", "medium", "low"),
     }
+    assert all("budget" not in g["key"] for g in result["groups"])
+    assert all(g["static_fallback"] is False for g in result["groups"])
 
 
 def test_loader_drops_candidates_below_min_samples(serve_module, tmp_path, monkeypatch):
     """Candidates with < min_samples records are excluded; groups with no
-    qualifying candidates are omitted entirely. Default min_samples is 3,
-    so pass an explicit threshold of 5 to keep the original 3-sample fixture
-    below cutoff."""
+    qualifying candidates are omitted entirely. Default min_samples is 5."""
     records = [
         {"phase": "execute", "size": "small", "risk": "low", "budget": "medium",
          "tool": "codex", "model": "gpt-5.4", "exit_code": 0, "duration_ms": 1000,
@@ -122,6 +127,9 @@ def test_loader_computes_success_rate(serve_module, tmp_path, monkeypatch):
     assert len(candidates) == 1
     assert candidates[0]["samples"] == 5
     assert candidates[0]["success_rate"] == 0.8  # 4/5
+    assert 0 <= candidates[0]["wilson_lower"] < candidates[0]["success_rate"]
+    assert candidates[0]["median_duration_ms"] == 1000
+    assert candidates[0]["score"] < candidates[0]["success_rate"]
 
 
 def test_loader_ranks_candidates_by_score(serve_module, tmp_path, monkeypatch):
@@ -221,7 +229,8 @@ def test_loader_skips_records_without_phase(serve_module, tmp_path, monkeypatch)
 
 def test_loader_handles_null_size_risk_budget(serve_module, tmp_path, monkeypatch):
     """Records from the `plan` phase (before triage runs) have null
-    size/risk/budget. They must still group cleanly."""
+    size/risk/budget. They must still group cleanly, without budget in
+    the group key."""
     records = [
         {"phase": "plan", "size": None, "risk": None, "budget": None,
          "tool": "claude", "model": "claude-sonnet-4-6", "reasoning_effort": None,
@@ -237,7 +246,7 @@ def test_loader_handles_null_size_risk_budget(serve_module, tmp_path, monkeypatc
     assert g["key"]["phase"] == "plan"
     assert g["key"]["size"] is None
     assert g["key"]["risk"] is None
-    assert g["key"]["budget"] is None
+    assert "budget" not in g["key"]
     cands = g["candidates"]
     assert cands[0]["success_rate"] == 1.0  # exit 0, handoff null (ok), verdict null (ok)
 
@@ -255,6 +264,7 @@ def test_loader_tolerates_missing_duration_ms(serve_module, tmp_path, monkeypatc
     monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     assert result["groups"][0]["candidates"][0]["mean_duration_ms"] == 0
+    assert result["groups"][0]["candidates"][0]["median_duration_ms"] == 0
 
 
 def test_loader_max_records_window_only_tails(serve_module, tmp_path, monkeypatch):
@@ -302,17 +312,15 @@ def test_loader_caps_candidates_at_top_3(serve_module, tmp_path, monkeypatch):
     assert len(result["groups"][0]["candidates"]) == 3  # capped
 
 
-def test_scorer_formula_matches_planner_documentation(serve_module, tmp_path, monkeypatch):
-    """Direct numeric assertion on the score = 0.6·sr + 0.2·(1-norm_dur) + 0.2
-    formula documented in the planner skill's 'Adaptive scoring' section.
+def test_loader_score_matches_delegated_scorer(serve_module, tmp_path, monkeypatch):
+    """Loader score output stays in lockstep with the delegated scorer.
 
     Two candidates in one group:
-      A: codex/gpt-5.4: 5 records, all success, duration 1000ms
-      B: codex/gpt-5.5: 5 records, all success, duration 5000ms
+      A: codex/gpt-5.4: 5 records, all success, median duration 1000ms
+      B: codex/gpt-5.5: 5 records, all success, median duration 5000ms
 
-    Expected: norm_dur(A) = 0, norm_dur(B) = 1
-              score(A) = 0.6·1.0 + 0.2·1.0 + 0.2 = 1.0
-              score(B) = 0.6·1.0 + 0.2·0.0 + 0.2 = 0.8
+    Both candidates have raw success_rate 1.0, but Wilson-based scoring keeps
+    score below the raw rate and ranks the faster candidate first.
     """
     records = []
     records.extend([
@@ -330,12 +338,23 @@ def test_scorer_formula_matches_planner_documentation(serve_module, tmp_path, mo
     metrics = _write_metrics(tmp_path, records)
     monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
+    expected = serve_module.auto_select_scorer.score_groups(
+        records,
+        min_samples=5,
+        effective_budget=None,
+        per_group_tail=200,
+        static_pick=None,
+    )
+    assert result == expected
     cands = result["groups"][0]["candidates"]
     # First (faster, same success rate) wins.
     assert cands[0]["model"] == "gpt-5.4"
-    assert cands[0]["score"] == 1.0  # 0.6*1.0 + 0.2*1.0 + 0.2
+    assert cands[0]["median_duration_ms"] == 1000
+    assert cands[0]["wilson_lower"] < cands[0]["success_rate"]
+    assert cands[0]["score"] < cands[0]["success_rate"]
     assert cands[1]["model"] == "gpt-5.5"
-    assert cands[1]["score"] == 0.8  # 0.6*1.0 + 0.2*0.0 + 0.2
+    assert cands[1]["median_duration_ms"] == 5000
+    assert cands[0]["score"] > cands[1]["score"]
 
 
 def test_handoff_false_counts_as_failure(serve_module, tmp_path, monkeypatch):
@@ -430,12 +449,14 @@ def test_endpoint_returns_populated_rankings_end_to_end(
         "phase": "execute",
         "size": "small",
         "risk": "low",
-        "budget": "medium",
     }
+    assert g["static_fallback"] is False
     assert g["candidates"][0]["tool"] == "codex"
     assert g["candidates"][0]["model"] == "gpt-5.4"
     assert g["candidates"][0]["samples"] == 5
     assert g["candidates"][0]["success_rate"] == 1.0
+    assert g["candidates"][0]["wilson_lower"] < g["candidates"][0]["success_rate"]
+    assert g["candidates"][0]["median_duration_ms"] == 2500
     assert g["candidates"][0]["mean_duration_ms"] == 2500
 
 
