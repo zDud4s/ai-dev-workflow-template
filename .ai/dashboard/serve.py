@@ -45,6 +45,7 @@ import atexit
 import datetime as _dt
 import hashlib
 import http.server
+import importlib
 import json
 import os
 import queue as _stdqueue
@@ -2984,6 +2985,20 @@ def _apply_improvement(skill_path: Path, new_content: str, source: str,
                 # but operators need to see this drift.
                 print(f"[serve] failed to write proposal {pj} (apply): {e}", flush=True)
     return True
+
+
+def _check_held_out_gate(proposal_id: str) -> dict:
+    try:
+        eval_root = str(ROOT / ".ai" / "eval")
+        if eval_root not in sys.path:
+            sys.path.insert(0, eval_root)
+        gate = importlib.import_module("harness.gate")
+        verdict = gate.evaluate_proposal(proposal_id)
+        if not isinstance(verdict, dict):
+            return {"decision": "allow", "reason": "gate error: invalid verdict"}
+        return verdict
+    except Exception as e:
+        return {"decision": "allow", "reason": f"gate error: {e}"}
 
 
 def _check_skill_regression(skill_id: str, cfg: dict) -> dict | None:
@@ -8050,6 +8065,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             new_content = new_md.read_text(encoding="utf-8")
         except OSError as e:
             self._json(500, {"error": "could not read proposal body", "detail": str(e)})
+            return
+        held_out = _check_held_out_gate(proposal_id)
+        obj["held_out"] = held_out
+        try:
+            pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+        except OSError as e:
+            print(f"[serve] failed to write proposal {pj} (held-out gate): {e}", flush=True)
+        if held_out.get("decision") == "block":
+            self._json(409, {
+                "error": "proposal regresses the held-out set",
+                "held_out": held_out,
+            })
             return
         ok = _apply_improvement(
             skill_path, new_content,
