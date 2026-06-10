@@ -17,8 +17,9 @@ BUDGETS = [
     # orchestrate: original 130L/11000B. Bytes bumped for metrics logging section
     # (PR 2) which adds the JSONL schema (compact single-line) consumed by the
     # PR 3 adaptive scorer. Schema cannot be split without losing parser clarity.
-    # and codex-dispatched token-capture clarification.
-    (".claude/skills/orchestrate/SKILL.md", 132, 12400),
+    # and codex-dispatched token-capture clarification. Bumped again for F3:
+    # deterministic gate policy, TDD routing default, and advisory review rules.
+    (".claude/skills/orchestrate/SKILL.md", 145, 14200),
     (".claude/skills/codex/SKILL.md",        60,  5000),
     # gemini SKILL.md never shipped — placeholder budget removed so the
     # test stops failing on a non-existent file. Restore the row when the
@@ -32,7 +33,8 @@ BUDGETS = [
     # contract (must emit empty header, not omit — reconciles a STOP-vs-fallback
     # contradiction with orchestrate/dispatch) and the tests-match normalization
     # rule (rule 7 / checklist 4 aligned to reviewer gate 6, away from byte-identity).
-    (".claude/skills/planner/SKILL.md",     100,  8300),
+    # Bumped again for F3 planner Change type/TDD-able output fields.
+    (".claude/skills/planner/SKILL.md",     105,  8800),
     (".claude/skills/reviewer/SKILL.md",     70,  3700),
     # maintenance: Round 2 expanded the "Immutable core" enumeration to
     # cover all skills + future skills explicitly (closes D.P1-3). +1L

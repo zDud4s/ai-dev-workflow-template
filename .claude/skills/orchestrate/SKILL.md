@@ -42,6 +42,14 @@ Risk level controls review. Trust the planner's `Risk level` + `Risk matches`; r
 
 If planner output is missing `Size`, missing `Risk level`, or emits `TRIVIAL:` with `Risk level: elevated`, STOP and report invalid planner output.
 
+### Deterministic gate (code changes)
+
+medium/large code changes that are TDD-able default to the deterministic gate. When the planner emits Size `medium`/`large`, `Change type: code`, and `TDD-able: yes`, tell the user that `orchestrate-tdd` is the default route and run under its deterministic-gate/test-first discipline by default.
+
+the gate command's exit code, re-run independently by the orchestrator, is the recorded ship/no-ship decision. Independently re-run the packet's `Validation.Commands` / test command; exit 0 records ship, non-zero records do-not-ship and resumes/rescues, never ships.
+
+For `TDD-able: no` code tasks, stay in normal orchestrate flow with no formal TDD cycle, but still independently run the packet's `Validation.Commands` as the deterministic gate and record that exit code as the decision.
+
 ### Auto-select handoff (when `auto_select.enabled: true`)
 
 If `auto_select.enabled: true`, after receiving the planner output: locate the `## Selected models` block. Missing or malformed → STOP per the auto-select rows in dispatch.md's error table. Parse each line into `(phase, tool, model, reasoning_effort?, reason)`; header followed by zero lines = "no match", fall back to `models.yaml` for every downstream phase. Verify each parsed tool is locally available; if not, STOP `auto-selected tool unavailable: <tool> for phase <phase>` — do NOT silently fall back. Record `auto_overrides = { phase: (tool, model, effort, reason) }` for Phases 2-4. If `auto_select.enabled` is `false` or absent, set `auto_overrides = {}`.
@@ -76,9 +84,11 @@ Run if the review gate from Phase 1 says so; otherwise skip.
 
 If `auto_overrides["review"]` is set, use its `(tool, model)`. Otherwise read `review.tool` and `review.model` from `.ai/models.yaml`. Build a reviewer prompt combining the `reviewer` skill (discovery path), the execution packet objective, the executor's filled Handoff, and `.ai/packets/review.md`. Dispatch through the resolved tool/model.
 
-Verdict handling: `approve` -> Phase 4; `request-changes` -> show findings and ask send back / accept / stop; `escalate` -> STOP and report full findings + Handoff.
+Review authority: where a deterministic gate exists and passed, the reviewer verdict is advisory. Record reviewer `request-changes` / `escalate` findings as advisory annotations under `Risks` and continue; the reviewer's hard-gate checks remain authoritative for validation evidence present, gate ran, exit 0, and tests accounted for because they confirm the gate itself. tasks without a deterministic gate keep the blocking reviewer verdict. This overrides the Verdict handling below for `request-changes` / `escalate` when the gate passed.
 
-For send-back, resume the executor with `Reviewer findings:\n<findings>\n\nOriginal objective: <objective>` via temp file -> stdin; no config flags on resume (see dispatch.md). Re-run review and increment N. There is no automatic cap; warn from iteration 5 onward.
+`approve` always proceeds to Phase 4 (gate passed or not). Verdict handling for `request-changes` / `escalate` when no deterministic gate passed (gate-less task, or the gate failed): `request-changes` -> show findings and ask send back / accept / stop; `escalate` -> STOP and report full findings + Handoff.
+
+For send-back, re-dispatch the executor with `Reviewer findings:\n<findings>\n\nOriginal objective: <objective>` via temp file -> stdin — a fresh write-capable `execute` dispatch, NOT `resume --last` (resume can't carry the bypass flag, so it stalls codex's sandbox and fails the permission allow rule; see dispatch.md's resume rule). The executor's prior edits are already in the tree, so nothing is lost. Re-run review and increment N. There is no automatic cap; warn from iteration 5 onward.
 
 If accepted without changes, surface unresolved findings under `Risks` with "Reviewer findings accepted without changes (iteration N)".
 
@@ -117,7 +127,7 @@ Schema (one JSON object per line, compact, no pretty-print):
 {"ts":"<ISO 8601 UTC, Z suffix>","task_slug":"<slug>","phase":"<plan|execute|review|rescue|maintenance>","tool":"<tool>","model":"<model>","reasoning_effort":"<low|medium|high|xhigh|null>","size":"<trivial|small|medium|large|null>","risk":"<low|elevated|null>","budget":"<low|medium|high|null>","exit_code":<int>,"duration_ms":<int>,"handoff_complete":<bool|null>,"review_verdict":"<approve|request-changes|escalate|null>","retries":<int>,"tokens_in":<int|null>,"tokens_out":<int|null>}
 ```
 
-Field rules: `ts` at subprocess return (or inline completion); `task_slug` lowercased+hyphenated, same across phases; `tool`/`model`/`reasoning_effort` post-`auto_overrides`; `size`/`risk`/`budget` `null` for `plan`; `exit_code` `0` on inline success; `duration_ms` wall-clock from dispatch start; `handoff_complete` only for `execute` (else `null`); `review_verdict` only for `review` (else `null`); `retries` = recovery resumes + review send-backs; `tokens_*` `null` if the tool doesn't print them — but codex-dispatched phases MUST populate both from codex's printed usage (already parseable).
+Field rules: `ts` at subprocess return (or inline completion); `task_slug` lowercased+hyphenated, same across phases; `tool`/`model`/`reasoning_effort` post-`auto_overrides`; `size`/`risk`/`budget` `null` for `plan`; for non-`plan` rows, `budget` records the `effective_budget` the selector decided on: configured `auto_select.token_budget` after the one-rung upgrade (`low`→`medium`→`high`, `high` stays) when Risk is elevated or Size is large, not the raw configured budget; `exit_code` `0` on inline success; `duration_ms` wall-clock from dispatch start; `handoff_complete` only for `execute` (else `null`); `review_verdict` only for `review` (else `null`); `retries` = recovery resumes + review send-backs; `tokens_*` `null` if the tool doesn't print them — but codex-dispatched phases MUST populate both from codex's printed usage (already parseable).
 
 Append exactly one line per dispatched phase, never overwrite or reorder. Create the file on first append.
 
@@ -125,4 +135,4 @@ Append exactly one line per dispatched phase, never overwrite or reorder. Create
 
 Dispatch-layer errors (missing config, tool unavailable, unrecognized values, session-block issues) are in `.ai/workflow/dispatch.md`. The rows below are pipeline-specific.
 
-Planner output missing `Size` or `Risk level`, or elevated `TRIVIAL:` -> STOP and report invalid planner output. Executor timeout -> see dispatch.md timeout row; freeze, rescue, no auto-retry. Executor non-zero with escalation -> surface four fields. Executor non-zero without escalation -> Phase 2 allowed options only. Handoff incomplete or non-zero validation -> rescue and stop. Reviewer `request-changes` -> ask send back / accept / stop; warn from iteration 5. Reviewer `escalate` -> stop and report full context.
+Planner output missing `Size` or `Risk level`, or elevated `TRIVIAL:` -> STOP and report invalid planner output. Executor timeout -> see dispatch.md timeout row; freeze, rescue, no auto-retry. Executor non-zero with escalation -> surface four fields. Executor non-zero without escalation -> Phase 2 allowed options only. Handoff incomplete or non-zero validation -> rescue and stop. Reviewer `request-changes`, when no deterministic gate passed -> ask send back / accept / stop; when a gate passed, annotate per the Phase 3 advisory rule; warn from iteration 5. Reviewer `escalate`, when no deterministic gate passed -> stop and report full context; when a gate passed, annotate per the Phase 3 advisory rule.
