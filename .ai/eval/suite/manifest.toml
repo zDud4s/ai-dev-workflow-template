@@ -1,0 +1,15 @@
+version = 1
+
+[[tasks]]
+id = "sum-list"
+partition = "tuning"
+path = "tasks/sum-list"
+entrypoint = "solution.py"
+check = "check.py"
+
+[[tasks]]
+id = "reverse-words"
+partition = "held-out"
+path = "tasks/reverse-words"
+entrypoint = "solution.py"
+check = "check.py"
