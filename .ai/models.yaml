@@ -24,7 +24,7 @@ dispatch_mode: auto    # auto | manual
 
 session:
   tool: claude
-  model: claude-opus-4-7
+  model: claude-opus-4-8
 
 plan:
   tool: claude
