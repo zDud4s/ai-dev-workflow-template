@@ -562,6 +562,9 @@
       // it as `_if_match` to detect concurrent edits.
       _settingsVersion = data.version != null ? data.version : null;
       _settingsLoadedAt = Date.now();
+      // Refresh the shared model catalog (core.js MODELS_BY_TOOL) from the
+      // single source of truth before any picker re-renders below.
+      if (typeof applyModelCatalog === "function") applyModelCatalog(data.catalog);
       fillImprover(data.improver || {});
       fillAutoSelect(data.auto_select || {});
       renderAutoSelectBanner(data.auto_select || {});

@@ -1,11 +1,26 @@
 # AI workflow model configuration
 # tool: claude | codex
-# Available models (refreshed May 2026):
-#   Claude: claude-opus-4-8 (flagship), claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
-#           legacy: claude-opus-4-6, claude-sonnet-4-5, claude-opus-4-5
-#           docs: https://platform.claude.com/docs/en/about-claude/models/overview
-#   Codex:  gpt-5.5 (recommended), gpt-5.4, gpt-5.4-mini, gpt-5.3-codex
-#           docs: https://developers.openai.com/codex/models
+#
+# ── SINGLE SOURCE OF TRUTH FOR THE MODEL CATALOG ──────────────────────────
+# The `catalog:` block below is the ONLY place to add or remove a model.
+# It feeds every model picker in the dashboard (served via /api/settings to
+# core.js / terminals.js) and the Python job-spawn fallbacks. When a new
+# model ships, add one line here — nothing else needs touching.
+# Newest-first within each tool; the first entry per tool is its default.
+#   Claude docs: https://platform.claude.com/docs/en/about-claude/models/overview
+#   Codex  docs: https://developers.openai.com/codex/models
+#
+catalog:
+  claude:
+    - id: claude-opus-4-8     # default — most capable Opus-tier, 1M ctx, $5/$25
+    - id: claude-fable-5      # frontier (GA 2026-06-09), 1M ctx, $10/$50
+    - id: claude-opus-4-7     # legacy Opus, 1M ctx
+    - id: claude-sonnet-4-6   # balanced speed/intelligence, 1M ctx
+    - id: claude-haiku-4-5    # fastest / cheapest, 200k ctx
+  codex:
+    - id: gpt-5.5             # current frontier (recommended)
+    - id: gpt-5.4             # flagship frontier
+    - id: gpt-5.4-mini        # fast subagent
 #
 # Optional per-phase fields:
 #   mode: inline | agent | dispatcher   # override auto-routing for that phase

@@ -296,6 +296,17 @@ def _bound_path_cache(cache: dict, max_size: int = _PATH_CACHE_MAX) -> None:
             break
 _TRANSCRIPT_PREVIEW_CACHE: dict[str, tuple[int, str | None, str | None]] = {}
 _TRANSCRIPT_PREVIEW_LOCK = threading.Lock()
+# mtime-keyed cache of the per-session model for the status list:
+# session_id -> (mtime_ns, model_str_or_None). Computed from a cheap head
+# read (see _lookup_session_model) so an active multi-MB transcript isn't
+# re-scanned on every /api/sessions poll.
+_TRANSCRIPT_MODEL_CACHE: dict[str, tuple[int, str | None]] = {}
+_TRANSCRIPT_MODEL_LOCK = threading.Lock()
+# mtime-keyed cache of the per-session live activity for the status list:
+# session_id -> (mtime_ns, {"text","kind"} | None). Tail-read per poll only
+# when the transcript changed (see _lookup_session_activity).
+_TRANSCRIPT_ACTIVITY_CACHE: dict[str, tuple[int, dict | None]] = {}
+_TRANSCRIPT_ACTIVITY_LOCK = threading.Lock()
 # mtime-keyed cache of parsed agent-run .md files: (str(path), st.st_mtime_ns) -> parsed dict.
 _AGENT_RUN_PARSE_CACHE: dict[str, tuple[int, dict]] = {}
 _AGENT_RUN_PARSE_LOCK = threading.Lock()
@@ -407,6 +418,7 @@ def _jsonl_line_to_session_events(line: str) -> "list[dict]":
       message:     {"kind":"message","role":str,"text":str,"partial":False,"state":None}
       tool_use:    {"kind":"tool_use","role":str,"id":str,"name":str,"input":dict,"text":str}
       tool_result: {"kind":"tool_result","role":str,"tool_use_id":str,"is_error":bool,"content":str,"text":str}
+      thinking:    {"kind":"thinking","role":str,"text":str,"partial":False,"state":None}
       system:      {"kind":"system","role":"system","text":str,"partial":False,"state":None}
     """
     line = line.strip()
@@ -458,9 +470,18 @@ def _jsonl_line_to_session_events(line: str) -> "list[dict]":
             if btype == "text":
                 text_buf.append(block.get("text") or "")
             elif btype == "thinking":
-                # Skip raw thinking blocks — they aren't part of the visible
-                # conversation and carry no tool/text the operator needs.
-                continue
+                # Chain-of-thought. Flush any buffered text first so the
+                # thought lands in transcript order (thinking precedes the
+                # answer), then emit it as its own event. The client renders
+                # it as a collapsed <details> inside the assistant bubble, so
+                # long monologues don't drown the answer but stay inspectable.
+                _flush_text()
+                thought = block.get("thinking")
+                if isinstance(thought, str) and thought.strip():
+                    events.append({
+                        "kind": "thinking", "role": role or msg_type,
+                        "text": thought, "partial": False, "state": None,
+                    })
             elif btype == "tool_use":
                 _flush_text()
                 name = block.get("name") or "tool"
@@ -4510,6 +4531,55 @@ def _read_yaml_field(path: Path, field: str) -> dict:
     return out
 
 
+# Hard-coded mirror of the ``catalog:`` block in .ai/models.yaml. Used ONLY
+# as a last resort when the file is missing/unreadable or PyYAML is absent —
+# the live source of truth is always the YAML. Keep the shape identical to
+# what _read_models_catalog returns: {tool: [model_id, ...]}, newest-first.
+_MODELS_CATALOG_FALLBACK: dict[str, list[str]] = {
+    "claude": ["claude-opus-4-8", "claude-fable-5", "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    "codex":  ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+}
+
+
+def _read_models_catalog(path: Path | None = None) -> dict[str, list[str]]:
+    """Read the ``catalog:`` block from .ai/models.yaml — the single source of
+    truth for which models exist per tool.
+
+    Returns ``{tool: [model_id, ...]}`` newest-first. Each catalog entry is a
+    mapping ``{id: ..., ...}``; only the ``id`` is surfaced here (notes/labels
+    stay in the YAML as inline comments). Falls back to
+    ``_MODELS_CATALOG_FALLBACK`` on any failure (missing file, no PyYAML, no
+    ``catalog`` block, malformed shape) so model pickers never render empty.
+    """
+    if path is None:
+        path = ROOT / ".ai" / "models.yaml"
+    try:
+        import yaml  # local import — PyYAML only needed by this helper
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+        catalog = parsed.get("catalog")
+        if not isinstance(catalog, dict):
+            return {k: list(v) for k, v in _MODELS_CATALOG_FALLBACK.items()}
+        out: dict[str, list[str]] = {}
+        for tool, entries in catalog.items():
+            if not isinstance(entries, list):
+                continue
+            ids: list[str] = []
+            for entry in entries:
+                if isinstance(entry, dict):
+                    mid = entry.get("id")
+                elif isinstance(entry, str):
+                    mid = entry
+                else:
+                    mid = None
+                if isinstance(mid, str) and mid.strip():
+                    ids.append(mid.strip())
+            if ids:
+                out[str(tool)] = ids
+        return out or {k: list(v) for k, v in _MODELS_CATALOG_FALLBACK.items()}
+    except Exception:  # noqa: BLE001 — a bad config must never break model pickers
+        return {k: list(v) for k, v in _MODELS_CATALOG_FALLBACK.items()}
+
+
 def _spawn_job(
     job_id: str,
     kind: str,
@@ -5549,6 +5619,42 @@ def _evict_old_jobs() -> None:
             JOBS.pop(jid, None)
 
 
+# How often the background reaper reconciles dead PIDs and bounds the JOBS
+# dict. Reconciliation also runs request-driven on GET /api/jobs, but that
+# only fires when a browser is polling. With no client attached, a job whose
+# subprocess died (or was killed out-of-band) would otherwise sit in
+# ``running`` forever — pinning its proc handle + subscriber queues — and
+# finished entries would never be evicted, so the dict could grow unbounded
+# between the rare HTTP hits. 30s keeps the leak window small without adding
+# meaningful load (one tasklist batch per tick on Windows).
+JOB_REAP_INTERVAL_S = 30.0
+
+
+def _job_reaper_tick() -> int:
+    """One reaper pass: flip dead-PID jobs to failed and bound the dict.
+
+    Split out from :func:`_job_reaper_loop` so it can be exercised in tests
+    without spinning the ``while True`` loop. Returns the number of jobs
+    reconciled this pass."""
+    flipped = _reconcile_running_pids()
+    _evict_old_jobs()
+    return flipped
+
+
+def _job_reaper_loop() -> None:
+    """Background daemon: run :func:`_job_reaper_tick` on a fixed cadence so
+    dead job subprocesses are reaped and the JOBS dict stays bounded even when
+    no browser is polling ``/api/jobs``. One bad tick must not kill the loop."""
+    while True:
+        time.sleep(JOB_REAP_INTERVAL_S)
+        try:
+            n = _job_reaper_tick()
+            if n:
+                print(f"[serve] job reaper: reconciled {n} dead job(s)", flush=True)
+        except Exception as e:  # noqa: BLE001 — log and continue so the loop survives
+            print(f"[serve] job reaper tick failed: {e}", flush=True)
+
+
 # Record types considered "interesting" for a chat-pane catch-up dump.
 # Hook outputs, queue ops, file snapshots and attachment frames are
 # operational metadata the human reader never wants to see.
@@ -5703,6 +5809,289 @@ def _lookup_session_title(session_id: str) -> str | None:
     except OSError:
         return None
     return title
+
+
+def _lookup_session_model(session_id: str) -> str | None:
+    """Best-effort: the model an IDE session is running, for the status list.
+
+    Returns the first ``message.model`` found near the head of the transcript
+    (early-exit), or None. IDE transcripts carry no model in their JOBS-less
+    session record, so without this the status row can't show one. Reads only
+    the head — never the full file — so it stays cheap on the 2-4s poll.
+    """
+    if not session_id or session_id == "unknown":
+        return None
+    try:
+        tdir = _transcripts_dir_for_cwd(ROOT)
+    except OSError:
+        return None
+    if tdir is None or not tdir.is_dir():
+        return None
+    f = tdir / f"{session_id}.jsonl"
+    if not f.is_file():
+        return None
+    HEAD_LINES = 400  # enough to pass IDE/system preamble and reach a model
+    try:
+        with f.open("r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i > HEAD_LINES:
+                    break
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                msg = rec.get("message")
+                if isinstance(msg, dict):
+                    mdl = msg.get("model")
+                    # Skip Claude Code's "<synthetic>" placeholder (injected
+                    # assistant messages carry no real model) — keep scanning
+                    # for the actual model the session is running.
+                    if isinstance(mdl, str) and mdl and not mdl.startswith("<"):
+                        return mdl
+    except OSError:
+        return None
+    return None
+
+
+def _summarise_tool_use(name: str, tinput: dict) -> str:
+    """One-line label for a tool_use block: what the agent is doing right now.
+
+    e.g. ``Bash · npm test`` / ``Edit serve.py`` / ``Grep "TODO"``. Falls back
+    to the bare tool name when the input shape is unknown.
+    """
+    name = name or "tool"
+    ti = tinput if isinstance(tinput, dict) else {}
+
+    def _base(path):
+        if not isinstance(path, str) or not path:
+            return ""
+        return re.split(r"[\\/]", path.rstrip("\\/"))[-1]
+
+    def _clip(s, n=60):
+        s = " ".join(str(s).split())
+        return s[:n] + "…" if len(s) > n else s
+
+    if name == "Bash":
+        cmd = ti.get("command") or ti.get("description") or ""
+        return _clip("Bash · " + cmd) if cmd else "Bash"
+    if name in ("Edit", "Write", "Read", "NotebookEdit", "MultiEdit"):
+        b = _base(ti.get("file_path") or ti.get("notebook_path"))
+        return f"{name} {b}" if b else name
+    if name in ("Grep", "Glob"):
+        pat = ti.get("pattern") or ""
+        return _clip(f'{name} "{pat}"') if pat else name
+    if name in ("Agent", "Task"):
+        d = ti.get("description") or ti.get("subagent_type") or ""
+        return _clip(f"{name} · {d}") if d else name
+    if name == "WebFetch":
+        return _clip("WebFetch · " + (ti.get("url") or ""))
+    if name == "WebSearch":
+        return _clip("WebSearch · " + (ti.get("query") or ""))
+    if name == "Skill":
+        return _clip("Skill · " + (ti.get("skill") or "")) or name
+    return name
+
+
+def _lookup_session_activity(session_id: str) -> dict | None:
+    """Best-effort "what is this session doing right now", from the transcript
+    tail. Returns ``{"text": str, "kind": str}`` or None.
+
+    Claude Code flushes each content block as its own JSONL record as the turn
+    streams, so the most recent content block reflects live state:
+
+      * ``tool_use`` with no following ``tool_result`` → the tool is running
+        now (``kind="tool"``, text like ``Bash · npm test``).
+      * ``tool_result`` → a tool just returned; the model will continue
+        (``kind="result"``, ``processing…``).
+      * ``thinking`` → ``kind="thinking"``, ``thinking…``.
+
+    A trailing plain ``text`` block is deliberately treated as "no live
+    activity" (returns None): from outside the process a finished reply
+    awaiting the user looks identical to one still streaming, so claiming
+    "responding…" would overclaim. The caller falls back to a plain "live".
+
+    Reads only a tail window so an active multi-MB transcript stays cheap.
+    """
+    if not session_id or session_id == "unknown":
+        return None
+    try:
+        tdir = _transcripts_dir_for_cwd(ROOT)
+    except OSError:
+        return None
+    if tdir is None or not tdir.is_dir():
+        return None
+    f = tdir / f"{session_id}.jsonl"
+    if not f.is_file():
+        return None
+    TAIL_BYTES = 64 * 1024
+    try:
+        size = f.stat().st_size
+        with f.open("rb") as fb:
+            if size > TAIL_BYTES:
+                fb.seek(size - TAIL_BYTES)
+                fb.readline()  # drop the partial first line
+            chunk = fb.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+    for line in reversed(chunk.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            rec = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if rec.get("type") not in ("user", "assistant"):
+            continue  # skip ai-title / mode / last-prompt / summary meta rows
+        msg = rec.get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, str):
+            # A bare user/assistant string (typed prompt or plain reply) is
+            # not a live-progress signal — see docstring.
+            return None
+        if not isinstance(content, list):
+            continue
+        # Inspect the LAST meaningful block of this (most recent) record.
+        for block in reversed(content):
+            if not isinstance(block, dict):
+                continue
+            bt = block.get("type")
+            if bt == "tool_use":
+                return {"text": _summarise_tool_use(block.get("name"), block.get("input")), "kind": "tool"}
+            if bt == "tool_result":
+                return {"text": "processing…", "kind": "result"}
+            if bt == "thinking":
+                return {"text": "thinking…", "kind": "thinking"}
+            if bt == "text":
+                # Turn-end vs mid-stream is indistinguishable from outside —
+                # don't overclaim. Fall back to a plain "live".
+                return None
+        # Record had no recognisable block — keep looking further back.
+    return None
+
+
+# Cache of resolved Codex rollout paths: session_id -> Path. A rollout's path
+# never changes once created, so this is keyed by id alone (no mtime).
+_CODEX_ROLLOUT_PATH_CACHE: dict[str, "Path | None"] = {}
+_CODEX_ROLLOUT_PATH_LOCK = threading.Lock()
+
+
+def _codex_rollout_path(session_id: str) -> "Path | None":
+    """Locate the rollout file for a Codex session id under
+    ``~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl``.
+
+    The id is the trailing component of the filename, so a name-glob finds it
+    without parsing dates. Result is cached (the path is stable); a negative
+    result is cached as None so a missing rollout isn't re-walked every poll.
+    """
+    if not session_id or session_id == "unknown":
+        return None
+    with _CODEX_ROLLOUT_PATH_LOCK:
+        if session_id in _CODEX_ROLLOUT_PATH_CACHE:
+            return _CODEX_ROLLOUT_PATH_CACHE[session_id]
+    root = _codex_sessions_root()
+    found: "Path | None" = None
+    if root is not None:
+        try:
+            found = next(root.rglob(f"rollout-*{session_id}.jsonl"), None)
+        except OSError:
+            found = None
+    with _CODEX_ROLLOUT_PATH_LOCK:
+        _CODEX_ROLLOUT_PATH_CACHE[session_id] = found
+        _bound_path_cache(_CODEX_ROLLOUT_PATH_CACHE)
+    return found
+
+
+def _summarise_codex_call(name: str, raw: str) -> str:
+    """One-line label for a Codex function_call / custom_tool_call."""
+    name = name or "tool"
+
+    def _clip(s, n=60):
+        s = " ".join(str(s).split())
+        return s[:n] + "…" if len(s) > n else s
+
+    # shell_command / local_shell carry a JSON ``arguments`` with a command.
+    if name in ("shell", "shell_command", "local_shell", "container.exec"):
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except (json.JSONDecodeError, ValueError):
+            args = {}
+        cmd = args.get("command") if isinstance(args, dict) else None
+        if isinstance(cmd, list):
+            cmd = " ".join(str(c) for c in cmd)
+        return _clip("shell · " + cmd) if cmd else "shell"
+    # apply_patch carries the patch text; pull the file it touches.
+    if name == "apply_patch":
+        m = re.search(r"\*\*\* (?:Update|Add|Delete) File: (.+)", raw or "")
+        if m:
+            f = re.split(r"[\\/]", m.group(1).strip())[-1]
+            return f"apply_patch · {f}"
+        return "apply_patch"
+    return name
+
+
+def _lookup_codex_activity(session_id: str) -> dict | None:
+    """Best-effort live activity for a Codex session, from its rollout tail.
+
+    Mirrors _lookup_session_activity for Codex's rollout schema:
+      * ``function_call`` (no following ``function_call_output``) → a tool is
+        running now (``shell · …`` / ``apply_patch · file``).
+      * ``custom_tool_call`` → ``apply_patch · file``.
+      * ``*_output`` → ``processing…``.
+      * ``reasoning`` → ``thinking…``.
+    A trailing ``agent_message`` / plain message is treated as no live signal.
+    """
+    path = _codex_rollout_path(session_id)
+    if path is None or not path.is_file():
+        return None
+    TAIL_BYTES = 64 * 1024
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fb:
+            if size > TAIL_BYTES:
+                fb.seek(size - TAIL_BYTES)
+                fb.readline()
+            chunk = fb.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+    for line in reversed(chunk.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            rec = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        rtype = rec.get("type")
+        pl = rec.get("payload") or {}
+        ptype = pl.get("type")
+        if rtype == "response_item":
+            if ptype in ("function_call_output", "custom_tool_call_output"):
+                return {"text": "processing…", "kind": "result"}
+            if ptype == "function_call":
+                return {"text": _summarise_codex_call(pl.get("name"), pl.get("arguments") or ""), "kind": "tool"}
+            if ptype == "custom_tool_call":
+                return {"text": _summarise_codex_call(pl.get("name"), pl.get("input") or ""), "kind": "tool"}
+            if ptype == "reasoning":
+                return {"text": "thinking…", "kind": "thinking"}
+            if ptype == "message":
+                return None  # turn text — don't overclaim
+        elif rtype == "event_msg":
+            if ptype in ("exec_command_begin",):
+                cmd = pl.get("command")
+                if isinstance(cmd, list):
+                    cmd = " ".join(str(c) for c in cmd)
+                return {"text": _summarise_codex_call("shell", json.dumps({"command": cmd})), "kind": "tool"}
+            if ptype in ("agent_reasoning", "agent_reasoning_delta"):
+                return {"text": "thinking…", "kind": "thinking"}
+            if ptype == "agent_message":
+                return None
+    return None
 
 
 def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 5) -> dict:
@@ -7531,6 +7920,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "phases":       phases_list,
             },
             "phases": phases_out,
+            # Single source of truth for the model pickers — read live from the
+            # ``catalog:`` block in models.yaml so the dashboard never carries a
+            # second copy of the model list (see core.js applyModelCatalog).
+            "catalog": _read_models_catalog(models_path),
         })
 
     def _handle_improver_update(self, body: dict) -> None:
@@ -9201,6 +9594,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "ended_at": j.get("ended_at"),
                     "status": j.get("status"),
                     "last_job_id": j.get("id"),
+                    # Running totals so the status list can show duration /
+                    # cost / turns without a second /api/jobs round-trip.
+                    "cost": j.get("cost") if isinstance(j.get("cost"), dict) else None,
+                    "exit_code": j.get("exit_code"),
+                    "activity": None,
                     # New unified keys.
                     "sid": sid,
                     "title": None,
@@ -9225,6 +9623,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 session_id = p.stem
                 task = None
                 title = None
+                model = None
+                activity = None
                 if idx < TASK_PREVIEW_LIMIT:
                     mtime_ns = st.st_mtime_ns
                     with _TRANSCRIPT_PREVIEW_LOCK:
@@ -9237,6 +9637,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         with _TRANSCRIPT_PREVIEW_LOCK:
                             _TRANSCRIPT_PREVIEW_CACHE[session_id] = (mtime_ns, task, title)
                             _bound_path_cache(_TRANSCRIPT_PREVIEW_CACHE)
+                    with _TRANSCRIPT_MODEL_LOCK:
+                        mcached = _TRANSCRIPT_MODEL_CACHE.get(session_id)
+                    if mcached is not None and mcached[0] == mtime_ns:
+                        model = mcached[1]
+                    else:
+                        model = _lookup_session_model(session_id)
+                        with _TRANSCRIPT_MODEL_LOCK:
+                            _TRANSCRIPT_MODEL_CACHE[session_id] = (mtime_ns, model)
+                            _bound_path_cache(_TRANSCRIPT_MODEL_CACHE)
+                    with _TRANSCRIPT_ACTIVITY_LOCK:
+                        acached = _TRANSCRIPT_ACTIVITY_CACHE.get(session_id)
+                    if acached is not None and acached[0] == mtime_ns:
+                        activity = acached[1]
+                    else:
+                        activity = _lookup_session_activity(session_id)
+                        with _TRANSCRIPT_ACTIVITY_LOCK:
+                            _TRANSCRIPT_ACTIVITY_CACHE[session_id] = (mtime_ns, activity)
+                            _bound_path_cache(_TRANSCRIPT_ACTIVITY_CACHE)
                 modified = _dt.datetime.fromtimestamp(
                     st.st_mtime, _dt.timezone.utc
                 ).isoformat(timespec="seconds")
@@ -9251,6 +9669,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         entry["size"] = st.st_size
                     if not entry.get("task"):
                         entry["task"] = (task or "")[:120]
+                    if not entry.get("model") and model:
+                        entry["model"] = model
+                    entry["activity"] = activity
                 else:
                     # New IDE-only entry.
                     by_sid[session_id] = {
@@ -9258,18 +9679,46 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "session_id": session_id,
                         "kind": "ide",
                         "task": (task or "")[:120],
-                        "model": None,
+                        "model": model,
                         "started_at": None,
                         "ended_at": None,
                         "status": None,
                         "last_job_id": None,
+                        "cost": None,
+                        "exit_code": None,
                         # New unified keys.
                         "sid": session_id,
                         "title": title,
                         "modified": modified,
                         "size": st.st_size,
                         "source": "ide",
+                        "activity": activity,
                     }
+
+        # -- (c) Codex sessions: live activity from the rollout tail ---------
+        # chat-codex JOBS aren't Claude transcripts, so the IDE loop above
+        # never touched them. Resolve each one's rollout and derive the same
+        # tool/thinking activity, cached by the rollout's mtime.
+        for sid, entry in by_sid.items():
+            if entry.get("kind") != "chat-codex":
+                continue
+            rp = _codex_rollout_path(sid)
+            if rp is None:
+                continue
+            try:
+                cm = rp.stat().st_mtime_ns
+            except OSError:
+                continue
+            with _TRANSCRIPT_ACTIVITY_LOCK:
+                ac = _TRANSCRIPT_ACTIVITY_CACHE.get(sid)
+            if ac is not None and ac[0] == cm:
+                entry["activity"] = ac[1]
+            else:
+                a = _lookup_codex_activity(sid)
+                with _TRANSCRIPT_ACTIVITY_LOCK:
+                    _TRANSCRIPT_ACTIVITY_CACHE[sid] = (cm, a)
+                    _bound_path_cache(_TRANSCRIPT_ACTIVITY_CACHE)
+                entry["activity"] = a
 
         # -- Annotate each entry with registry state / has_engine -----------
         with SESSION_REGISTRY._lock:
@@ -9297,6 +9746,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # to the top of the active list instead of the bottom.
                 "started_at": _now_iso, "ended_at": None, "status": None,
                 "last_job_id": None, "sid": sid, "title": None,
+                "cost": None, "exit_code": None, "activity": None,
                 "modified": _now_iso, "size": None, "source": "registry",
                 "state": state, "has_engine": has_engine,
             }
@@ -10283,6 +10733,15 @@ def main() -> None:
         threading.Thread(
             target=_watcher_loop,
             name="foreign-write-watcher",
+            daemon=True,
+        ).start()
+        # Background job reaper: reconciles dead-PID jobs and bounds the JOBS
+        # dict on a fixed cadence. Without it, reaping only happens when a
+        # browser polls /api/jobs, so an unattended server leaks finished
+        # job state and dead subprocess handles indefinitely.
+        threading.Thread(
+            target=_job_reaper_loop,
+            name="job-reaper",
             daemon=True,
         ).start()
         try:

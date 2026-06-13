@@ -312,23 +312,49 @@ function paneCoreAssistantBlock(t) {
   t.currentAssistant = msg;
   return msg;
 }
+// Streaming assistant text is markdown-rendered by overwriting innerHTML on
+// each frame. Tool pills / thinking blocks / todos are appended as siblings
+// into the SAME .text — so writing markdown straight into .text would nuke
+// them every repaint (the "tool shows then vanishes" bug). Instead, text
+// renders into a dedicated open ".md" segment; non-text children append after
+// it and CLOSE the segment, so the next text opens a fresh segment below the
+// pill and the chain order (text → tool → text) is preserved intact.
+function paneCoreOpenTextSegment(textEl) {
+  const seg = textEl._openSeg;
+  if (seg && seg.isConnected && seg.parentNode === textEl) return seg;
+  const fresh = document.createElement("div");
+  fresh.className = "md";
+  textEl.appendChild(fresh);
+  textEl._openSeg = fresh;
+  return fresh;
+}
+// Seal the live text segment so the next non-text child (pill/thinking/todo)
+// and any subsequent text land in transcript order rather than overwriting.
+function paneCoreCloseTextSegment(textEl) {
+  if (textEl) textEl._openSeg = null;
+}
 function paneCoreAppendAssistantText(t, text) {
   if (!text) return;
   const block = paneCoreAssistantBlock(t);
   const textEl = block.querySelector(".text");
-  if (!Array.isArray(textEl._rawBuf)) {
-    textEl._rawBuf = textEl.dataset.raw ? [textEl.dataset.raw] : [];
+  const seg = paneCoreOpenTextSegment(textEl);
+  if (!Array.isArray(seg._rawBuf)) {
+    seg._rawBuf = seg.dataset.raw ? [seg.dataset.raw] : [];
   }
-  textEl._rawBuf.push(text);
-  if (textEl._renderPending) { paneCoreSetActivity(t, "responding…", "busy"); return; }
-  textEl._renderPending = true;
+  seg._rawBuf.push(text);
+  if (seg._renderPending) { paneCoreSetActivity(t, "responding…", "busy"); return; }
+  seg._renderPending = true;
   requestAnimationFrame(() => {
-    textEl._renderPending = false;
-    if (!textEl.isConnected) { textEl._rawBuf = []; return; }
-    const latest = (textEl._rawBuf || []).join("");
+    seg._renderPending = false;
+    if (!seg.isConnected) { seg._rawBuf = []; return; }
+    const latest = (seg._rawBuf || []).join("");
+    seg.dataset.raw = latest;
+    // Mirror onto .text for the dedupe readers (paneCoreRenderJsonObject
+    // checks .text dataset.raw to avoid re-appending the final message after
+    // deltas already rendered it).
     textEl.dataset.raw = latest;
-    try { textEl.innerHTML = DOMPurify.sanitize(marked.parse(latest)); }
-    catch (_) { textEl.textContent = latest; }
+    try { seg.innerHTML = DOMPurify.sanitize(marked.parse(latest)); }
+    catch (_) { seg.textContent = latest; }
   });
   paneCoreSetActivity(t, "responding…", "busy");
 }
@@ -477,6 +503,7 @@ function paneCoreRenderTodoWrite(t, toolUseId, input) {
   }
   wrap.appendChild(ul);
   textEl.appendChild(wrap);
+  paneCoreCloseTextSegment(textEl);
   t.toolUseEls.set(toolUseId, { pill: wrap, detail: null });
 }
 function paneCoreSummariseToolInput(input) {
@@ -535,6 +562,7 @@ function paneCoreAddToolPill(t, toolUseId, name, input) {
   wrap.appendChild(pill);
   wrap.appendChild(detail);
   textEl.appendChild(wrap);
+  paneCoreCloseTextSegment(textEl);
   if (toolUseId) t.toolUseEls.set(toolUseId, { pill, detail });
   // NOTE (isolated canvas renderer): terminals.js auto-opens a "dispatch
   // tracker" pane here when a Bash tool spawns an LLM (codex exec / claude
@@ -671,6 +699,7 @@ function paneCoreRenderJsonObject(t, obj) {
           det.appendChild(sum);
           det.appendChild(pre);
           t2.appendChild(det);
+          paneCoreCloseTextSegment(t2);
         }
       }
     } else if (typeof content === "string") {
@@ -781,6 +810,7 @@ function paneCoreRenderCodexEvent(t, obj) {
       det.appendChild(sum);
       det.appendChild(pre);
       txtEl.appendChild(det);
+      paneCoreCloseTextSegment(txtEl);
       return;
     }
     if (kind === "function_call") {
@@ -1186,6 +1216,25 @@ function paneCoreHandleSessionEvent(t, ev) {
       note.className = "msg system";
       note.textContent = text;
       t.body.appendChild(note);
+    }
+    paneCoreAutoScroll(t);
+    return;
+  }
+  if (kind === "thinking") {
+    const text = ev.text || "";
+    if (text.trim()) {
+      const block = paneCoreAssistantBlock(t);
+      const txtEl = block.querySelector(".text");
+      const det = document.createElement("details");
+      det.className = "thinking-block";
+      const sum = document.createElement("summary");
+      sum.textContent = `thinking · ${text.length} chars`;
+      const pre = document.createElement("pre");
+      pre.textContent = text;
+      det.appendChild(sum);
+      det.appendChild(pre);
+      txtEl.appendChild(det);
+      paneCoreCloseTextSegment(txtEl);
     }
     paneCoreAutoScroll(t);
     return;

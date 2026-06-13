@@ -99,45 +99,61 @@
     var CANVAS_STALE_INTERVAL_MS = 3000; // mirrors canvas.js heartbeat cadence
     var _CANVAS_WIN = null;          // handle to the opened canvas window
 
-    // Open (or focus) the single named canvas window WITHOUT ever reloading it.
+    // Open (or focus) the single named canvas window — without reloading a live
+    // canvas, and without ever stranding a window on about:blank.
     //
-    // CRITICAL: calling window.open("app/canvas.html", "dash-canvas") when the
-    // window already exists RE-NAVIGATES it — reloading canvas.html, tearing
-    // down every mounted pane and dropping the in-flight `open` message. So
-    // adding a terminal would reload the whole canvas. We must NEVER pass the
-    // canvas URL to an existing window.
-    //
-    // Instead always reacquire via an EMPTY url: window.open("", "dash-canvas")
-    // returns the existing window WITHOUT navigating it (verified: no reload),
-    // or a fresh blank window if none exists. We only navigate to canvas.html
-    // when the window is genuinely blank (i.e. we just created it) — detected
-    // by reading its same-origin location. A reused live canvas is left exactly
-    // as it is. (We don't rely on the heartbeat for liveness here: a backgrounded
-    // canvas throttles its heartbeat and would look "dead", which previously
-    // forced the reloading URL path.)
+    // Three cases:
+    //   1. We hold a live handle (same dashboard session) → focus(), no
+    //      re-navigation. This is what stops a reload-on-add: adding a pane to
+    //      an open canvas keeps its panes and never drops the in-flight `open`.
+    //   2. No handle BUT a canvas is alive (the dashboard reloaded while the
+    //      canvas stayed open — detected via the persisted heartbeat) →
+    //      reacquire the named window with an EMPTY url, which focuses it
+    //      WITHOUT navigating (so we don't reload it and race the `open`).
+    //   3. No handle and no live canvas → create by ABSOLUTE url (loads
+    //      canvas.html directly; also re-navigates a stale "dash-canvas" /
+    //      about:blank window, self-healing it). Absolute so it never resolves
+    //      against an about:blank base.
     function canvasOpenWindow() {
+      var canvasUrl;
+      try { canvasUrl = new URL("app/canvas.html", window.location.href).href; }
+      catch (_) { canvasUrl = "app/canvas.html"; }
       try {
         if (_CANVAS_WIN && !_CANVAS_WIN.closed) {
           try { _CANVAS_WIN.focus(); } catch (_) {}
           return _CANVAS_WIN;
         }
-        var w = window.open("", "dash-canvas");
-        if (!w) {
-          // Empty-url open can be blocked on the very first user gesture in some
-          // browsers; fall back to a real open so the canvas still appears.
-          _CANVAS_WIN = window.open("app/canvas.html", "dash-canvas");
-          return _CANVAS_WIN;
-        }
+        // Is a canvas already alive? (fresh heartbeat in persisted state)
+        var alive = false;
         try {
-          var href = (w.location && w.location.href) || "";
-          // Navigate ONLY when the window isn't already our canvas (a freshly
-          // created blank window). A live canvas keeps its panes — no reload.
-          if (href === "" || href === "about:blank" || href.indexOf("canvas.html") === -1) {
-            w.location.href = "app/canvas.html";
+          var st = window.CanvasBus && window.CanvasBus.loadState();
+          alive = !!(st && !window.CanvasBus.isStale(st, Date.now(), CANVAS_STALE_INTERVAL_MS));
+        } catch (_) { alive = false; }
+        if (alive) {
+          // Reacquire WITHOUT navigating — empty url returns the existing live
+          // canvas window and just focuses it (no reload).
+          var w = window.open("", "dash-canvas");
+          if (w) {
+            // The heartbeat can be a stale false-positive (lastSeen still fresh
+            // but the canvas window is actually gone — e.g. Chrome killed it
+            // without firing beforeunload). In that case window.open("",name)
+            // hands back a NEW about:blank window instead of reusing one. The
+            // canvas page is same-origin, so we can read its location: if it's
+            // blank, navigate it to the real canvas instead of stranding the
+            // user on about:blank. A genuinely-live canvas reports canvas.html
+            // and is left untouched (no reload).
+            var blank = false;
+            try {
+              var href = w.location && w.location.href;
+              blank = !href || href === "about:blank";
+            } catch (_) { blank = false; }  // cross-origin ⇒ not ours/blank, leave it
+            if (blank) { try { w.location.href = canvasUrl; } catch (_) {} }
+            try { w.focus(); } catch (_) {}
+            _CANVAS_WIN = w; return _CANVAS_WIN;
           }
-        } catch (_) { /* same-origin popup; shouldn't throw */ }
-        try { w.focus(); } catch (_) {}
-        _CANVAS_WIN = w;
+        }
+        // No live canvas → create (or re-navigate a stale window) by URL.
+        _CANVAS_WIN = window.open(canvasUrl, "dash-canvas");
       } catch (_) {
         _CANVAS_WIN = null;
       }
@@ -182,47 +198,37 @@
       // bare id, which already equals jobId. session:/job: keys match directly.
       var t = TERMS.get(key);
       if (!t || !t.pane) return;
+      // No text badge: reflect the on-canvas state on the pane's ⊞ button
+      // (selected look), matching the status rows.
       t.pane.classList.toggle("on-canvas", !!on);
-      var head = t.pane.querySelector(".term-head");
-      if (!head) return;
-      var badge = head.querySelector(".on-canvas-badge");
-      if (on) {
-        if (!badge) {
-          badge = document.createElement("span");
-          badge.className = "on-canvas-badge";
-          badge.textContent = "on canvas";
-          badge.title = "This pane is mirrored on the canvas window";
-          // Park it just before the actions cluster so it reads with the head.
-          var actions = head.querySelector(".actions");
-          if (actions) head.insertBefore(badge, actions); else head.appendChild(badge);
-        }
-      } else if (badge) {
-        badge.remove();
+      var btn = t.pane.querySelector(".term-head .send-to-canvas");
+      if (btn) {
+        btn.classList.toggle("on-canvas", !!on);
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
       }
     }
 
     // Toggle the "on canvas" badge on a matching status row (if rendered).
     // Rows key off data-key, which is the same normalized bus key.
+    // The on-canvas state is shown ON the ⊞ button itself (it renders selected,
+    // with a border) — no separate "on canvas" text badge. Toggle the row class
+    // (CSS styles the button) and reflect it on the button for a11y/clarity.
+    function _markRowOnCanvas(row, on) {
+      if (!row) return;
+      row.classList.toggle("on-canvas", !!on);
+      var btn = row.querySelector(".send-to-canvas");
+      if (!btn) return;
+      btn.classList.toggle("on-canvas", !!on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.title = on
+        ? "Open on the canvas — click to focus it"
+        : "Open this in the canvas window";
+    }
     function setStatusRowCanvasBadge(key, on) {
       var grid = document.getElementById("terms-grid");
       if (!grid) return;
       var row = grid.querySelector('.term-status-row[data-key="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
-      if (!row) return;
-      row.classList.toggle("on-canvas", !!on);
-      var actions = row.querySelector(".row-actions");
-      if (!actions) return;
-      var badge = actions.querySelector(".on-canvas-badge");
-      if (on) {
-        if (!badge) {
-          badge = document.createElement("span");
-          badge.className = "on-canvas-badge";
-          badge.textContent = "on canvas";
-          badge.title = "Mirrored on the canvas window";
-          actions.insertBefore(badge, actions.querySelector(".send-to-canvas"));
-        }
-      } else if (badge) {
-        badge.remove();
-      }
+      _markRowOnCanvas(row, on);
     }
 
     // Inbound bus messages from the canvas window. Routed through the queue's
@@ -247,12 +253,12 @@
         return;
       }
       if (msg.type === "activity") {
-        // Optional: reflect a one-shot activity hint on the badge title and,
+        // Optional: reflect a one-shot activity hint on the ⊞ button title and,
         // for status rows, surface the live label on the row's activity chip.
         var key = window.CanvasBus.normalizeKey(msg.key);
         var t = TERMS.get(key);
-        var badge = t && t.pane && t.pane.querySelector(".on-canvas-badge");
-        if (badge && msg.label) badge.title = "on canvas · " + msg.label;
+        var paneBtn = t && t.pane && t.pane.querySelector(".send-to-canvas");
+        if (paneBtn && msg.label) paneBtn.title = "On canvas · " + msg.label;
         if (msg.label) {
           var grid = document.getElementById("terms-grid");
           var row = grid && grid.querySelector('.term-status-row[data-key="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
@@ -702,6 +708,79 @@
       return target;
     }
 
+    // --- Status-list metrics chips -------------------------------------
+    // Compact, read-only signals derived from the session/job payload the
+    // status list already polls (model · duration · cost · turns · exit).
+    // Everything degrades gracefully: a field that's absent simply produces
+    // no chip, so IDE sessions (no model/cost) still render cleanly.
+    function _fmtDur(ms) {
+      if (!ms || ms < 0 || !isFinite(ms)) return "";
+      const s = Math.round(ms / 1000);
+      if (s < 60) return s + "s";
+      const m = Math.floor(s / 60);
+      if (m < 60) { const r = s % 60; return r ? m + "m" + r + "s" : m + "m"; }
+      const h = Math.floor(m / 60); const rm = m % 60;
+      return rm ? h + "h" + rm + "m" : h + "h";
+    }
+    function _fmtCost(usd) {
+      const n = Number(usd);
+      if (!n || n <= 0 || !isFinite(n)) return "";
+      return n >= 1 ? "$" + n.toFixed(2) : "$" + n.toFixed(3);
+    }
+    // Drop the vendor prefix so the chip stays short ("opus-4-8", "gpt-5.5").
+    function _shortModel(m) {
+      if (!m) return "";
+      return String(m).replace(/^claude-/, "").replace(/^us\.anthropic\./, "");
+    }
+    // Wall-clock run duration of a JOB: started_at → ended_at (or now, if
+    // still running). Sessions use recency instead (see _statusMeta).
+    function _elapsedMs(o, active) {
+      const start = o && o.started_at ? Date.parse(o.started_at) : NaN;
+      if (!isFinite(start)) return 0;
+      const end = active
+        ? Date.now()
+        : (o.ended_at ? Date.parse(o.ended_at) : Date.now());
+      return Math.max(0, end - start);
+    }
+    // "5m" / "3h" since the given ISO timestamp — how long ago a session was
+    // last active. More useful than total span for resumed sessions, which
+    // can be days "old" but idle.
+    function _agoMs(iso) {
+      const t = iso ? Date.parse(iso) : NaN;
+      if (!isFinite(t)) return NaN;
+      return Math.max(0, Date.now() - t);
+    }
+    function _statusMeta(o, active) {
+      const parts = [];
+      const model = _shortModel(o && o.model);
+      if (model) parts.push({ text: model, cls: "meta-model", title: o.model });
+      // Sessions (carry `modified`) show recency of last activity — a resumed
+      // session is often days old but only just active, so "5m" beats a 46h
+      // span. Jobs show their wall-clock run duration instead.
+      if (o && o.modified) {
+        const agoMs = _agoMs(o.modified);
+        if (isFinite(agoMs)) {
+          const ago = agoMs < 5000 ? "now" : _fmtDur(agoMs);
+          parts.push({ text: ago, cls: "meta-dur", title: ago === "now" ? "active now" : "last active " + ago + " ago" });
+        }
+      } else {
+        const dur = _fmtDur(_elapsedMs(o, active));
+        if (dur) parts.push({ text: dur, cls: "meta-dur", title: active ? "running for" : "duration" });
+      }
+      const cost = o && o.cost && typeof o.cost === "object" ? o.cost : null;
+      if (cost) {
+        const c = _fmtCost(cost.cost_usd);
+        if (c) parts.push({ text: c, cls: "meta-cost", title: "cost so far" });
+        const turns = parseInt(cost.turns, 10) || 0;
+        if (turns > 1) parts.push({ text: "×" + turns, cls: "meta-turns", title: turns + " turns" });
+      }
+      // Surface only failing exits on finished rows — a clean exit 0 is noise.
+      if (!active && o && o.exit_code != null && o.exit_code !== 0) {
+        parts.push({ text: "exit " + o.exit_code, cls: "meta-exit-bad", title: "non-zero exit code" });
+      }
+      return parts;
+    }
+
     function _statusRowEl(opts) {
       // opts: { key, kind, pill, pillState, activity, tool, preview, title,
       //         onOpen? }  — onOpen overrides the default ⊞ behavior (used by
@@ -714,30 +793,31 @@
       // URL-encoder) HTML-escapes the server-supplied fields below — a session
       // title / job task can carry arbitrary text, so this is the XSS guard.
       const pillCls = opts.pillState ? " " + escHtml(opts.pillState) : "";
+      const metaParts = Array.isArray(opts.meta) ? opts.meta : [];
+      const metaHtml = metaParts.length
+        ? `<span class="row-meta">` + metaParts.map((p) =>
+            `<span class="meta-chip${p.cls ? " " + escHtml(p.cls) : ""}"` +
+            `${p.title ? ` title="${escHtml(p.title)}"` : ""}>${escHtml(p.text)}</span>`
+          ).join("") + `</span>`
+        : "";
       row.innerHTML =
         `<span class="pill status-pill${pillCls}">${escHtml(opts.pill || "")}</span>` +
-        `<span class="activity${opts.activityCls ? " " + escHtml(opts.activityCls) : ""}">${escHtml(opts.activity || "")}</span>` +
+        `<span class="activity${opts.activityCls ? " " + escHtml(opts.activityCls) : ""}" title="${escHtml(opts.activityTitle || opts.activity || "")}">${escHtml(opts.activity || "")}</span>` +
         `<span class="row-tool" title="${escHtml(opts.toolTitle || "")}">${escHtml(opts.tool || "")}</span>` +
         `<span class="row-task" title="${escHtml(opts.title || "")}">${escHtml(opts.preview || "")}</span>` +
+        metaHtml +
         `<span class="row-actions">` +
           `<button class="send-to-canvas" type="button" data-action="send-canvas" title="Open this in the canvas window">⊞</button>` +
         `</span>`;
-      // Reflect any live on-canvas badge for this key immediately.
-      const onCanvas = _CANVAS_ON_KEYS.has(opts.key);
-      if (onCanvas) {
-        row.classList.add("on-canvas");
-        const badge = document.createElement("span");
-        badge.className = "on-canvas-badge";
-        badge.textContent = "on canvas";
-        badge.title = "Mirrored on the canvas window";
-        row.querySelector(".row-actions").insertBefore(badge, row.querySelector(".send-to-canvas"));
-      }
       const sendBtn = row.querySelector(".send-to-canvas");
       sendBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         if (typeof opts.onOpen === "function") { opts.onOpen(); return; }
         termSendToCanvas(_statusRowTerm(opts.kind, opts.key));
       });
+      // Reflect the live on-canvas state ON the ⊞ button itself (selected look,
+      // no separate text badge).
+      if (_CANVAS_ON_KEYS.has(opts.key)) _markRowOnCanvas(row, true);
       // Optional dismiss control (launched rows): a ✕ that removes the row.
       if (typeof opts.onDismiss === "function") {
         const x = document.createElement("button");
@@ -784,9 +864,13 @@
       const launchedEls = [];
       for (const e of _LAUNCHED) {
         const isTerm = e.kind === "terminal";
-        const onCanvas = _CANVAS_ON_KEYS.has(e.id);
+        // Row key MUST match the canvas bus key so the on-canvas "selected"
+        // state lands on this row: terminals key on the bare pty id, sessions
+        // on "session:<sid>" (what openLaunched routes + the canvas reports).
+        const rowKey = isTerm ? e.id : ("session:" + e.id);
+        const onCanvas = _CANVAS_ON_KEYS.has(rowKey);
         const el = _statusRowEl({
-          key: e.id,
+          key: rowKey,
           kind: e.kind,
           pill: "launched",
           pillState: "queued",
@@ -809,17 +893,26 @@
         if (!sid) continue;
         const state = (s.state || "mirror");
         const preview = (s.title || s.task || "").replace(/\s+/g, " ").slice(0, 80);
+        const live = _statusIsActiveSession(s);
+        const sTool = s.kind === "chat-codex" ? "codex" : "claude";
+        // Live activity from the transcript tail (tool running / thinking /
+        // responding). Falls back to a plain "live" when nothing is parseable.
+        const act = (live && s.activity && s.activity.text)
+          ? { text: s.activity.text, cls: "busy act-" + (s.activity.kind || "x") }
+          : { text: live ? "live" : "ended", cls: live ? "busy" : "ended" };
         const el = _statusRowEl({
           key: "session:" + sid,
           kind: "session",
           pill: state,
-          pillState: _statusIsActiveSession(s) ? "running" : "done",
-          activity: _statusIsActiveSession(s) ? "live" : "ended",
-          activityCls: _statusIsActiveSession(s) ? "busy" : "ended",
-          tool: "claude",
-          toolTitle: s.model || "claude",
+          pillState: live ? "running" : "done",
+          activity: act.text,
+          activityCls: act.cls,
+          activityTitle: (live && s.activity && s.activity.text) ? s.activity.text : act.text,
+          tool: sTool,
+          toolTitle: s.model || sTool,
           preview: preview || (sid.slice(0, 8) + "…"),
           title: "session " + sid,
+          meta: _statusMeta(s, _statusIsActiveSession(s)),
         });
         (_statusIsActiveSession(s) ? active : finished).push(el);
       }
@@ -837,6 +930,7 @@
           toolTitle: j.model || tool,
           preview: preview || j.id.slice(0, 8),
           title: j.task || j.id,
+          meta: _statusMeta(j, _statusIsActiveJob(j)),
         });
         (_statusIsActiveJob(j) ? active : finished).push(el);
       }
@@ -889,13 +983,17 @@
     // hit send does the dashboard POST /api/jobs and turn the draft into
     // a real, connected pane.
 
-    // Mirrors the MODELS_BY_TOOL catalog in core.js. Kept here as a local
-    // fallback so this file doesn't depend on script load order.
+    // Points at core.js's MODELS_BY_TOOL — the shared catalog that
+    // applyModelCatalog() keeps in sync with the models.yaml `catalog:` block
+    // (the single source of truth). We hold the reference, NOT a copy, so the
+    // in-place refresh in core.js is reflected here without re-wiring.
+    // The literal below is a last-resort fallback for the (abnormal) case where
+    // core.js failed to load — it is NOT a place to add new models.
     var DRAFT_MODELS_BY_TOOL = (typeof MODELS_BY_TOOL === "object" && MODELS_BY_TOOL)
       ? MODELS_BY_TOOL
       : {
-          claude: ["claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
-          codex:  ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+          claude: ["claude-opus-4-8", "claude-fable-5", "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
+          codex:  ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
         };
 
     var _draftCounter = 0;
@@ -1583,6 +1681,7 @@
           pre.textContent = txt;
           det.appendChild(sum); det.appendChild(pre);
           txtEl.appendChild(det);
+          termCloseTextSegment(txtEl);
           return;
         }
         if (kind === "function_call") {
@@ -2024,10 +2123,31 @@
       return msg;
     }
 
+    // Streaming assistant text overwrites innerHTML each frame; tool pills /
+    // thinking blocks / todos are appended as siblings into the SAME .text.
+    // Writing markdown straight into .text would nuke them on every repaint
+    // (the "tool shows then vanishes" bug). So text renders into a dedicated
+    // open ".md" segment; non-text children append after it and CLOSE the
+    // segment, so the next text opens a fresh segment below the pill and the
+    // chain order (text → tool → text) is preserved.
+    function termOpenTextSegment(textEl) {
+      const seg = textEl._openSeg;
+      if (seg && seg.isConnected && seg.parentNode === textEl) return seg;
+      const fresh = document.createElement("div");
+      fresh.className = "md";
+      textEl.appendChild(fresh);
+      textEl._openSeg = fresh;
+      return fresh;
+    }
+    function termCloseTextSegment(textEl) {
+      if (textEl) textEl._openSeg = null;
+    }
+
     function termAppendAssistantText(t, text) {
       if (!text) return;
       const block = termAssistantBlock(t);
       const textEl = block.querySelector(".text");
+      const seg = termOpenTextSegment(textEl);
       // Accumulate raw deltas in an internal array buffer rather than
       // re-reading/writing dataset.raw on every chunk. The dataset write
       // incurs a DOM-attribute round-trip and the string concat is O(n²)
@@ -2035,10 +2155,10 @@
       // per rAF flush (when we re-render markdown anyway) and mirror it
       // to dataset.raw there so external readers (see termRenderJsonObject
       // dedupe check) still observe the latest text.
-      if (!Array.isArray(textEl._rawBuf)) {
-        textEl._rawBuf = textEl.dataset.raw ? [textEl.dataset.raw] : [];
+      if (!Array.isArray(seg._rawBuf)) {
+        seg._rawBuf = seg.dataset.raw ? [seg.dataset.raw] : [];
       }
-      textEl._rawBuf.push(text);
+      seg._rawBuf.push(text);
       // Streaming responses arrive as MANY small deltas (a typical 5KB
       // answer can be 50+ chunks of 100 chars). Re-parsing the full
       // accumulated markdown on EVERY delta is O(N²) total work and
@@ -2046,28 +2166,29 @@
       // animation frames: at most one parse per frame regardless of how
       // many deltas land in between. The final result is identical; only
       // the intermediate frames are skipped.
-      if (textEl._renderPending) {
+      if (seg._renderPending) {
         termSetActivity(t, "responding…", "busy");
         return;
       }
-      textEl._renderPending = true;
+      seg._renderPending = true;
       requestAnimationFrame(() => {
-        textEl._renderPending = false;
-        // The pane (and therefore this textEl) may have been removed from
+        seg._renderPending = false;
+        // The pane (and therefore this segment) may have been removed from
         // the DOM between the delta arriving and the rAF callback firing
         // — operator clicked close, termCloseAllFinished swept it, the
         // chat-codex rekey replaced the block, etc. Writing into a
         // detached node leaks the dataset payload + queued buffer for
         // GC's lifetime and pointlessly re-parses markdown. Bail out
         // cleanly when the node is no longer connected.
-        if (!textEl.isConnected) {
-          textEl._rawBuf = [];
+        if (!seg.isConnected) {
+          seg._rawBuf = [];
           return;
         }
-        const latest = (textEl._rawBuf || []).join("");
-        textEl.dataset.raw = latest;
-        try { textEl.innerHTML = DOMPurify.sanitize(marked.parse(latest)); }
-        catch (_) { textEl.textContent = latest; }
+        const latest = (seg._rawBuf || []).join("");
+        seg.dataset.raw = latest;
+        textEl.dataset.raw = latest;  // mirror for the dedupe readers
+        try { seg.innerHTML = DOMPurify.sanitize(marked.parse(latest)); }
+        catch (_) { seg.textContent = latest; }
       });
       termSetActivity(t, "responding…", "busy");
     }
@@ -2129,6 +2250,7 @@
       wrap.appendChild(pill);
       wrap.appendChild(detail);
       textEl.appendChild(wrap);
+      termCloseTextSegment(textEl);
       // Only register interactive pills that carry a real id — an id-less call
       // (e.g. a codex function_call with no call_id) can never be matched by a
       // result, and registering under a falsy key would collide across calls.
@@ -2312,6 +2434,7 @@
       }
       wrap.appendChild(ul);
       textEl.appendChild(wrap);
+      termCloseTextSegment(textEl);
       // Still register so a tool_result event can mark it succeeded/failed.
       t.toolUseEls.set(toolUseId, { pill: wrap, detail: null });
     }
@@ -2495,6 +2618,7 @@
               det.appendChild(sum);
               det.appendChild(pre);
               t2.appendChild(det);
+              termCloseTextSegment(t2);
             }
           }
         } else if (typeof content === "string") {
@@ -2645,6 +2769,28 @@
           note.className = "msg system";
           note.textContent = text;
           t.body.appendChild(note);
+        }
+        termAutoScroll(t);
+        return;
+      }
+      if (kind === "thinking") {
+        // Chain-of-thought: render as a collapsed <details> inside the
+        // assistant bubble (same shape as the live stream-json path) so long
+        // internal monologues stay inspectable without drowning the answer.
+        const text = ev.text || "";
+        if (text.trim()) {
+          const block = termAssistantBlock(t);
+          const t2 = block.querySelector(".text");
+          const det = document.createElement("details");
+          det.className = "thinking-block";
+          const sum = document.createElement("summary");
+          sum.textContent = `thinking · ${text.length} chars`;
+          const pre = document.createElement("pre");
+          pre.textContent = text;
+          det.appendChild(sum);
+          det.appendChild(pre);
+          t2.appendChild(det);
+          termCloseTextSegment(t2);
         }
         termAutoScroll(t);
         return;

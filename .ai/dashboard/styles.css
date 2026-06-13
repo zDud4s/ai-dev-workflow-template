@@ -1253,7 +1253,17 @@
       box-sizing: border-box;
     }
     .term-status-row .status-pill { flex: 0 0 auto; }
-    .term-status-row .activity { flex: 0 0 auto; color: var(--text-dim); font-size: 12px; }
+    .term-status-row .activity {
+      flex: 0 1 auto; min-width: 0; max-width: 22ch;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: var(--text-dim); font-size: 12px;
+    }
+    /* Live transcript activity: a running tool stands out in the accent, the
+       "thinking…" state reads as a quieter italic. */
+    .term-status-row .activity.act-tool { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .term-status-row .activity.act-thinking { font-style: italic; }
+    .term-status-row .activity.act-result,
+    .term-status-row .activity.act-text { color: var(--text-dim); font-style: italic; }
     .term-status-row .row-tool { flex: 0 0 auto; color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
     .term-status-row .row-task {
       flex: 1 1 auto;
@@ -1263,6 +1273,18 @@
       white-space: nowrap;
       color: var(--text);
     }
+    /* Read-only metrics chips (model · duration · cost · turns · exit).
+       Sits between the task and the action buttons; margin-left:auto on
+       .row-actions keeps the buttons pinned right while these hug the task. */
+    .term-status-row .row-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s-2); }
+    .term-status-row .meta-chip {
+      font-size: 11px; color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .term-status-row .meta-chip.meta-model { text-transform: none; letter-spacing: 0; opacity: 0.85; }
+    .term-status-row .meta-chip.meta-cost { color: var(--text); }
+    .term-status-row .meta-chip.meta-exit-bad { color: var(--bad, #e06c75); }
     .term-status-row .row-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s-2); margin-left: auto; }
     .term-status-row .send-to-canvas {
       all: unset; cursor: var(--cur-pointer);
@@ -1273,10 +1295,19 @@
     }
     .term-status-row .send-to-canvas:hover { color: var(--accent); border-color: var(--accent); }
     .term-status-row.on-canvas { border-left-color: var(--accent); }
-    .term-status-row .on-canvas-badge {
-      font-size: 11px; color: var(--accent);
-      border: 1px solid var(--accent); border-radius: 3px;
-      padding: 1px 5px; white-space: nowrap;
+    /* On-canvas state lives ON the ⊞ button: it renders SELECTED — filled
+       accent + a solid accent border + a soft ring — so the row reads
+       "open on the canvas" without a separate text badge. */
+    .term-status-row .send-to-canvas.on-canvas,
+    .term-head .actions .send-to-canvas.on-canvas {
+      color: var(--on-accent);
+      background: var(--accent);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+    .term-status-row .send-to-canvas.on-canvas:hover,
+    .term-head .actions .send-to-canvas.on-canvas:hover {
+      color: var(--on-accent); background: var(--accent);
     }
     /* Collapsible "finished" group keeps terminal sessions out of the way. */
     .terms-finished-group { border: 0; margin: 0; }
@@ -1647,29 +1678,8 @@
       color: var(--accent-2, var(--accent));
       border-color: var(--accent-2, var(--accent));
     }
-    /* A pane mirrored on the canvas window shows a small "on canvas" badge in
-       its header. .on-canvas on the pane is the state hook; the badge label is
-       inserted/removed by terminals.js (setCanvasBadge). */
-    .term-head .on-canvas-badge {
-      flex: 0 0 auto;
-      align-self: center;
-      margin-left: 6px;
-      padding: 2px 7px;
-      border-radius: 999px;
-      font-family: var(--ff-mono);
-      font-size: 9px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--accent-2, var(--accent));
-      border: 1px solid var(--accent-2, var(--accent));
-      background: var(--accent-bg, transparent);
-      white-space: nowrap;
-    }
-    .term-pane.on-canvas .term-head .send-to-canvas {
-      color: var(--accent-2, var(--accent));
-      border-color: var(--accent-2, var(--accent));
-    }
+    /* On-canvas state is shown on the ⊞ button itself (selected look — see the
+       .send-to-canvas.on-canvas rule near the status rows). No text badge. */
     /* Narrow pane: progressively drop secondary chrome so the PRIMARY
        actions (close + cancel + stop + expand) stay visible. In split /
        grid layouts the pane width drops below 700px and the original
@@ -2059,6 +2069,12 @@
        stay visible. */
     .term-body.chat .msg.assistant .text { white-space: normal; }
     .term-body.chat .msg.assistant .text :is(p, ul, ol) { margin: 3px 0; }
+    /* Streamed assistant text renders into one or more ".md" segments so tool
+       pills / thinking blocks can be appended as siblings without the markdown
+       repaint wiping them. The segment is a layout-neutral wrapper: it must add
+       no box of its own, and consecutive segments collapse seamlessly so a
+       reply split by a tool call still reads as continuous prose. */
+    .term-body.chat .msg.assistant .text > .md { display: contents; }
     .term-body.chat .msg.assistant .text ul,
     .term-body.chat .msg.assistant .text ol { padding-left: 22px; }
     .term-body.chat .msg.assistant .text li { margin: 0; padding: 0; }
