@@ -1284,7 +1284,7 @@
     }
     .term-status-row .meta-chip.meta-model { text-transform: none; letter-spacing: 0; opacity: 0.85; }
     .term-status-row .meta-chip.meta-cost { color: var(--text); }
-    .term-status-row .meta-chip.meta-exit-bad { color: var(--bad, #e06c75); }
+    .term-status-row .meta-chip.meta-exit-bad { color: var(--bad); }
     .term-status-row .row-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s-2); margin-left: auto; }
     .term-status-row .send-to-canvas {
       all: unset; cursor: var(--cur-pointer);
@@ -1367,7 +1367,7 @@
       width: 100vw;
       height: 100vh;
       overflow: hidden;
-      background: var(--surf-1, #0b0f14);
+      background: var(--surf-1);
     }
     .canvas-pane {
       position: absolute;
@@ -1380,7 +1380,7 @@
     }
     .canvas-pane.dragging { opacity: 0.5; }
     .canvas-pane.focused {
-      outline: 1px solid var(--accent, #4fcdcd);
+      outline: 1px solid var(--accent);
       outline-offset: -1px;
     }
     /* In the canvas, the mounted pane should fill its absolute host (the
@@ -1402,12 +1402,12 @@
       gap: 6px;
       height: 22px;
       padding: 0 6px;
-      background: var(--surf-3, #11161d);
-      border-bottom: 1px solid var(--border-soft, #243042);
+      background: var(--surf-3);
+      border-bottom: 1px solid var(--border-soft);
       cursor: grab;
       user-select: none;
-      font: 11px/1 var(--ff-mono, monospace);
-      color: var(--ink-2, #9fb0c3);
+      font: 11px/1 var(--ff-mono);
+      color: var(--text-2);
     }
     .canvas-pane > .canvas-pane-head:active { cursor: grabbing; }
     .canvas-pane-title {
@@ -1426,15 +1426,15 @@
       line-height: 1;
       padding: 0 4px;
     }
-    .canvas-pane-close:hover { color: var(--bad, #ff5d6c); }
+    .canvas-pane-close:hover { color: var(--bad); }
 
     /* ── Drag-to-split drop-zone highlight (overlay, never eats the drop) ──── */
     .canvas-dropzone {
       position: absolute;
       z-index: 50;
       pointer-events: none;
-      background: color-mix(in srgb, var(--accent, #4fcdcd) 22%, transparent);
-      border: 1px solid var(--accent, #4fcdcd);
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      border: 1px solid var(--accent);
       box-sizing: border-box;
     }
 
@@ -1448,7 +1448,7 @@
     .canvas-gutter-row { cursor: col-resize; }
     .canvas-gutter-col { cursor: row-resize; }
     .canvas-gutter:hover {
-      background: color-mix(in srgb, var(--accent, #4fcdcd) 35%, transparent);
+      background: color-mix(in srgb, var(--accent) 35%, transparent);
     }
 
     .term-pane {
@@ -1675,8 +1675,8 @@
       letter-spacing: 0;
     }
     .term-head .actions .send-to-canvas:hover {
-      color: var(--accent-2, var(--accent));
-      border-color: var(--accent-2, var(--accent));
+      color: var(--accent-2);
+      border-color: var(--accent-2);
     }
     /* On-canvas state is shown on the ⊞ button itself (selected look — see the
        .send-to-canvas.on-canvas rule near the status rows). No text badge. */

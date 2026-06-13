@@ -508,13 +508,6 @@
     // via the Run / Sessions tabs.
     var PICKER_MAX_PER_GROUP = 50;
 
-    // Auto-grow composer textareas up to this many CSS pixels so multi-
-    // line prompts don't get clipped to one row but the composer also
-    // doesn't eat the entire pane. Previously hardcoded as the literal
-    // ``220`` at five sites (draft, regular chat, transcript fork,
-    // resume reset, codex-rekey reset).
-    var COMPOSER_AUTOSIZE_MAX_PX = 220;
-
     // Default duration for #term-msg toast messages. The pre-existing
     // call sites all used the literal ``4000``; this single source of
     // truth keeps subsequent UX tweaks (e.g. lower to 3000 for snappier
@@ -2180,7 +2173,7 @@
         // detached node leaks the dataset payload + queued buffer for
         // GC's lifetime and pointlessly re-parses markdown. Bail out
         // cleanly when the node is no longer connected.
-        if (!seg.isConnected) {
+        if (!textEl.isConnected || !seg.isConnected) {
           seg._rawBuf = [];
           return;
         }
