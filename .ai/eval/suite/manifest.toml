@@ -1,0 +1,81 @@
+version = 1
+
+[[tasks]]
+id = "sum-list"
+partition = "tuning"
+path = "tasks/sum-list"
+entrypoint = "solution.py"
+check = "check.py"
+
+[[tasks]]
+id = "reverse-words"
+partition = "held-out"
+path = "tasks/reverse-words"
+entrypoint = "solution.py"
+check = "check.py"
+
+[[tasks]]
+id = "compare-version"
+partition = "tuning"
+path = "tasks/compare-version"
+entrypoint = "solution.py"
+check = "check.py"
+
+[[tasks]]
+id = "flatten"
+partition = "tuning"
+path = "tasks/flatten"
+entrypoint = "solution.py"
+check = "check.py"
+
+[[tasks]]
+id = "roman-to-int"
+partition = "held-out"
+path = "tasks/roman-to-int"
+entrypoint = "solution.py"
+check = "check.py"
+
+[[tasks]]
+id = "is-balanced"
+partition = "held-out"
+path = "tasks/is-balanced"
+entrypoint = "solution.py"
+check = "check.py"
+
+[[tasks]]
+id = "json-pointer"
+partition = "tuning"
+path = "tasks/json-pointer"
+entrypoint = "solution.py"
+check = "check.py"
+
+[[tasks]]
+id = "int-to-roman"
+partition = "held-out"
+path = "tasks/int-to-roman"
+entrypoint = "solution.py"
+check = "check.py"
+
+[[tasks]]
+id = "kv-store"
+partition = "tuning"
+path = "tasks/kv-store"
+kind = "project"
+check = "check.py"
+seed = "seed"
+
+[[tasks]]
+id = "cli-parser"
+partition = "tuning"
+path = "tasks/cli-parser"
+kind = "project"
+check = "check.py"
+seed = "seed"
+
+[[tasks]]
+id = "lru-cache"
+partition = "held-out"
+path = "tasks/lru-cache"
+kind = "project"
+check = "check.py"
+seed = "seed"

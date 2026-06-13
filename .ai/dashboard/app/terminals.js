@@ -5,168 +5,355 @@
     // Each entry: { jobId, source, pane, body, input, sendBtn, status, task }
     var TERMS = new Map();
 
-    // ----- pane persistence (survives F5) -----
+    // ----- shared PTY token cache (survives F5) -----
     //
-    // Each open pane (chat job, PTY, IDE transcript mirror) is logged to
-    // localStorage with just enough metadata to re-attach on next page
-    // load: pane key + kind + collapsed/pinned flags. Everything else is
-    // re-fetched server-side on restore — the job/PTY itself is owned by
-    // the server process and outlives the browser tab. Drafts (work-in-
-    // progress, not yet POSTed) and dispatch trackers (re-spawned by
-    // their parent stream) are intentionally excluded.
-    var PERSIST_KEY = "dash.openPanes.v1";
-    var _persistTimer = null;
+    // The canvas window owns PTY rendering and layout persistence. This
+    // dashboard-side legacy key is read only now, used only to migrate tokens
+    // written before PTYs moved fully into the canvas.
+    var PERSIST_KEY = "dash.openPanes.v2";
+    var PTY_TOKEN_CACHE_KEY = "dash.ptyTokens.v1";
 
-    // Shared, short-lived /api/transcripts fetch so a burst of pane opens
-    // (restoreOpenPanes spinning up 6 panes, the picker refreshing, etc.)
-    // collapses into one HTTP request. Each transcript entry carries the
-    // ``task`` preview the server already extracts, so a collapsed pane
-    // can render a meaningful label without opening its SSE stream.
-    var _transcriptsListPromise = null;
-    function fetchTranscriptsListCached() {
-      if (_transcriptsListPromise) return _transcriptsListPromise;
-      _transcriptsListPromise = fetch("/api/transcripts", { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : { transcripts: [] }))
-        .catch(() => ({ transcripts: [] }))
-        .finally(() => {
-          // Drop the cached promise a short grace window AFTER the fetch
-          // settles — not on a wall-clock timer started at dispatch. A
-          // dispatch-time timer could clear the cache while the request is
-          // still in flight (fetch slower than the window), letting a second
-          // caller spawn a duplicate concurrent fetch. The grace window still
-          // lets a restoreOpenPanes burst coalesce onto one request.
-          setTimeout(() => { _transcriptsListPromise = null; }, 250);
-        });
-      return _transcriptsListPromise;
-    }
-
-    // Apply a /api/transcripts entry to a transcript pane's header. Used
-    // by the initial hydrate AND the periodic poller — keeps both paths
-    // in sync. ``entry`` is one item from /api/transcripts; ``sessionId``
-    // is the stripped (no "ide:" prefix) UUID.
-    function applyTranscriptStatus(t, entry, sessionId) {
-      if (!t || !t.pane || !entry) return;
-      const titleRaw = (entry.title || entry.task || "").replace(/\s+/g, " ").trim();
-      const taskRaw = (entry.task || "").replace(/\s+/g, " ").trim();
-      const label = titleRaw.slice(0, 80);
-      const taskEl = t.pane.querySelector(".term-head .task");
-      if (taskEl && label && taskEl.textContent !== label) {
-        taskEl.textContent = label;
-        const tipParts = [];
-        if (entry.title && taskRaw) tipParts.push("first prompt: " + taskRaw);
-        tipParts.push("session " + sessionId);
-        taskEl.title = tipParts.join("  ·  ");
-      }
-      if (label) t.task = label;
-
-      // Pulse has-update when the transcript grew since we last polled —
-      // restores the "this collapsed pane has new IDE activity" signal
-      // that the per-pane SSE used to surface. Skip the initial pulse
-      // (lastSize === 0) so freshly-opened panes don't immediately glow.
-      if (Number.isFinite(entry.size_bytes)) {
-        const lastSize = t._lastSizeBytes || 0;
-        if (lastSize > 0 && entry.size_bytes > lastSize
-            && t.pane.classList.contains("collapsed")) {
-          t.pane.classList.add("has-update");
-        }
-        t._lastSizeBytes = entry.size_bytes;
-      }
-
-      // Refresh the paused-state activity row (relative mtime + size).
-      // We only touch it while the live stream is NOT attached — once
-      // expanded, ``mirroring…`` / ``ended`` / ``waiting`` from the
-      // stream handler win. Same gate the initial hydrate uses.
-      if (!t.source) {
-        const bits = [];
-        if (entry.modified && typeof relativeTime === "function") {
-          try { bits.push(relativeTime(entry.modified)); } catch (_) { /* ignore */ }
-        }
-        if (Number.isFinite(entry.size_bytes)) {
-          const kb = Math.max(1, Math.round(entry.size_bytes / 1024));
-          bits.push(kb + " KB");
-        }
-        const suffix = bits.length ? "  ·  " + bits.join("  ·  ") : "";
-        const paused = "paused" + suffix;
-        t._pausedActivity = paused;
-        termSetActivity(t, paused, "ready");
-      }
-    }
-
-    // Periodic poll: refresh every collapsed transcript pane's status
-    // bar from /api/transcripts. Restores the live-feeling collapsed
-    // pane (size grew → has-update pulse, mtime → relative time ticks)
-    // without keeping a per-pane EventSource open — one HTTP request
-    // every ``TRANSCRIPT_STATUS_POLL_MS`` regardless of pane count, so
-    // 6 stacked panes don't starve the browser's HTTP/1.1 connection
-    // budget the way 6 concurrent SSE streams did.
-    var TRANSCRIPT_STATUS_POLL_MS = 5000;
-    var _transcriptStatusPollTimer = null;
-    async function refreshTranscriptStatuses() {
-      // Bail early if there are no transcript panes — avoids burning a
-      // request on a dashboard whose only open panes are chat/PTY.
-      let hasAny = false;
-      for (const t of TERMS.values()) {
-        if (t && t.kind === "transcript") { hasAny = true; break; }
-      }
-      if (!hasAny) return;
+    function ptyTokenCacheRead() {
       try {
-        const data = await fetchTranscriptsListCached();
-        const byId = new Map((data.transcripts || []).map((e) => [e.session_id, e]));
-        for (const [paneKey, t] of TERMS.entries()) {
-          if (!t || t.kind !== "transcript") continue;
-          const sid = String(paneKey).replace(/^ide:/, "");
-          const entry = byId.get(sid);
-          if (entry) applyTranscriptStatus(t, entry, sid);
-        }
-      } catch (_) { /* try again next tick */ }
-    }
-    function ensureTranscriptStatusPoll() {
-      if (_transcriptStatusPollTimer) return;
-      _transcriptStatusPollTimer = setInterval(refreshTranscriptStatuses, TRANSCRIPT_STATUS_POLL_MS);
-    }
-    function maybeStopTranscriptStatusPoll() {
-      // Drop the timer once the last transcript pane closes — chat-only
-      // dashboards shouldn't pay for the poll forever.
-      for (const t of TERMS.values()) {
-        if (t && t.kind === "transcript") return;
-      }
-      if (_transcriptStatusPollTimer) {
-        clearInterval(_transcriptStatusPollTimer);
-        _transcriptStatusPollTimer = null;
+        if (typeof localStorage === "undefined") return {};
+        const raw = localStorage.getItem(PTY_TOKEN_CACHE_KEY);
+        const data = raw ? JSON.parse(raw) : {};
+        return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+      } catch (_) {
+        return {};
       }
     }
+
+    function ptyTokenCacheWrite(data) {
+      try {
+        if (typeof localStorage === "undefined") return;
+        localStorage.setItem(PTY_TOKEN_CACHE_KEY, JSON.stringify(data || {}));
+      } catch (_) { /* ignore quota / security errors */ }
+    }
+
+    window.PtyTokens = window.PtyTokens || {
+      get: function (id) {
+        const key = String(id || "");
+        if (!key) return "";
+        return ptyTokenCacheRead()[key] || "";
+      },
+      set: function (id, token) {
+        const key = String(id || "");
+        if (!key || !token) return;
+        const data = ptyTokenCacheRead();
+        data[key] = String(token);
+        ptyTokenCacheWrite(data);
+      },
+      remove: function (id) {
+        const key = String(id || "");
+        if (!key) return;
+        const data = ptyTokenCacheRead();
+        if (!Object.prototype.hasOwnProperty.call(data, key)) return;
+        delete data[key];
+        ptyTokenCacheWrite(data);
+      },
+    };
+
+    function termRememberPtyToken(id, token) {
+      if (!id || !token) return;
+      window._PTY_TOKENS = window._PTY_TOKENS || {};
+      window._PTY_TOKENS[id] = token;
+      if (window.PtyTokens && typeof window.PtyTokens.set === "function") {
+        window.PtyTokens.set(id, token);
+      }
+    }
+
+    function termLookupPtyToken(id) {
+      if (!id) return "";
+      if (window._PTY_TOKENS && window._PTY_TOKENS[id]) return window._PTY_TOKENS[id];
+      if (window.PtyTokens && typeof window.PtyTokens.get === "function") {
+        return window.PtyTokens.get(id) || "";
+      }
+      return "";
+    }
+
+    // (Legacy IDE-transcript status-poll machinery removed — Claude
+    // conversations are unified session panes that drive their own SSE
+    // stream; there is no separate read-only transcript pane to poll.)
     function persistOpenPanes() {
-      // Debounce so a burst of mutations (open + collapse + scroll) only
-      // serialises once.
-      if (_persistTimer) return;
-      _persistTimer = setTimeout(() => {
-        _persistTimer = null;
-        const entries = [];
-        for (const [id, t] of TERMS.entries()) {
-          if (!t) continue;
-          if (t.isDraft) continue;
-          if (t.kind === "dispatch") continue;
-          entries.push({
-            id,
-            kind: t.kind,
-            collapsed: t.pane && t.pane.classList.contains("collapsed") || false,
-            pinned: t.pane && t.pane.classList.contains("pinned") || false,
-          });
+      // Canvas owns durable pane layout now; keep this as a no-op for older
+      // dashboard call sites until the remaining inline job helpers are retired.
+    }
+
+    // ----- send-to-canvas bridge (additive) -----
+    //
+    // A pane can be "sent to" the standalone canvas window (app/canvas.html),
+    // which tiles panes via window.PaneCore. The dashboard and the canvas talk
+    // over the cross-window CanvasBus (app/canvas-bus.js, channel/storage key
+    // "dash.canvas.v1"). This block owns the dashboard side of that protocol:
+    //   * a single bus client (created lazily, guarded against double-init),
+    //   * a queue-until-ready buffer so an `open` posted right after we
+    //     window.open()'d the canvas isn't dropped before the canvas boots,
+    //   * inbound handling of opened / closed / ready / activity to paint an
+    //     "on canvas" badge on the matching pane header.
+    // Outbound message shapes (must match canvas.js dispatchBusMessage):
+    //   {type:"open", key, kind}  {type:"focus", key}  {type:"hello"}
+    var _CANVAS_BUS = null;          // CanvasBus.create handle ({post, close})
+    var _CANVAS_QUEUE = null;        // CanvasBus.makeQueue() — buffers until ready
+    var _CANVAS_ON_KEYS = new Set(); // keys currently mounted on the canvas
+    var CANVAS_STALE_INTERVAL_MS = 3000; // mirrors canvas.js heartbeat cadence
+    var _CANVAS_WIN = null;          // handle to the opened canvas window
+
+    // Open (or focus) the single named canvas window — without reloading a live
+    // canvas, and without ever stranding a window on about:blank.
+    //
+    // Three cases:
+    //   1. We hold a live handle (same dashboard session) → focus(), no
+    //      re-navigation. This is what stops a reload-on-add: adding a pane to
+    //      an open canvas keeps its panes and never drops the in-flight `open`.
+    //   2. No handle BUT a canvas is alive (the dashboard reloaded while the
+    //      canvas stayed open — detected via the persisted heartbeat) →
+    //      reacquire the named window with an EMPTY url, which focuses it
+    //      WITHOUT navigating (so we don't reload it and race the `open`).
+    //   3. No handle and no live canvas → create by ABSOLUTE url (loads
+    //      canvas.html directly; also re-navigates a stale "dash-canvas" /
+    //      about:blank window, self-healing it). Absolute so it never resolves
+    //      against an about:blank base.
+    function canvasOpenWindow() {
+      var canvasUrl;
+      try { canvasUrl = new URL("app/canvas.html", window.location.href).href; }
+      catch (_) { canvasUrl = "app/canvas.html"; }
+      try {
+        if (_CANVAS_WIN && !_CANVAS_WIN.closed) {
+          try { _CANVAS_WIN.focus(); } catch (_) {}
+          return _CANVAS_WIN;
         }
-        // Persist per-PTY tokens alongside the pane list so a page refresh
-        // can reattach without losing access. Tokens are same-origin secrets,
-        // no weaker than any other localStorage entry the dashboard writes.
-        const tokens = {};
-        if (window._PTY_TOKENS) {
-          for (const e of entries) {
-            if (e.kind === "terminal" && window._PTY_TOKENS[e.id]) {
-              tokens[e.id] = window._PTY_TOKENS[e.id];
-            }
+        // Is a canvas already alive? (fresh heartbeat in persisted state)
+        var alive = false;
+        try {
+          var st = window.CanvasBus && window.CanvasBus.loadState();
+          alive = !!(st && !window.CanvasBus.isStale(st, Date.now(), CANVAS_STALE_INTERVAL_MS));
+        } catch (_) { alive = false; }
+        if (alive) {
+          // Reacquire WITHOUT navigating — empty url returns the existing live
+          // canvas window and just focuses it (no reload).
+          var w = window.open("", "dash-canvas");
+          if (w) {
+            // The heartbeat can be a stale false-positive (lastSeen still fresh
+            // but the canvas window is actually gone — e.g. Chrome killed it
+            // without firing beforeunload). In that case window.open("",name)
+            // hands back a NEW about:blank window instead of reusing one. The
+            // canvas page is same-origin, so we can read its location: if it's
+            // blank, navigate it to the real canvas instead of stranding the
+            // user on about:blank. A genuinely-live canvas reports canvas.html
+            // and is left untouched (no reload).
+            var blank = false;
+            try {
+              var href = w.location && w.location.href;
+              blank = !href || href === "about:blank";
+            } catch (_) { blank = false; }  // cross-origin ⇒ not ours/blank, leave it
+            if (blank) { try { w.location.href = canvasUrl; } catch (_) {} }
+            try { w.focus(); } catch (_) {}
+            _CANVAS_WIN = w; return _CANVAS_WIN;
           }
         }
-        try { localStorage.setItem(PERSIST_KEY, JSON.stringify({ panes: entries, tokens })); }
-        catch (_) { /* quota exceeded? give up silently */ }
-      }, 250);
+        // No live canvas → create (or re-navigate a stale window) by URL.
+        _CANVAS_WIN = window.open(canvasUrl, "dash-canvas");
+      } catch (_) {
+        _CANVAS_WIN = null;
+      }
+      return _CANVAS_WIN;
+    }
+
+    // The pane's term-object → the {key, kind} the bus speaks. Key is
+    // normalized the SAME way the canvas normalizes inbound keys (pty: prefix
+    // stripped) so badge bookkeeping lines up across windows. kind is the
+    // pane's own kind; the canvas refines meta itself via PaneCore.fetchMeta,
+    // so we never send meta.
+    function canvasKeyForTerm(t) {
+      if (!t) return null;
+      var raw = t.jobId;
+      if (typeof raw !== "string" || !raw) return null;
+      if (window.CanvasBus && typeof window.CanvasBus.normalizeKey === "function") {
+        return window.CanvasBus.normalizeKey(raw);
+      }
+      return raw;
+    }
+
+    // Lazily create the dashboard's CanvasBus client + queue. Idempotent: a
+    // second call returns the existing handle. Returns null when CanvasBus
+    // isn't loaded (defensive — index.html loads canvas-bus.js before us).
+    function canvasEnsureBus() {
+      if (_CANVAS_BUS) return _CANVAS_BUS;
+      if (!window.CanvasBus || typeof window.CanvasBus.create !== "function") return null;
+      _CANVAS_QUEUE = window.CanvasBus.makeQueue();
+      _CANVAS_BUS = window.CanvasBus.create({ onMessage: handleCanvasBusMessage });
+      return _CANVAS_BUS;
+    }
+
+    // Reflect "is this key on the canvas?" onto its pane header: toggle the
+    // pane's .on-canvas class and show/hide the badge label. Tolerates a
+    // missing pane (key the dashboard doesn't have open).
+    function setCanvasBadge(key, on) {
+      if (!key) return;
+      if (on) _CANVAS_ON_KEYS.add(key); else _CANVAS_ON_KEYS.delete(key);
+      // Status rows (the Terminals tab's primary content) mirror the badge too.
+      setStatusRowCanvasBadge(key, on);
+      // The dashboard keys panes by jobId; for terminals the bus key is the
+      // bare id, which already equals jobId. session:/job: keys match directly.
+      var t = TERMS.get(key);
+      if (!t || !t.pane) return;
+      // No text badge: reflect the on-canvas state on the pane's ⊞ button
+      // (selected look), matching the status rows.
+      t.pane.classList.toggle("on-canvas", !!on);
+      var btn = t.pane.querySelector(".term-head .send-to-canvas");
+      if (btn) {
+        btn.classList.toggle("on-canvas", !!on);
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+      }
+    }
+
+    // Toggle the "on canvas" badge on a matching status row (if rendered).
+    // Rows key off data-key, which is the same normalized bus key.
+    // The on-canvas state is shown ON the ⊞ button itself (it renders selected,
+    // with a border) — no separate "on canvas" text badge. Toggle the row class
+    // (CSS styles the button) and reflect it on the button for a11y/clarity.
+    function _markRowOnCanvas(row, on) {
+      if (!row) return;
+      row.classList.toggle("on-canvas", !!on);
+      var btn = row.querySelector(".send-to-canvas");
+      if (!btn) return;
+      btn.classList.toggle("on-canvas", !!on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.title = on
+        ? "Open on the canvas — click to focus it"
+        : "Open this in the canvas window";
+    }
+    function setStatusRowCanvasBadge(key, on) {
+      var grid = document.getElementById("terms-grid");
+      if (!grid) return;
+      var row = grid.querySelector('.term-status-row[data-key="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
+      _markRowOnCanvas(row, on);
+    }
+
+    // Inbound bus messages from the canvas window. Routed through the queue's
+    // ready gate only for ordering parity with the canvas; badge updates are
+    // idempotent so immediate handling is also safe.
+    function handleCanvasBusMessage(msg) {
+      if (!msg || typeof msg !== "object") return;
+      if (msg.type === "opened") { setCanvasBadge(window.CanvasBus.normalizeKey(msg.key), true); return; }
+      if (msg.type === "closed") { setCanvasBadge(window.CanvasBus.normalizeKey(msg.key), false); return; }
+      if (msg.type === "ready") {
+        // The canvas has booted → flush any `open`/`focus` we queued while it
+        // was starting up. flush() also marks the queue ready, so subsequent
+        // pushes post immediately.
+        if (_CANVAS_QUEUE && !_CANVAS_QUEUE.ready()) {
+          _CANVAS_QUEUE.flush(function (queued) { if (_CANVAS_BUS) _CANVAS_BUS.post(queued); });
+        }
+        // Authoritative open set from the canvas — clear stale badges, set the
+        // listed ones. Snapshot current badges so we can diff-clear.
+        var next = new Set((msg.open || []).map(function (k) { return window.CanvasBus.normalizeKey(k); }));
+        _CANVAS_ON_KEYS.forEach(function (k) { if (!next.has(k)) setCanvasBadge(k, false); });
+        next.forEach(function (k) { setCanvasBadge(k, true); });
+        return;
+      }
+      if (msg.type === "activity") {
+        // Optional: reflect a one-shot activity hint on the ⊞ button title and,
+        // for status rows, surface the live label on the row's activity chip.
+        var key = window.CanvasBus.normalizeKey(msg.key);
+        var t = TERMS.get(key);
+        var paneBtn = t && t.pane && t.pane.querySelector(".send-to-canvas");
+        if (paneBtn && msg.label) paneBtn.title = "On canvas · " + msg.label;
+        if (msg.label) {
+          var grid = document.getElementById("terms-grid");
+          var row = grid && grid.querySelector('.term-status-row[data-key="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
+          var chip = row && row.querySelector(".activity");
+          if (chip) chip.textContent = msg.label;
+        }
+        return;
+      }
+    }
+
+    // If the canvas window's persisted heartbeat (lastSeen) has gone stale,
+    // the canvas window is gone → clear every badge. Called on load before we
+    // post `hello`, so a crashed/closed canvas doesn't leave ghost badges.
+    function canvasClearStaleBadges() {
+      if (!window.CanvasBus || typeof window.CanvasBus.loadState !== "function") return;
+      var state = window.CanvasBus.loadState();
+      if (!state) return;
+      if (window.CanvasBus.isStale(state, Date.now(), CANVAS_STALE_INTERVAL_MS)) {
+        var keys = [..._CANVAS_ON_KEYS];
+        for (var i = 0; i < keys.length; i++) setCanvasBadge(keys[i], false);
+      }
+    }
+
+    // The send-to-canvas click handler for a pane's term object. Opens (or
+    // focuses) the named canvas window, then posts open/focus over the bus.
+    function termSendToCanvas(t, opts) {
+      opts = opts || {};
+      var key = canvasKeyForTerm(t);
+      if (!key) return;
+      var bus = canvasEnsureBus();
+      if (!bus) {
+        setMsg("#term-msg", "err", "Canvas bridge unavailable (canvas-bus.js not loaded)", TERM_MSG_DURATION_MS);
+        return;
+      }
+      // Already on the canvas → focus it instead of opening a duplicate pane.
+      if (_CANVAS_ON_KEYS.has(key)) {
+        bus.post({ type: "focus", key: key });
+        // Bring the window forward WITHOUT reloading it (see canvasOpenWindow).
+        canvasOpenWindow();
+        return;
+      }
+      // Ensure the canvas window exists (named target ⇒ single instance) and
+      // bring it forward without ever reloading an already-open canvas.
+      var win = canvasOpenWindow();
+      if (!win) {
+        setMsg("#term-msg", "warn",
+          "Canvas popup blocked — allow popups for this site, then click canvas again",
+          TERM_MSG_DURATION_MS);
+        return;
+      }
+      var kind = opts.kind || (t && t.kind) || undefined;
+      var meta = opts.meta || null;
+      if (kind === "terminal") {
+        var token = (meta && meta.token) || termLookupPtyToken(key);
+        if (token) meta = Object.assign({}, meta || {}, { token: token });
+      }
+      var openMsg = { type: "open", key: key, kind: kind };
+      if (meta) openMsg.meta = meta;
+      if (Object.prototype.hasOwnProperty.call(opts, "initialCommand")) {
+        openMsg.initialCommand = opts.initialCommand;
+      }
+      // If the canvas just opened it hasn't sent `ready` yet → queue the open
+      // and flush when ready arrives. If it's already ready (badges live),
+      // post immediately.
+      if (_CANVAS_QUEUE && !_CANVAS_QUEUE.ready()) {
+        _CANVAS_QUEUE.push(openMsg);
+      } else {
+        bus.post(openMsg);
+      }
+    }
+
+    // Append the send-to-canvas button to a freshly-built pane header and wire
+    // its click. Additive: it slots into the existing .actions cluster without
+    // touching any sibling control. Re-paints the badge if the key is already
+    // known to be on the canvas (e.g. pane restored while canvas open).
+    function termWireCanvasButton(t) {
+      if (!t || !t.pane) return;
+      var head = t.pane.querySelector(".term-head");
+      if (!head) return;
+      var actions = head.querySelector(".actions");
+      if (!actions || actions.querySelector(".send-to-canvas")) return;
+      var btn = document.createElement("button");
+      btn.className = "send-to-canvas";
+      btn.type = "button";
+      btn.dataset.action = "send-canvas";
+      btn.title = "Send this pane to the canvas window";
+      btn.textContent = "⊞";
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        termSendToCanvas(t);
+      });
+      actions.appendChild(btn);
+      // If the canvas already announced this key, show the badge immediately.
+      var key = canvasKeyForTerm(t);
+      if (key && _CANVAS_ON_KEYS.has(key)) setCanvasBadge(key, true);
     }
 
     async function restoreOpenPanes() {
@@ -175,70 +362,13 @@
         const raw = localStorage.getItem(PERSIST_KEY);
         saved = raw ? JSON.parse(raw) : null;
       } catch (_) { return; }
-      if (!saved || !Array.isArray(saved.panes) || !saved.panes.length) return;
-      // Rehydrate the per-PTY token cache from the previous session so
-      // restored terminal panes can pass the WS auth check.
+      if (!saved || typeof saved !== "object") return;
+      // Migrate tokens from retired dashboard pane persistence. The canvas
+      // restores its own PTY layout and authenticates from this shared cache.
       if (saved.tokens && typeof saved.tokens === "object") {
-        window._PTY_TOKENS = window._PTY_TOKENS || {};
         for (const id of Object.keys(saved.tokens)) {
-          window._PTY_TOKENS[id] = saved.tokens[id];
+          termRememberPtyToken(id, saved.tokens[id]);
         }
-      }
-      // Fetch every pane's metadata in parallel — sequential awaits made
-      // boot scale linearly with the saved-pane count. Each fetch is
-      // independent and the open+UI-state pass runs in saved order
-      // afterwards so the visual layout is unchanged.
-      const fetchers = saved.panes.map(async (entry) => {
-        if (!entry || !entry.id || !entry.kind) return null;
-        if (TERMS.has(entry.id)) return null;
-        try {
-          if (entry.kind === "transcript") {
-            const sid = String(entry.id).replace(/^ide:/, "");
-            if (!sid) return null;
-            return { entry, ready: { kind: "transcript", sid } };
-          }
-          if (entry.kind === "terminal") {
-            const r = await fetch("/api/ptys/" + encodeURIComponent(entry.id), { cache: "no-store" });
-            if (!r.ok) return null;
-            const meta = await r.json();
-            if (meta.status && meta.status !== "running") return null;
-            return { entry, ready: { kind: "terminal", meta } };
-          }
-          if (entry.kind === "chat" || entry.kind === "chat-codex") {
-            const r = await fetch("/api/jobs/" + encodeURIComponent(entry.id), { cache: "no-store" });
-            if (!r.ok) return null;
-            const meta = await r.json();
-            return { entry, ready: { kind: "chat", meta } };
-          }
-        } catch (_) { /* one pane failed; keep going */ }
-        return null;
-      });
-      const results = await Promise.allSettled(fetchers);
-      for (const res of results) {
-        if (res.status !== "fulfilled" || !res.value) continue;
-        const { entry, ready } = res.value;
-        try {
-          if (ready.kind === "transcript") {
-            termOpenTranscript(ready.sid);
-            suppressAutoOpen(entry.id);
-          } else if (ready.kind === "terminal") {
-            termOpenPty(entry.id, ready.meta, null);
-          } else if (ready.kind === "chat") {
-            termOpen(entry.id, ready.meta);
-            suppressAutoOpen(entry.id);
-          }
-          const t = TERMS.get(entry.id);
-          if (t && t.pane) {
-            if (entry.pinned) {
-              t.pane.classList.add("pinned");
-              const btn = t.pane.querySelector(".pin-btn");
-              if (btn) { btn.classList.add("active"); btn.textContent = "unpin"; }
-            }
-            if (entry.collapsed) {
-              termSetCollapsed(t, true);
-            }
-          }
-        } catch (_) { /* one pane failed; keep going */ }
       }
     }
 
@@ -258,22 +388,8 @@
     // the cascade) and the pill stayed green for a "disconnected" or
     // failed shell. This helper normalises every transition.
     // Tool-identity classes ("claude", "codex") are preserved.
-    var _PILL_STATE_CLASSES = [
-      "running", "queued", "done", "bad", "warn",
-      "cancelling", "cancelled",
-    ];
-    function termSetPillState(pill, state, text) {
-      if (!pill) return;
-      for (const c of _PILL_STATE_CLASSES) pill.classList.remove(c);
-      if (state) pill.classList.add(state);
-      if (text != null) pill.textContent = text;
-      // Mirror the visible label into dataset.pillText so Close-finished
-      // (and any future feature) can read a stable, i18n-resistant signal
-      // without parsing the rendered text. dataset.state already covers
-      // the class-name dimension; dataset.pillText covers the label.
-      if (text != null) pill.dataset.pillText = String(text).toLowerCase();
-      if (state) pill.dataset.state = state;
-    }
+    // termSetPillState + _PILL_STATE_CLASSES moved to pane-helpers.js
+    // (pure render leaf; loaded before terminals.js, resolves as a global).
 
     function termSetActivity(t, label, cls) {
       if (!t || !t.pane) return;
@@ -286,12 +402,8 @@
       t._activityCls = cls || "";
       // "Waiting" on the pane (NOT the chip) means "operator's turn has
       // come up" — it floats the row to the top of list mode and keeps
-      // it expanded across layout switches. Mirror panes (kind === "transcript")
-      // are read-only IDE espelhos that idle as "waiting" perpetually,
-      // so propagating it would hog the top of the list and force them
-      // expanded as huge empty rectangles in list mode. The chip stays
-      // ("waiting" text) so the activity is still visible.
-      const operatorWaiting = cls === "waiting" && t.kind !== "transcript";
+      // it expanded across layout switches.
+      const operatorWaiting = cls === "waiting";
       t.pane.classList.toggle("is-waiting", operatorWaiting);
       // If the pane is collapsed and we're showing fresh activity, mark
       // it so the row gets an accent edge until the operator opens it.
@@ -313,12 +425,12 @@
       t.pane.classList.toggle("collapsed", !!collapsed);
       const btn = t.pane.querySelector(".expand-btn");
       if (btn) btn.textContent = collapsed ? "expand" : "collapse";
-      // Lazy transcript streaming: collapsed transcript panes don't hold
-      // an EventSource (which would consume one of the browser's ~6
-      // HTTP/1.1 connection slots per origin). Expand attaches the
-      // stream; collapse releases it. See termOpenTranscript for the
-      // rationale.
-      if (t.kind === "transcript") {
+      // Lazy streaming: collapsed session panes don't hold an EventSource
+      // (which would consume one of the browser's ~6 HTTP/1.1 connection
+      // slots per origin). Expand attaches the stream; collapse releases it.
+      // Session panes moved to the canvas; keep this hook defensive for any
+      // restored object that still exposes lazy stream controls.
+      if (t.kind === "session") {
         if (collapsed) {
           if (typeof t.closeStream === "function") t.closeStream();
         } else {
@@ -343,8 +455,7 @@
           try { t.pane.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
         }
       }
-      // Collapsed/expanded state is part of what we persist so the
-      // next F5 restores the same layout the operator left.
+      // Legacy compatibility hook; canvas owns durable pane layout.
       persistOpenPanes();
     }
 
@@ -379,58 +490,14 @@
       return t.body.querySelector(".msg.user, .bash-cmd") !== null;
     }
 
-    // ----- layout control -----
-    // "list"  = vertical stack of status rows (collapsed by default).
-    // "split" = exactly 2 columns side-by-side, panes expanded.
-    // "grid"  = auto-fit multi-column grid, panes expanded.
-    // Persisted in localStorage; read at open-time and on every switch.
-    var TERM_LAYOUTS = ["list", "split", "grid"];
-    function termGetLayout() {
-      let v = null;
-      try { v = localStorage.getItem("dash.termLayout"); } catch (_) { /* private mode */ }
-      return TERM_LAYOUTS.includes(v) ? v : "list";
-    }
-    function termApplyLayout(mode) {
-      const grid = $("#terms-grid");
-      if (grid) {
-        grid.classList.toggle("layout-split", mode === "split");
-        grid.classList.toggle("layout-grid",  mode === "grid");
-      }
-      // Highlight the active icon button in the layout group.
-      document.querySelectorAll(".term-layout-group .layout-btn").forEach((b) => {
-        b.classList.toggle("active", b.dataset.layout === mode);
-      });
-    }
-    function termSetLayout(mode) {
-      const next = TERM_LAYOUTS.includes(mode) ? mode : "list";
-      try { localStorage.setItem("dash.termLayout", next); } catch (_) { /* private mode */ }
-      termApplyLayout(next);
-      // Whatever the new layout is, collapse every pane to a clean
-      // status-row baseline. This avoids every flavour of the "phantom
-      // empty body" bug: panes opened expanded by termOpen* in split
-      // mode, the grid-stretch issue, content-detection false positives,
-      // and stale state from the previous layout. The operator then
-      // clicks the panes they actually want to see — explicit and
-      // predictable. Drafts are skipped (no expand button means there's
-      // no way back). Silent flag stops scrollIntoView from racing.
-      for (const t of TERMS.values()) {
-        if (t.isDraft) continue;
-        termSetCollapsed(t, true, { silent: true });
-      }
-      // xterm.js panes compute their (cols, rows) from the body's
-      // pixel size. Switching layout changes the grid template, which
-      // in turn changes pane widths — fit() catches the cases where
-      // the ResizeObserver coalesces or fires before the new layout
-      // has settled. Defer two frames so the new grid template + any
-      // collapse-class changes have both applied.
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        for (const t of TERMS.values()) {
-          if (t.kind === "terminal" && t._fitAddon && !t.pane.classList.contains("collapsed")) {
-            try { t._fitAddon.fit(); } catch (_) {}
-          }
-        }
-      }));
-    }
+    // ----- layout control: REMOVED (Chunk 5b-1) -----
+    // The Terminals tab is a pure status list now; multi-pane geometry
+    // (side-by-side / tiled / resize) is owned by the standalone canvas
+    // window (app/canvas.html). The old layout selector, its persisted
+    // preference, and the apply/get/set-layout helpers + their grid CSS
+    // classes were deleted with the inline panes. Any still-live inline pane
+    // that a legacy path (restore / picker) opens always starts collapsed as
+    // a status row; the operator routes it to the canvas via send-to-canvas.
 
     // Hard cap on options per group. A long-running project accumulates
     // thousands of jobs/transcripts; jamming them all into a single
@@ -441,13 +508,6 @@
     // via the Run / Sessions tabs.
     var PICKER_MAX_PER_GROUP = 50;
 
-    // Auto-grow composer textareas up to this many CSS pixels so multi-
-    // line prompts don't get clipped to one row but the composer also
-    // doesn't eat the entire pane. Previously hardcoded as the literal
-    // ``220`` at five sites (draft, regular chat, transcript fork,
-    // resume reset, codex-rekey reset).
-    var COMPOSER_AUTOSIZE_MAX_PX = 220;
-
     // Default duration for #term-msg toast messages. The pre-existing
     // call sites all used the literal ``4000``; this single source of
     // truth keeps subsequent UX tweaks (e.g. lower to 3000 for snappier
@@ -456,72 +516,22 @@
     var TERM_MSG_DURATION_MS = 4000;
 
     async function termRefreshPicker(jobs) {
-      const sel = $("#term-picker");
-      if (!sel) return;
-      // If the operator is mid-pick (dropdown open) we must NOT replace
-      // innerHTML — that closes the dropdown under their cursor. Postpone
-      // and retry on the next poll.
-      if (document.activeElement === sel) return;
-      const prev = sel.value;
-      const openKeys = new Set(TERMS.keys());
-
-      // Jobs spawned by the dashboard (chat / orchestrate / plan / codex).
-      // ``/api/jobs`` already returns newest-first, so a simple .slice()
-      // gives us the freshest entries without re-sorting.
-      const jobChoices = (jobs || [])
-        .filter((j) => !openKeys.has(j.id))
-        .slice(0, PICKER_MAX_PER_GROUP);
-      const totalJobs = (jobs || []).filter((j) => !openKeys.has(j.id)).length;
-
-      // IDE transcripts that we can mirror live.
-      let transcripts = [];
-      let totalTranscripts = 0;
+      // The Terminals tab is a launcher + status list now — there is no picker
+      // <select> to populate. We still fetch the unified session snapshot and
+      // feed the status renderer the FULL session + job set (the renderer drops
+      // kind === "chat" itself, since chats are sessions). Kept named
+      // termRefreshPicker for the existing call sites (loadJobs, the shim).
+      let allSessions = [];
       try {
-        const r = await fetch("/api/transcripts", { cache: "no-store" });
+        const r = await fetch("/api/sessions", { cache: "no-store" });
         if (r.ok) {
           const data = await r.json();
-          const all = (data.transcripts || []).filter((t) => !openKeys.has("ide:" + t.session_id));
-          totalTranscripts = all.length;
-          transcripts = all.slice(0, PICKER_MAX_PER_GROUP);
+          // Codex (chat-codex) is not a claude --resume session — keep it out of
+          // the session set so it renders as a job row, not a Claude pane target.
+          allSessions = (data.sessions || []).filter((s) => s.kind !== "chat-codex" && s.sid);
         }
-      } catch (_) { /* ignore — picker still works for jobs */ }
-
-      if (!jobChoices.length && !transcripts.length) {
-        sel.innerHTML = `<option value="">— nothing to open —</option>`;
-        sel.disabled = true;
-        const termOpenBtn = $("#term-open");
-        if (termOpenBtn) termOpenBtn.disabled = true;
-        return;
-      }
-      const parts = [];
-      if (jobChoices.length) {
-        const label = totalJobs > jobChoices.length
-          ? `Dashboard jobs (${jobChoices.length} of ${totalJobs} newest)`
-          : "Dashboard jobs";
-        parts.push(`<optgroup label="${escape(label)}">` + jobChoices.map((j) => {
-          const preview = (j.task || "").replace(/\s+/g, " ").slice(0, 60);
-          return `<option value="job:${escape(j.id)}">[${escape(j.status)}] ${escape(j.kind)} — ${escape(preview)}</option>`;
-        }).join("") + `</optgroup>`);
-      }
-      if (transcripts.length) {
-        const label = totalTranscripts > transcripts.length
-          ? `IDE chats (${transcripts.length} of ${totalTranscripts} newest, read-only)`
-          : "IDE chats (live read-only)";
-        parts.push(`<optgroup label="${escape(label)}">` + transcripts.map((t) => {
-          const sid = t.session_id;
-          const kb = Math.round(t.size_bytes / 1024);
-          const when = (t.modified || "").slice(11, 16);
-          return `<option value="ide:${escape(sid)}">[${escape(when)}] ${escape(sid.slice(0, 8))}… (${kb} KB)</option>`;
-        }).join("") + `</optgroup>`);
-      }
-      sel.innerHTML = parts.join("");
-      sel.disabled = false;
-      const termOpenBtn = $("#term-open");
-      if (termOpenBtn) termOpenBtn.disabled = false;
-      // Restore by value comparison, not a data-built CSS selector: a `prev`
-      // containing selector metacharacters would make querySelector throw a
-      // SyntaxError and abort the picker refresh.
-      if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+      } catch (_) { /* ignore — the status list still renders the job rows */ }
+      termRenderStatusList(allSessions, jobs || []);
     }
 
     // Back-compat shim so existing call sites that only refresh the
@@ -539,15 +549,425 @@
     }
 
     function termRenderEmptyState() {
+      // Inline panes (drafts, legacy restore/picker opens) still live in
+      // #terms-grid alongside the status rows. The empty placeholder is only
+      // shown when there are NEITHER inline panes NOR status rows; the status
+      // renderer owns its own placeholder, so here we just drop the legacy
+      // placeholder once any inline pane exists.
       const grid = $("#terms-grid");
-      if (TERMS.size === 0) {
-        grid.innerHTML = `<div class="term-empty">No terminal panes open. Pick a job above, click <em>New terminal</em>, or start one in <em>Run</em>.</div>`;
-      } else {
-        // Drop the empty placeholder if it's still there.
+      if (!grid) return;
+      if (TERMS.size > 0) {
         const empty = grid.querySelector(".term-empty");
         if (empty) empty.remove();
       }
-      $("#count-terminals").textContent = TERMS.size || "·";
+      termUpdateTerminalsCount();
+    }
+
+    // ----- status list (Chunk 5b-1) -----
+    // The Terminals tab is a read-only status list: one row per Claude
+    // session and per dashboard job, summarising state + activity + tool/model
+    // + task. The actual interactive pane lives in the canvas window; each row
+    // carries a send-to-canvas control (⊞) and an on-canvas badge that lights
+    // up while the canvas mirrors that key. Rows are sorted active-first; the
+    // finished ones collapse into a disclosure group so the live work stays
+    // at the top. This renderer NEVER mounts an interactive pane inline.
+    var _STATUS_ROWS_KEY = "terms-status-rows";
+    var _STATUS_FINISHED_OPEN_KEY = "dash.terms.finishedOpen";
+    var _statusFinishedOpen = false;
+    try { _statusFinishedOpen = localStorage.getItem(_STATUS_FINISHED_OPEN_KEY) === "1"; } catch (_) {}
+
+    // Last data we rendered from, so the bus listener can re-paint badges
+    // (on-canvas state) without re-fetching.
+    var _STATUS_LAST = { sessions: [], jobs: [] };
+
+    // ----- launched-but-not-yet-opened resources -----
+    // "New terminal" is a pure launcher: the operator picks what to launch
+    // (AI chat / shell), tool and model, hits Launch, and the resource is
+    // CREATED but NOT shown on the canvas. It lands here and renders as a
+    // status row with a ⊞ so the operator opens it on the canvas when they
+    // want. Persisted so a dashboard reload doesn't lose the launch.
+    //   entry = { id, kind:"session"|"terminal", tool, model, label, ts,
+    //             token?, steps? }   (token/steps only for kind:"terminal")
+    var LAUNCHED_KEY = "dash.launched.v1";
+    var _LAUNCHED = [];
+    (function loadLaunched() {
+      try {
+        var raw = localStorage.getItem(LAUNCHED_KEY);
+        var arr = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(arr)) _LAUNCHED = arr.filter((e) => e && e.id && e.kind);
+      } catch (_) { _LAUNCHED = []; }
+    })();
+    function persistLaunched() {
+      try { localStorage.setItem(LAUNCHED_KEY, JSON.stringify(_LAUNCHED)); } catch (_) {}
+    }
+    function addLaunched(entry) {
+      _LAUNCHED.unshift(entry);
+      persistLaunched();
+      termRenderStatusList();
+    }
+    function removeLaunched(id) {
+      var n = _LAUNCHED.length;
+      _LAUNCHED = _LAUNCHED.filter((e) => e.id !== id);
+      if (_LAUNCHED.length !== n) persistLaunched();
+    }
+    // Open a launched entry on the canvas, then drop it from the pending list
+    // (the canvas owns it now; a session also reappears via /api/sessions).
+    function openLaunched(id) {
+      var e = _LAUNCHED.find((x) => x.id === id);
+      if (!e) return;
+      if (e.kind === "terminal") {
+        if (e.token) termRememberPtyToken(e.id, e.token);
+        var opts = { meta: e.token ? { token: e.token } : null };
+        if (e.steps && e.steps.length) opts.initialCommand = e.steps;
+        termSendToCanvas(_statusRowTerm("terminal", e.id), opts);
+      } else {
+        // Claude session: route the (still transcript-less) sid to the canvas;
+        // the operator types the first message in the canvas pane, which
+        // create-on-first-turn materialises.
+        termRouteSessionToCanvas(e.id);
+      }
+      // Keep the launched entry in the list so the row stays visible (now with
+      // an "on canvas" badge) and re-openable after the canvas pane is closed.
+      // A launched SESSION is auto-dropped once it materialises in /api/sessions
+      // (dedup in termRenderStatusList); a launched TERMINAL stays until the
+      // operator dismisses it (the ✕ on its row). Re-render to paint the badge.
+      termRenderStatusList();
+    }
+
+    // Active vs finished partition. A session/job is "active" while it is
+    // running / queued / cancelling / mirror (a live IDE session) — anything
+    // terminal (done / failed / cancelled) drops to the finished group.
+    var _STATUS_ACTIVE_JOB = new Set(["running", "queued", "cancelling"]);
+    function _statusIsActiveJob(j) { return _STATUS_ACTIVE_JOB.has(j.status); }
+    // A passive IDE transcript counts as "active" (top of the list) only if it
+    // was touched within this window — otherwise the Terminals tab fills with
+    // every Claude conversation ever recorded in the project dir. The archive
+    // is still reachable in the collapsed "inactive" group below.
+    var _STATUS_SESSION_FRESH_MS = 15 * 60 * 1000;
+    function _statusModifiedWithinMs(s, ms) {
+      var iso = s.modified || s.started_at || "";
+      if (!iso) return false;
+      var t = Date.parse(iso);
+      if (isNaN(t)) return false;
+      return (Date.now() - t) <= ms;
+    }
+    function _statusIsActiveSession(s) {
+      // "Active" = work the operator is genuinely driving right now, not the
+      // whole transcript archive. A session is active when an engine is
+      // attached (dashboard/canvas is live on it), the registry baton is held
+      // (owned/acquiring/engine), a dashboard-launched chat is still running,
+      // or the transcript was touched very recently. Everything else — the
+      // passive IDE mirrors and anything explicitly done — drops to the
+      // collapsed "inactive" group so the live work stays at the top.
+      var st = (s.state || "mirror").toLowerCase();
+      if (st === "done") return false;
+      if (s.has_engine) return true;
+      if (st === "owned" || st === "acquiring" || st === "engine") return true;
+      if (s.source === "dashboard" && _STATUS_ACTIVE_JOB.has(s.status)) return true;
+      return _statusModifiedWithinMs(s, _STATUS_SESSION_FRESH_MS);
+    }
+
+    // Pseudo-term for a status row so the existing canvas bridge
+    // (termSendToCanvas / canvasKeyForTerm) works unchanged: it only reads
+    // .jobId + .kind. For sessions the bus key is "session:<sid>"; for jobs
+    // it is the bare job id (matches how the inline panes key themselves).
+    function _statusRowTerm(kind, key) { return { jobId: key, kind: kind }; }
+
+    function termSessionCanvasKey(sidOrKey) {
+      const raw = String(sidOrKey || "");
+      if (!raw) return "";
+      return raw.startsWith("session:") ? raw : ("session:" + raw);
+    }
+
+    function termRouteSessionToCanvas(sidOrKey) {
+      const key = termSessionCanvasKey(sidOrKey);
+      if (!key) return "";
+      termSendToCanvas(_statusRowTerm("session", key));
+      return key;
+    }
+
+    function termJobCanvasTarget(jobId, meta) {
+      const j = meta || {};
+      if (j.kind === "chat" && j.session_id) {
+        return { key: "session:" + j.session_id, kind: "session" };
+      }
+      return { key: jobId, kind: j.kind || "job" };
+    }
+
+    function termRouteJobToCanvas(jobId, meta) {
+      const target = termJobCanvasTarget(jobId, meta);
+      if (!target.key) return target;
+      termSendToCanvas(_statusRowTerm(target.kind, target.key));
+      return target;
+    }
+
+    // --- Status-list metrics chips -------------------------------------
+    // Compact, read-only signals derived from the session/job payload the
+    // status list already polls (model · duration · cost · turns · exit).
+    // Everything degrades gracefully: a field that's absent simply produces
+    // no chip, so IDE sessions (no model/cost) still render cleanly.
+    function _fmtDur(ms) {
+      if (!ms || ms < 0 || !isFinite(ms)) return "";
+      const s = Math.round(ms / 1000);
+      if (s < 60) return s + "s";
+      const m = Math.floor(s / 60);
+      if (m < 60) { const r = s % 60; return r ? m + "m" + r + "s" : m + "m"; }
+      const h = Math.floor(m / 60); const rm = m % 60;
+      return rm ? h + "h" + rm + "m" : h + "h";
+    }
+    function _fmtCost(usd) {
+      const n = Number(usd);
+      if (!n || n <= 0 || !isFinite(n)) return "";
+      return n >= 1 ? "$" + n.toFixed(2) : "$" + n.toFixed(3);
+    }
+    // Drop the vendor prefix so the chip stays short ("opus-4-8", "gpt-5.5").
+    function _shortModel(m) {
+      if (!m) return "";
+      return String(m).replace(/^claude-/, "").replace(/^us\.anthropic\./, "");
+    }
+    // Wall-clock run duration of a JOB: started_at → ended_at (or now, if
+    // still running). Sessions use recency instead (see _statusMeta).
+    function _elapsedMs(o, active) {
+      const start = o && o.started_at ? Date.parse(o.started_at) : NaN;
+      if (!isFinite(start)) return 0;
+      const end = active
+        ? Date.now()
+        : (o.ended_at ? Date.parse(o.ended_at) : Date.now());
+      return Math.max(0, end - start);
+    }
+    // "5m" / "3h" since the given ISO timestamp — how long ago a session was
+    // last active. More useful than total span for resumed sessions, which
+    // can be days "old" but idle.
+    function _agoMs(iso) {
+      const t = iso ? Date.parse(iso) : NaN;
+      if (!isFinite(t)) return NaN;
+      return Math.max(0, Date.now() - t);
+    }
+    function _statusMeta(o, active) {
+      const parts = [];
+      const model = _shortModel(o && o.model);
+      if (model) parts.push({ text: model, cls: "meta-model", title: o.model });
+      // Sessions (carry `modified`) show recency of last activity — a resumed
+      // session is often days old but only just active, so "5m" beats a 46h
+      // span. Jobs show their wall-clock run duration instead.
+      if (o && o.modified) {
+        const agoMs = _agoMs(o.modified);
+        if (isFinite(agoMs)) {
+          const ago = agoMs < 5000 ? "now" : _fmtDur(agoMs);
+          parts.push({ text: ago, cls: "meta-dur", title: ago === "now" ? "active now" : "last active " + ago + " ago" });
+        }
+      } else {
+        const dur = _fmtDur(_elapsedMs(o, active));
+        if (dur) parts.push({ text: dur, cls: "meta-dur", title: active ? "running for" : "duration" });
+      }
+      const cost = o && o.cost && typeof o.cost === "object" ? o.cost : null;
+      if (cost) {
+        const c = _fmtCost(cost.cost_usd);
+        if (c) parts.push({ text: c, cls: "meta-cost", title: "cost so far" });
+        const turns = parseInt(cost.turns, 10) || 0;
+        if (turns > 1) parts.push({ text: "×" + turns, cls: "meta-turns", title: turns + " turns" });
+      }
+      // Surface only failing exits on finished rows — a clean exit 0 is noise.
+      if (!active && o && o.exit_code != null && o.exit_code !== 0) {
+        parts.push({ text: "exit " + o.exit_code, cls: "meta-exit-bad", title: "non-zero exit code" });
+      }
+      return parts;
+    }
+
+    function _statusRowEl(opts) {
+      // opts: { key, kind, pill, pillState, activity, tool, preview, title,
+      //         onOpen? }  — onOpen overrides the default ⊞ behavior (used by
+      //         launched-but-not-opened rows, which materialise on open).
+      const row = document.createElement("div");
+      row.className = "term-status-row";
+      row.dataset.key = opts.key;
+      row.dataset.kind = opts.kind;
+      // escHtml (not the ambiguous `escape`, which reads like window.escape's
+      // URL-encoder) HTML-escapes the server-supplied fields below — a session
+      // title / job task can carry arbitrary text, so this is the XSS guard.
+      const pillCls = opts.pillState ? " " + escHtml(opts.pillState) : "";
+      const metaParts = Array.isArray(opts.meta) ? opts.meta : [];
+      const metaHtml = metaParts.length
+        ? `<span class="row-meta">` + metaParts.map((p) =>
+            `<span class="meta-chip${p.cls ? " " + escHtml(p.cls) : ""}"` +
+            `${p.title ? ` title="${escHtml(p.title)}"` : ""}>${escHtml(p.text)}</span>`
+          ).join("") + `</span>`
+        : "";
+      row.innerHTML =
+        `<span class="pill status-pill${pillCls}">${escHtml(opts.pill || "")}</span>` +
+        `<span class="activity${opts.activityCls ? " " + escHtml(opts.activityCls) : ""}" title="${escHtml(opts.activityTitle || opts.activity || "")}">${escHtml(opts.activity || "")}</span>` +
+        `<span class="row-tool" title="${escHtml(opts.toolTitle || "")}">${escHtml(opts.tool || "")}</span>` +
+        `<span class="row-task" title="${escHtml(opts.title || "")}">${escHtml(opts.preview || "")}</span>` +
+        metaHtml +
+        `<span class="row-actions">` +
+          `<button class="send-to-canvas" type="button" data-action="send-canvas" title="Open this in the canvas window">⊞</button>` +
+        `</span>`;
+      const sendBtn = row.querySelector(".send-to-canvas");
+      sendBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (typeof opts.onOpen === "function") { opts.onOpen(); return; }
+        termSendToCanvas(_statusRowTerm(opts.kind, opts.key));
+      });
+      // Reflect the live on-canvas state ON the ⊞ button itself (selected look,
+      // no separate text badge).
+      if (_CANVAS_ON_KEYS.has(opts.key)) _markRowOnCanvas(row, true);
+      // Optional dismiss control (launched rows): a ✕ that removes the row.
+      if (typeof opts.onDismiss === "function") {
+        const x = document.createElement("button");
+        x.className = "row-dismiss";
+        x.type = "button";
+        x.dataset.action = "dismiss";
+        x.title = "Dismiss this launch";
+        x.textContent = "✕";
+        x.addEventListener("click", (e) => { e.stopPropagation(); opts.onDismiss(); });
+        row.querySelector(".row-actions").appendChild(x);
+      }
+      return row;
+    }
+
+    // Build the rows from a sessions[] + jobs[] snapshot. Sessions are Claude
+    // conversations (key "session:<sid>"); jobs are non-chat dashboard jobs
+    // (orchestrate / plan / codex). Chat jobs (kind === "chat") are sessions
+    // now, so they are excluded from the jobs side to avoid double rows.
+    function termRenderStatusList(sessions, jobs) {
+      const grid = $("#terms-grid");
+      if (!grid) return;
+      if (Array.isArray(sessions)) _STATUS_LAST.sessions = sessions;
+      if (Array.isArray(jobs)) _STATUS_LAST.jobs = jobs;
+      sessions = _STATUS_LAST.sessions || [];
+      jobs = (_STATUS_LAST.jobs || []).filter((j) => j.kind !== "chat");
+
+      let container = grid.querySelector("." + _STATUS_ROWS_KEY);
+      if (!container) {
+        container = document.createElement("div");
+        container.className = _STATUS_ROWS_KEY;
+        // Status rows render before any legacy inline pane in the grid.
+        grid.insertBefore(container, grid.firstChild);
+      }
+      container.innerHTML = "";
+
+      // Drop launched SESSIONS that have since materialised in /api/sessions
+      // (first message sent) — the real row takes over, so we don't show both.
+      const _sessionSids = new Set((sessions || []).map((s) => s && s.sid).filter(Boolean));
+      const _dropped = _LAUNCHED.filter((e) => e.kind === "session" && _sessionSids.has(e.id));
+      if (_dropped.length) { _dropped.forEach((e) => removeLaunched(e.id)); }
+
+      // Launched rows render first (the freshest operator intent). Their ⊞
+      // materialises + opens on the canvas; the ✕ dismisses the launch.
+      const launchedEls = [];
+      for (const e of _LAUNCHED) {
+        const isTerm = e.kind === "terminal";
+        // Row key MUST match the canvas bus key so the on-canvas "selected"
+        // state lands on this row: terminals key on the bare pty id, sessions
+        // on "session:<sid>" (what openLaunched routes + the canvas reports).
+        const rowKey = isTerm ? e.id : ("session:" + e.id);
+        const onCanvas = _CANVAS_ON_KEYS.has(rowKey);
+        const el = _statusRowEl({
+          key: rowKey,
+          kind: e.kind,
+          pill: "launched",
+          pillState: "queued",
+          activity: onCanvas ? "on canvas" : "open on canvas →",
+          activityCls: "waiting",
+          tool: e.tool || (isTerm ? "shell" : "claude"),
+          toolTitle: e.model || e.tool || "",
+          preview: e.label || (isTerm ? "shell" : "AI chat"),
+          title: e.label || e.id,
+          onOpen: () => openLaunched(e.id),
+          onDismiss: () => { removeLaunched(e.id); termRenderStatusList(); },
+        });
+        launchedEls.push(el);
+      }
+
+      const active = [];
+      const finished = [];
+      for (const s of sessions) {
+        const sid = s.sid;
+        if (!sid) continue;
+        const state = (s.state || "mirror");
+        const preview = (s.title || s.task || "").replace(/\s+/g, " ").slice(0, 80);
+        const live = _statusIsActiveSession(s);
+        const sTool = s.kind === "chat-codex" ? "codex" : "claude";
+        // Live activity from the transcript tail (tool running / thinking /
+        // responding). Falls back to a plain "live" when nothing is parseable.
+        const act = (live && s.activity && s.activity.text)
+          ? { text: s.activity.text, cls: "busy act-" + (s.activity.kind || "x") }
+          : { text: live ? "live" : "ended", cls: live ? "busy" : "ended" };
+        const el = _statusRowEl({
+          key: "session:" + sid,
+          kind: "session",
+          pill: state,
+          pillState: live ? "running" : "done",
+          activity: act.text,
+          activityCls: act.cls,
+          activityTitle: (live && s.activity && s.activity.text) ? s.activity.text : act.text,
+          tool: sTool,
+          toolTitle: s.model || sTool,
+          preview: preview || (sid.slice(0, 8) + "…"),
+          title: "session " + sid,
+          meta: _statusMeta(s, _statusIsActiveSession(s)),
+        });
+        (_statusIsActiveSession(s) ? active : finished).push(el);
+      }
+      for (const j of jobs) {
+        const preview = (j.task || "").replace(/\s+/g, " ").slice(0, 80);
+        const tool = j.kind === "chat-codex" ? "codex" : (j.kind || "job");
+        const el = _statusRowEl({
+          key: j.id,
+          kind: j.kind || "job",
+          pill: j.status || "?",
+          pillState: _statusIsActiveJob(j) ? "running" : (j.status === "done" ? "done" : "bad"),
+          activity: _statusIsActiveJob(j) ? "running" : (j.status || "ended"),
+          activityCls: _statusIsActiveJob(j) ? "busy" : "ended",
+          tool: tool,
+          toolTitle: j.model || tool,
+          preview: preview || j.id.slice(0, 8),
+          title: j.task || j.id,
+          meta: _statusMeta(j, _statusIsActiveJob(j)),
+        });
+        (_statusIsActiveJob(j) ? active : finished).push(el);
+      }
+
+      if (!launchedEls.length && !active.length && !finished.length) {
+        // No rows AND no inline panes → show the placeholder.
+        if (TERMS.size === 0 && !grid.querySelector(".term-empty")) {
+          const empty = document.createElement("div");
+          empty.className = "term-empty";
+          empty.innerHTML = "Nothing launched yet. Click <em>New terminal</em> to launch an AI chat or a shell, then open it on the canvas with ⊞.";
+          container.appendChild(empty);
+        }
+        termUpdateTerminalsCount();
+        return;
+      }
+
+      for (const el of launchedEls) container.appendChild(el);
+      for (const el of active) container.appendChild(el);
+
+      if (finished.length) {
+        const details = document.createElement("details");
+        details.className = "terms-finished-group";
+        details.open = _statusFinishedOpen;
+        const summary = document.createElement("summary");
+        summary.textContent = "inactive (" + finished.length + ")";
+        details.appendChild(summary);
+        for (const el of finished) details.appendChild(el);
+        details.addEventListener("toggle", () => {
+          _statusFinishedOpen = details.open;
+          try { localStorage.setItem(_STATUS_FINISHED_OPEN_KEY, details.open ? "1" : "0"); } catch (_) {}
+        });
+        container.appendChild(details);
+      }
+
+      termUpdateTerminalsCount();
+    }
+
+    // Count badge: inline panes + status rows.
+    function termUpdateTerminalsCount() {
+      const grid = $("#terms-grid");
+      const rows = grid ? grid.querySelectorAll(".term-status-row").length : 0;
+      const total = TERMS.size + rows;
+      const el = $("#count-terminals");
+      if (el) el.textContent = total || "·";
     }
 
     // ----- Draft terminal (created via "New terminal") -----
@@ -556,13 +976,17 @@
     // hit send does the dashboard POST /api/jobs and turn the draft into
     // a real, connected pane.
 
-    // Mirrors the MODELS_BY_TOOL catalog in core.js. Kept here as a local
-    // fallback so this file doesn't depend on script load order.
+    // Points at core.js's MODELS_BY_TOOL — the shared catalog that
+    // applyModelCatalog() keeps in sync with the models.yaml `catalog:` block
+    // (the single source of truth). We hold the reference, NOT a copy, so the
+    // in-place refresh in core.js is reflected here without re-wiring.
+    // The literal below is a last-resort fallback for the (abnormal) case where
+    // core.js failed to load — it is NOT a place to add new models.
     var DRAFT_MODELS_BY_TOOL = (typeof MODELS_BY_TOOL === "object" && MODELS_BY_TOOL)
       ? MODELS_BY_TOOL
       : {
-          claude: ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
-          codex:  ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+          claude: ["claude-opus-4-8", "claude-fable-5", "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
+          codex:  ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
         };
 
     var _draftCounter = 0;
@@ -638,305 +1062,112 @@
       return `claude${sid} --model ${safeModel}`;
     }
 
-    function termOpenDraft() {
-      _draftCounter += 1;
-      const draftId = "draft:" + Date.now() + ":" + _draftCounter;
-      const grid = $("#terms-grid");
-      if (!grid) return;
+    // Mint a client-side session id. crypto.randomUUID where available; the
+    // biased Math.random fallback is fine for a session SELECTOR (never a
+    // security token) on the rare browser without crypto.randomUUID.
+    function termMintSid() {
+      if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+      return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+        const r = Math.random() * 16 | 0;
+        const v = c === "x" ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
 
-      // Defaults. Editable before sending.
-      const defaultTool = "claude";
-      const defaultModel = (DRAFT_MODELS_BY_TOOL[defaultTool] || [""])[0] || "claude-sonnet-4-6";
-      const defaultType = "ai";
+    // "New terminal" → a compact LAUNCHER (not a chat). The operator picks what
+    // to launch (AI chat / Terminal), the tool and the model, then clicks
+    // Launch. The resource is CREATED and added to the status list as a
+    // launched row — it is NOT shown on the canvas. The operator opens it on
+    // the canvas with ⊞ and interacts there (first message / shell). Decoupling
+    // launch from open matches the converged model: the dashboard launches, the
+    // canvas hosts the interactive panes.
+    // Wire the launcher controls that live in the Terminals toolbar (#term-
+    // launchtype / #term-tool / #term-model / #term-shell). Populates the model
+    // list, shows the Shell field only for terminals, and constrains AI chat to
+    // Claude (Codex's native UX is its CLI — launch it as a shell). Called once
+    // on boot.
+    function wireLauncherToolbar() {
+      const launchSel = $("#term-launchtype");
+      const toolSel = $("#term-tool");
+      const modelSel = $("#term-model");
+      const shellSel = $("#term-shell");
+      const shellField = document.querySelector(".term-shell-field");
+      const hint = $("#term-launch-hint");
+      if (!launchSel || !toolSel || !modelSel) return;
+      if (shellSel) shellSel.innerHTML = termDraftShellOptions("auto");
+      const codexOpt = [...toolSel.options].find((o) => o.value === "codex");
 
-      const pane = document.createElement("div");
-      pane.className = "term-pane term-draft focus";
-      pane.dataset.jobId = draftId;
-      pane.innerHTML = `
-        <div class="term-head">
-          <span class="pill status-pill" title="not yet started — pick tool, model and type">draft</span>
-          <span class="task">New terminal</span>
-          <span class="activity waiting" title="will start when you send the first message">unsent</span>
-          <span class="id">${escape(draftId.slice(-6))}</span>
-          <span class="actions">
-            <button class="close-btn" title="Discard this draft">close</button>
-          </span>
-        </div>
-        <div class="term-draft-config">
-          <label class="draft-field">
-            <span class="draft-label">Tool</span>
-            <select class="draft-tool">
-              <option value="claude"${defaultTool === "claude" ? " selected" : ""}>Claude</option>
-              <option value="codex"${defaultTool === "codex" ? " selected" : ""}>Codex</option>
-            </select>
-          </label>
-          <label class="draft-field">
-            <span class="draft-label">Model</span>
-            <select class="draft-model">
-              ${termDraftModelOptions(defaultTool, defaultModel)}
-            </select>
-          </label>
-          <label class="draft-field">
-            <span class="draft-label">Type</span>
-            <select class="draft-type">
-              ${termDraftTypeOptionsHtml(defaultType)}
-            </select>
-          </label>
-          <span class="draft-hint draft-hint-ai">Conversation starts when you send the first message.</span>
-          <span class="draft-hint draft-hint-shell" hidden>Opens a real PTY, runs the chosen tool inside, then types your first message into the running TUI.</span>
-        </div>
-        <div class="term-body chat" tabindex="0">
-          <div class="msg system draft-placeholder">Pick tool, model and type, then send your first message.</div>
-        </div>
-        <div class="attach-tray" style="display:none"></div>
-        <div class="term-foot">
-          <textarea class="stdin-input" rows="1" placeholder="type your first message — Enter starts the conversation · Shift+Enter newline"></textarea>
-          <button class="send-btn">start</button>
-        </div>
-      `;
-      grid.appendChild(pane);
-
-      const body = pane.querySelector(".term-body");
-      const input = pane.querySelector(".stdin-input");
-      const sendBtn = pane.querySelector(".send-btn");
-      const toolSel = pane.querySelector(".draft-tool");
-      const modelSel = pane.querySelector(".draft-model");
-      const typeSel = pane.querySelector(".draft-type");
-      const hintAi = pane.querySelector(".draft-hint-ai");
-      const hintShell = pane.querySelector(".draft-hint-shell");
-      const placeholder = body.querySelector(".draft-placeholder");
-
-      // Auto-grow the textarea exactly like real panes do.
-      const autosize = () => {
-        input.style.height = "auto";
-        const next = Math.min(input.scrollHeight, COMPOSER_AUTOSIZE_MAX_PX);
-        input.style.height = next + "px";
-      };
-      input.addEventListener("input", autosize);
-
-      const t = {
-        jobId: draftId,
-        pane, body, input, sendBtn,
-        source: null,
-        task: "",
-        kind: "draft",
-        isDraft: true,
-        attached: { images: [], files: [] },
-      };
-      TERMS.set(draftId, t);
-
-      // Parse the Type select value: "ai" | "shell:<name>".
-      const parseType = () => {
-        const v = typeSel.value || "ai";
-        if (v === "ai") return { kind: "ai" };
-        const [k, ...rest] = v.split(":");
-        return { kind: k, id: rest.join(":") };
-      };
-
-      const refreshType = () => {
-        const isShell = parseType().kind === "shell";
-        hintAi.hidden = isShell;
-        hintShell.hidden = !isShell;
-        if (isShell) {
-          sendBtn.textContent = "open & send";
-          if (placeholder) placeholder.textContent = "Opens the shell, runs the tool with the chosen model, then types your first message into the TUI.";
-        } else {
-          sendBtn.textContent = "start";
-          if (placeholder) placeholder.textContent = "Pick tool, model and type, then send your first message.";
+      const refresh = () => {
+        const isShell = launchSel.value === "shell";
+        if (shellField) shellField.hidden = !isShell;
+        if (codexOpt) codexOpt.disabled = !isShell;
+        if (!isShell && toolSel.value === "codex") toolSel.value = "claude";
+        if (hint) {
+          hint.textContent = isShell
+            ? "Launches a real shell" + (toolSel.value === "claude" || toolSel.value === "codex" ? " running " + toolSel.value : "") + " — open it on the canvas with ⊞."
+            : "Launches a Claude chat — open it on the canvas with ⊞ and send your first message there.";
         }
       };
-      typeSel.addEventListener("change", refreshType);
-
-      // Tool change repopulates the Model list (claude vs codex models).
-      toolSel.addEventListener("change", () => {
+      const repopulateModels = () => {
         const tool = toolSel.value;
-        const list = DRAFT_MODELS_BY_TOOL[tool] || [];
-        modelSel.innerHTML = termDraftModelOptions(tool, list[0] || "");
-      });
-
-      // Image paste / drop reuses the real-pane plumbing (AI chat only —
-      // shell-mode messages are typed into the TUI and don't accept
-      // multimodal input from the dashboard composer).
-      input.addEventListener("paste", (e) => {
-        if (parseType().kind !== "ai") return;
-        const items = e.clipboardData?.items || [];
-        for (const it of items) {
-          if (it.kind === "file" && it.type.startsWith("image/")) {
-            const f = it.getAsFile();
-            if (f) { termPasteImage(t, f); e.preventDefault(); }
-          }
-        }
-      });
-      pane.addEventListener("dragover", (e) => { e.preventDefault(); pane.classList.add("dragover"); });
-      pane.addEventListener("dragleave", () => pane.classList.remove("dragover"));
-      pane.addEventListener("drop", (e) => {
-        e.preventDefault();
-        pane.classList.remove("dragover");
-        if (parseType().kind !== "ai") return;
-        for (const f of e.dataTransfer.files || []) {
-          if (f.type.startsWith("image/")) termPasteImage(t, f);
-        }
-      });
-
-      pane.addEventListener("click", () => {
-        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
-        pane.classList.add("focus");
-      });
-
-      pane.querySelector(".close-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        TERMS.delete(draftId);
-        pane.remove();
-        termRenderEmptyState();
-      });
-
-      const startConversation = async () => {
-        const tool = toolSel.value;
-        const model = modelSel.value;
-        const typeSelected = parseType();
-        const text = input.value.trim();
-        if (!model) {
-          setMsg("#term-msg", "err", "Pick a model before sending.", TERM_MSG_DURATION_MS);
-          return;
-        }
-
-        if (typeSelected.kind === "shell") {
-          // Shell-with-AI path: spawn the PTY, then launch the chosen
-          // tool inside it with the chosen model, then type the user's
-          // message into the running TUI.
-          const shell = typeSelected.id || "auto";
-          sendBtn.disabled = true;
-          typeSel.disabled = true;
-          toolSel.disabled = true;
-          modelSel.disabled = true;
-          sendBtn.textContent = "opening…";
-          try {
-            const res = await postJson("/api/ptys", { shell, cols: 100, rows: 30 });
-            TERMS.delete(draftId);
-            pane.remove();
-            // For Claude: pre-allocate the session-id so we can mark it
-            // as already-handled BEFORE the IDE-transcript auto-opener
-            // notices the new JSONL file. Without this, opening
-            // Type=shell + Tool=Claude spawns a second pane mirroring
-            // the same session.
-            let preSessionId = null;
-            if (tool === "claude") {
-              preSessionId = (window.crypto && crypto.randomUUID)
-                ? crypto.randomUUID()
-                // Fallback for very old browsers without crypto.randomUUID.
-                // Math.random is biased and NOT cryptographically random — the
-                // session-id collision space is large enough (~10^36) that this
-                // is acceptable for a session selector but it must not be used
-                // for security tokens. Modern browsers always take the
-                // crypto.randomUUID branch above.
-                : ("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-                    const r = Math.random() * 16 | 0;
-                    const v = c === "x" ? r : (r & 0x3 | 0x8);
-                    return v.toString(16);
-                  }));
-              suppressAutoOpen("ide:" + preSessionId);
-            }
-            // Build the sequence the PTY runs once the prompt appears:
-            //   1. Launch the tool with the model flag.
-            //   2. After a beat (TUI warm-up), type the first message
-            //      so the operator sees it land inside the running AI.
-            const launchCmd = termDraftLaunchCommand(tool, model, preSessionId);
-            const steps = [{ text: launchCmd, delay: 300 }];
-            if (text) steps.push({ text: text, delay: 3000 });
-            // Stash the per-PTY token so a later restoreOpenPanes()
-            // reattach can re-use it without going through /api/ptys/<id>
-            // (which now intentionally omits the token from list/get).
-            window._PTY_TOKENS = window._PTY_TOKENS || {};
-            if (res.token) window._PTY_TOKENS[res.id] = res.token;
-            termOpenPty(res.id, res, steps);
-          } catch (err) {
-            sendBtn.disabled = false;
-            typeSel.disabled = false;
-            toolSel.disabled = false;
-            modelSel.disabled = false;
-            sendBtn.textContent = "open & send";
-            const note = document.createElement("div");
-            note.className = "msg system";
-            note.style.color = "var(--bad)";
-            note.textContent = "[open shell failed: " + err.message + "]";
-            body.appendChild(note);
-            setMsg("#term-msg", "err", "Open shell failed: " + err.message, TERM_MSG_DURATION_MS);
-          }
-          return;
-        }
-
-        // AI chat (direct) path: POST /api/jobs with stream-json.
-        // The /api/jobs endpoint only accepts a plain-text ``task`` for
-        // the first turn (server requires a non-empty ``task``). The
-        // previous implementation accepted image paste / file drag into
-        // the draft pane but then silently dropped them on POST — the
-        // operator saw their attachments in the tray, hit Send, and the
-        // first model turn went text-only with no warning. Now: require
-        // text on the draft AND carry any tray attachments over to the
-        // newly-opened pane so the operator can include them in their
-        // very next turn.
-        const attached = t.attached || { images: [], files: [] };
-        if (!text) {
-          if (attached.images.length || attached.files.length) {
-            setMsg("#term-msg", "warn",
-              "Type a first message — attachments need a text turn to send with.",
-              TERM_MSG_DURATION_MS);
-          }
-          input.focus();
-          return;
-        }
-        const kind = tool === "codex" ? "chat-codex" : "chat";
-        sendBtn.disabled = true;
-        typeSel.disabled = true;
-        toolSel.disabled = true;
-        modelSel.disabled = true;
-        sendBtn.textContent = "starting…";
-        try {
-          const payload = { kind, task: text, model };
-          const res = await postJson("/api/jobs", payload);
-          TERMS.delete(draftId);
-          pane.remove();
-          termOpen(res.id, res);
-          termFocusNewPane(res.id);
-          // Carry over draft attachments to the newly-spawned chat pane.
-          // /api/jobs is text-only; the operator will see their files /
-          // images still in the tray and they ride along on the next
-          // /api/jobs/<id>/input call (which DOES support multimodal).
-          const newT = TERMS.get(res.id);
-          if (newT && (attached.images.length || attached.files.length)) {
-            newT.attached = attached;
-            termRenderAttachments(newT);
-            setMsg("#term-msg", "warn",
-              `${attached.images.length + attached.files.length} attachment(s) carried over — send your next message to deliver them.`,
-              5000);
-          }
-          await loadJobs();
-        } catch (err) {
-          sendBtn.disabled = false;
-          typeSel.disabled = false;
-          toolSel.disabled = false;
-          modelSel.disabled = false;
-          sendBtn.textContent = "start";
-          const note = document.createElement("div");
-          note.className = "msg system";
-          note.style.color = "var(--bad)";
-          note.textContent = "[start failed: " + err.message + "]";
-          body.appendChild(note);
-          setMsg("#term-msg", "err", "Start failed: " + err.message, TERM_MSG_DURATION_MS);
-        }
+        modelSel.innerHTML = termDraftModelOptions(tool, (DRAFT_MODELS_BY_TOOL[tool] || [""])[0] || "");
       };
+      repopulateModels();
+      refresh();
+      launchSel.addEventListener("change", refresh);
+      toolSel.addEventListener("change", () => { repopulateModels(); refresh(); });
+    }
 
-      sendBtn.addEventListener("click", startConversation);
-      input.addEventListener("keydown", (e) => {
-        // !e.isComposing keeps mid-IME-composition Enter (Japanese, Chinese,
-        // Korean, etc.) from sending half-typed text — matches the
-        // transcript fork at the other composer site.
-        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); startConversation(); }
-      });
+    // "New terminal" = launch the resource configured in the toolbar selects.
+    // It is CREATED and added to the status list as a launched row — NOT shown
+    // on the canvas. The operator opens it on the canvas with ⊞ (and, for an AI
+    // chat, types the first message there → create-on-first-turn).
+    async function termOpenDraft() {
+      const launchType = ($("#term-launchtype") || {}).value || "ai";
+      const tool = ($("#term-tool") || {}).value || "claude";
+      const model = ($("#term-model") || {}).value || "";
 
-      termRenderEmptyState();
-      // Drop focus into the message field so the operator can start typing.
-      requestAnimationFrame(() => { try { input.focus(); } catch (_) {} });
+      if (launchType === "ai") {
+        // Direct Claude session. Nothing is sent now — the conversation
+        // materialises (create-on-first-turn) when the operator types the first
+        // message in the canvas session pane.
+        if (!model) { setMsg("#term-msg", "err", "Pick a model before launching.", TERM_MSG_DURATION_MS); return; }
+        const sid = termMintSid();
+        addLaunched({ id: sid, kind: "session", tool: "claude", model,
+                      label: "Claude · " + model, ts: Date.now() });
+        setMsg("#term-msg", "ok", "Claude chat launched — open it on the canvas (⊞) and send your first message there.", TERM_MSG_DURATION_MS);
+        return;
+      }
+
+      // Terminal (shell): create the PTY now; the tool launch command (if any)
+      // runs when the operator opens the row on the canvas.
+      if ((tool === "claude" || tool === "codex") && !model) {
+        setMsg("#term-msg", "err", "Pick a model before launching.", TERM_MSG_DURATION_MS); return;
+      }
+      const shell = ($("#term-shell") || {}).value || "auto";
+      const btn = $("#term-new");
+      if (btn) { btn.disabled = true; }
+      try {
+        const res = await postJson("/api/ptys", { shell, cols: 100, rows: 30 });
+        termRememberPtyToken(res.id, res.token);
+        let steps = [];
+        let label = "Shell (" + shell + ")";
+        if (tool === "claude" || tool === "codex") {
+          // Pin a session-id for Claude so its transcript is identifiable.
+          const preSid = tool === "claude" ? termMintSid() : null;
+          // 600ms (was 300) so the shell prompt + PSReadLine are fully ready
+          // before the launch line is typed — avoids a mangled command on a
+          // still-initialising PowerShell.
+          steps = [{ text: termDraftLaunchCommand(tool, model, preSid), delay: 600 }];
+          label = (tool === "claude" ? "Claude" : "Codex") + " · " + model + " (shell)";
+        }
+        addLaunched({ id: res.id, kind: "terminal", tool, model, token: res.token, steps, label, ts: Date.now() });
+        setMsg("#term-msg", "ok", "Terminal launched — open it on the canvas (⊞).", TERM_MSG_DURATION_MS);
+      } catch (err) {
+        setMsg("#term-msg", "err", "Launch failed: " + err.message, TERM_MSG_DURATION_MS);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
     }
 
     function termAppendChunk(t, chunk) {
@@ -1058,56 +1289,8 @@
       if (m) m.textContent = (t._searchIdx + 1) + " / " + hits.length;
     }
 
-    // ----- Export pane as markdown -----
-    function termExportMarkdown(t) {
-      const lines = [];
-      lines.push("# " + (t.task || "Chat") + "\n");
-      lines.push("> session " + (t.jobId || "") + "  ·  " + new Date().toISOString());
-      lines.push("");
-      const messages = t.body.querySelectorAll(".msg");
-      for (const m of messages) {
-        const role = m.classList.contains("assistant") ? "assistant"
-                   : m.classList.contains("user") ? "user"
-                   : m.classList.contains("system") ? "system"
-                   : m.classList.contains("result") ? "result" : "note";
-        const text = m.querySelector(".text")?.innerText || m.innerText;
-        if (!text || !text.trim()) continue;
-        lines.push(`## ${role}\n`);
-        lines.push(text.trim());
-        lines.push("");
-      }
-      const blob = new Blob([lines.join("\n")], { type: "text/markdown" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `chat-${(t.jobId || "session").slice(0, 8)}-${Date.now()}.md`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-
-    function termInitAutoFollow(t) {
-      t.autoFollowBottom = true;
-      t.firstScroll = true;
-      // Use rAF to detect user-initiated scroll (vs our programmatic
-      // scrollTo which also fires the event).
-      let programmatic = false;
-      t._markProgrammaticScroll = () => {
-        programmatic = true;
-        requestAnimationFrame(() => requestAnimationFrame(() => { programmatic = false; }));
-      };
-      const onScroll = () => {
-        if (programmatic) return;
-        const fromBottom = t.body.scrollHeight - t.body.scrollTop - t.body.clientHeight;
-        t.autoFollowBottom = fromBottom < 40;
-      };
-      // Track the listener so termClose / termClosePty can remove it.
-      // Without this, closed panes leak a scroll handler that keeps the
-      // pane and the closure references alive forever.
-      t._autoFollowScrollHandler = onScroll;
-      t.body.addEventListener("scroll", onScroll);
-    }
+    // termExportMarkdown + termInitAutoFollow moved to pane-helpers.js
+    // (pure render leaves; loaded before terminals.js, resolve as globals).
 
     function termSetDead(t, label) {
       // If the subprocess died mid-turn, the placeholder has no streaming
@@ -1155,66 +1338,19 @@
         status.className = "pill " + (label === "done" ? "done" : "bad") + " status-pill";
         status.textContent = label;
       }
-      // For chat panes with a known session_id the next operator message
-      // resumes the session — the pane is waiting for input, not just
-      // dead. Surface that as "waiting" (warn chip) so the warn color
-      // means "waiting" everywhere on this page. Other dead panes stay
-      // at "done"/"ended" with their respective ok/bad colors.
-      if (t.kind === "chat" && t.sessionId) {
-        termSetActivity(t, "waiting", "waiting");
-      } else {
-        termSetActivity(t, label || "ended", label === "done" ? "ready" : "ended");
-      }
-
-      // For chat panes whose claude subprocess has exited but where the
-      // session_id is known, repurpose the composer as a "resume" entry
-      // point: the next message spawns a fresh job with --resume <sid>,
-      // and the new pane opens alongside (the dead pane stays as history).
-      // Without this, the operator has to manually go back to the Run tab,
-      // copy the session id, and create a new job. Annoying.
-      if (t.kind === "chat" && t.sessionId) {
-        // Auto-expand so the resume composer is reachable without an
-        // extra click — input is required, this is exactly the "specific
-        // case" where the full pane should appear on its own.
-        if (t.pane.classList.contains("collapsed")) {
-          termSetCollapsed(t, false);
-        }
-        t.pane.classList.add("needs-action");
-        t.input.disabled = false;
-        t.sendBtn.disabled = false;
-        t.input.placeholder = "session ended — next message resumes in a fresh job";
-        t.sendBtn.textContent = "resume →";
-        // Flip the pane into resume mode by toggling a flag the regular
-        // send pipeline checks. Previous implementation clone-replaced the
-        // textarea and send button to "drop the original listeners
-        // cleanly", but cloneNode does NOT carry event listeners — so the
-        // autosize handler, paste/drop image handler, /skill + @file
-        // composer, and Ctrl+F search shortcut were all silently lost the
-        // instant a session ended. The operator would type into a
-        // single-row textarea that no longer grew, no longer accepted
-        // pasted images, and no longer autocompleted skills. Instead of
-        // ripping out the listeners we re-route the send pipeline through
-        // the existing button: the click + Enter handlers wired in
-        // termOpen() already call termSend(t), and termSend() now branches
-        // on ``t.kind === "chat" && t.deadResume`` to spawn the resume
-        // job. The existing handlers keep working, untouched.
-        t.deadResume = true;
-      } else {
-        t.input.disabled = true;
-        t.sendBtn.disabled = true;
-      }
+      // A dead pane is history: surface the terminal state and lock the
+      // composer. Claude chats are unified session panes now; the old
+      // job-based "resume on next message" affordance was removed when its
+      // send pipeline (termSendResumeChat) was retired, so there is no
+      // chat-specific dead state left to special-case here.
+      termSetActivity(t, label || "ended", label === "done" ? "ready" : "ended");
+      t.input.disabled = true;
+      t.sendBtn.disabled = true;
     }
 
     function termClose(jobId) {
       const t = TERMS.get(jobId);
       if (!t) return;
-      // PTY panes own additional resources (xterm instance, ResizeObserver,
-      // server-side shell) that the generic close path doesn't know about.
-      // Delegate so the cleanup is symmetric with the dedicated close-btn.
-      if (t.kind === "terminal") {
-        termClosePty(jobId);
-        return;
-      }
       try { t.source && t.source.close(); } catch (e) { console.warn("[terminals] termClose: SSE close failed: " + (e && e.message ? e.message : e)); }
       // Stop the SSE heartbeat watchdog so the closed pane doesn't keep
       // a timer alive that calls termSetDead on an already-removed pane.
@@ -1228,25 +1364,12 @@
         try { t.body.removeEventListener("scroll", t._autoFollowScrollHandler); } catch (_) {}
         t._autoFollowScrollHandler = null;
       }
-      // Dispatch-tracker panes register themselves in DISPATCH_TRACKERS so
-      // termMarkToolResult can forward results into the pane. The in-pane
-      // close button cleans this up itself, but termCloseAllFinished and
-      // persistence-driven closes route through termClose directly. Without
-      // this sweep, the Map keeps a reference to the (now-detached) pane and
-      // future tool_result events appendChild to a node nobody can see.
-      if (t.toolUseId && DISPATCH_TRACKERS.get(t.toolUseId) === t) {
-        DISPATCH_TRACKERS.delete(t.toolUseId);
-      }
       t.pane.remove();
       TERMS.delete(jobId);
       // Closing a pane is the operator's explicit "I don't want to see
       // this anymore" signal — suppress auto-open for this id so it
       // doesn't come back on the next poll or after F5.
       suppressAutoOpen(jobId);
-      // Release the shared /api/transcripts poller once the last
-      // transcript pane is gone — chat-only sessions shouldn't keep
-      // a 5s timer running for nothing.
-      if (t.kind === "transcript") maybeStopTranscriptStatusPoll();
       termRenderEmptyState();
       persistOpenPanes();
       // Fire-and-forget refresh — async loadJobs failures (network blip,
@@ -1261,22 +1384,13 @@
       // Accepts either a jobId string (legacy callers) or the term object
       // itself. The object form is required for chat-codex panes whose
       // ``t.jobId`` is re-keyed across turns — closures captured at
-      // termOpen() time would otherwise point at the FIRST turn's job and
+      // pane creation time would otherwise point at the FIRST turn's job and
       // fail with 404 from turn 2 onwards.
       const t = typeof arg === "object" && arg ? arg : TERMS.get(arg);
       if (!t) return;
       const text = t.input.value;
       const attached = t.attached || { images: [], files: [] };
       if (!text.trim() && !attached.images.length && !attached.files.length) return;
-      // Dead chat pane with a captured session_id: the existing
-      // subprocess has exited; the next message must spawn a fresh
-      // ``claude --resume <sid>`` job and open it alongside this dead
-      // one. Reuses the same composer (autosize / paste / @file all
-      // intact) — see the ``t.deadResume`` flag set by termSetDead().
-      if (t.kind === "chat" && t.deadResume) {
-        await termSendResumeChat(t, text);
-        return;
-      }
       // Codex chat is one subprocess per turn (``codex exec`` exits after
       // emitting its answer). To present continuous multi-turn UX in the
       // same pane, every follow-up message spawns a fresh
@@ -1292,36 +1406,13 @@
         if (attached.images.length) payload.images = attached.images;
         if (attached.files.length) payload.files = attached.files;
         await postJson(`/api/jobs/${t.jobId}/input`, payload);
-        if (t.kind === "chat") {
-          termRenderUserMessage(t, text);
-          // Show the "thinking" bubble immediately — it's the user's only
-          // signal that the model has the turn until the first stream
-          // event arrives, which can take several seconds for cold caches.
-          termShowThinkingPlaceholder(t);
-          // Echo attached files/images locally too so the operator sees
-          // what they sent.
-          for (const f of attached.files) {
-            const tag = document.createElement("div");
-            tag.className = "tool-pill";
-            tag.textContent = "file · " + f;
-            t.body.appendChild(tag);
-          }
-          for (const img of attached.images) {
-            const el = document.createElement("img");
-            el.src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
-            el.style.maxWidth = "240px";
-            el.style.maxHeight = "180px";
-            el.style.border = "1px solid var(--border-soft)";
-            el.style.borderRadius = "var(--r-sm)";
-            el.style.margin = "4px 0";
-            t.body.appendChild(el);
-          }
-        } else {
-          const echo = document.createElement("span");
-          echo.className = "stdin-echo";
-          echo.textContent = `\n> ${text}\n`;
-          t.body.appendChild(echo);
-        }
+        // termSend now only drives generic job panes (orchestrate / plan);
+        // Claude chats are session panes and chat-codex returns above. Echo
+        // the operator's input into the pane body.
+        const echo = document.createElement("span");
+        echo.className = "stdin-echo";
+        echo.textContent = `\n> ${text}\n`;
+        t.body.appendChild(echo);
         t.body.scrollTop = t.body.scrollHeight;
         t.input.value = "";
         // Reset textarea auto-grown height so the next prompt starts at one row.
@@ -1342,66 +1433,6 @@
       } finally {
         t.sendBtn.disabled = false;
         t.input.focus();
-      }
-    }
-
-    // Resume a dead chat pane by spawning ``claude --resume <sid>`` as a
-    // fresh job and opening it as a new pane next to the dead one. The
-    // dead pane stays open as history; the new pane is the writable
-    // continuation. Called from termSend() when ``t.deadResume`` is set
-    // (configured by termSetDead for chat panes with a captured session
-    // id) — keeps the existing composer event listeners intact instead of
-    // cloning the textarea (which would drop autosize / paste / @file).
-    async function termSendResumeChat(t, text) {
-      // In-flight latch: termSend is also reachable via the Enter keydown
-      // handler, which does NOT consult sendBtn.disabled — so the button-
-      // disable guard alone cannot stop an overlapping resume from racing.
-      // Drop overlapping calls; first one wins. Mirrors t._codexAwaitInFlight
-      // in termCodexAwaitNextTurn.
-      if (t._resumeInFlight) return;
-      t._resumeInFlight = true;
-      // Disable the button BEFORE the trimmed-empty guard so a synchronous
-      // re-entry (rapid double-click on "resume →" while we yield to the
-      // microtask boundary) sees a disabled button and bails out. The
-      // finally block re-enables it on every exit path, including the
-      // empty-input early return.
-      t.sendBtn.disabled = true;
-      try {
-        const trimmed = (text || "").trim();
-        if (!trimmed) return;
-        // Propagate the operator's chosen model on resume. Without this,
-        // resuming a dead chat fell back to the server-default model even
-        // though the original pane had pinned a specific one. The codex
-        // resume path (termSendCodexNextTurn) already includes model — chat
-        // resume was the only path missing it.
-        const payload = {
-          kind: "chat",
-          task: trimmed,
-          resume_session_id: t.sessionId,
-        };
-        if (t.model) payload.model = t.model;
-        const res = await postJson("/api/jobs", payload);
-        t.input.value = "";
-        if (t.input.tagName === "TEXTAREA") t.input.style.height = "";
-        // Open the resumed pane alongside this dead one and bring it
-        // into view (otherwise list mode hides it as a collapsed row).
-        termOpen(res.id, res);
-        termFocusNewPane(res.id);
-        await loadJobs();
-      } catch (e) {
-        const err = document.createElement("div");
-        err.className = "msg system";
-        err.style.color = "var(--bad)";
-        err.textContent = `[resume failed: ${e.message}]`;
-        t.body.appendChild(err);
-        setMsg("#term-msg", "err", "Resume failed: " + e.message, TERM_MSG_DURATION_MS);
-      } finally {
-        // Release the latch BEFORE re-enabling the button so a click that
-        // lands the instant the button paints enabled isn't dropped by a
-        // stale _resumeInFlight=true.
-        t._resumeInFlight = false;
-        t.sendBtn.disabled = false;
-        try { t.input.focus(); } catch (_) {}
       }
     }
 
@@ -1504,7 +1535,7 @@
         if (t.model) payload.model = t.model;
         const res = await postJson("/api/jobs", payload);
         // Re-key TERMS so the same pane is reachable by its NEW job id —
-        // the closures in termOpen() pass the pane object (`t`) to
+        // legacy inline-pane closures passed the pane object (`t`) to
         // termSend(), not a string, so they keep working across rekeys.
         // Park the old jobId -> new jobId mapping so a late cancel/close
         // call keyed on the previous id (e.g. a fast button click that
@@ -1519,8 +1550,7 @@
           window._JOB_ID_ALIASES = window._JOB_ID_ALIASES || {};
           window._JOB_ID_ALIASES[oldJobId] = res.id;
         }
-        // Re-persist immediately so a F5 between turns won't lose the
-        // pane (the old job id would 404).
+        // Legacy compatibility hook; canvas-owned panes persist elsewhere.
         persistOpenPanes();
         const idEl = t.pane.querySelector(".id");
         if (idEl) idEl.textContent = res.id.slice(0, 8);
@@ -1644,6 +1674,7 @@
           pre.textContent = txt;
           det.appendChild(sum); det.appendChild(pre);
           txtEl.appendChild(det);
+          termCloseTextSegment(txtEl);
           return;
         }
         if (kind === "function_call") {
@@ -1687,6 +1718,15 @@
 
     // ----- composer: image paste/drop + @/  autocomplete -----
 
+    // termCloseAutocomplete moved to pane-helpers.js (pure render leaf;
+    // loaded before terminals.js, resolves as a global).
+    //
+    // termRenderAttachments + termPasteImage (+ _IMAGE_PASTE_MAX_BYTES) are
+    // PURE leaves too, but they are PINNED to terminals.js by a static-lint
+    // sanitization test (tests/test_dashboard_sanitization.py asserts the
+    // image-mime allowlist regex and the termRenderAttachments/
+    // _IMAGE_PASTE_MAX_BYTES ordering live in THIS file). Kept here so the
+    // guard stays green; revisit when that test is taught the new location.
     function termRenderAttachments(t) {
       const tray = t.pane.querySelector(".attach-tray");
       if (!tray) return;
@@ -1760,11 +1800,6 @@
         termRenderAttachments(t);
       };
       reader.readAsDataURL(file);
-    }
-
-    function termCloseAutocomplete(t) {
-      const pop = t.pane.querySelector(".composer-pop");
-      if (pop) { pop.remove(); t._popOpen = false; }
     }
 
     function termOpenAutocomplete(t, items, onPick) {
@@ -1916,54 +1951,9 @@
 
     // ----- chat rendering (stream-json -> structured DOM) -----
 
-    // Compact form for the header chip: just the dollar amount, rounded
-    // to 2 decimal places once the cost crosses $0.01 (anything smaller
-    // would round to "$0.00", which reads as broken — keep the 4-decimal
-    // long form there so the user sees something).
-    function termFormatCostCompact(c) {
-      if (!c || c.cost_usd == null) return "";
-      const v = Number(c.cost_usd);
-      return "$" + v.toFixed(v >= 0.01 ? 2 : 4);
-    }
-    // Verbose form for tooltips and the legacy header layout: dollars + turns + duration.
-    function termFormatCost(c) {
-      if (!c) return "";
-      const parts = [];
-      if (c.cost_usd != null) parts.push("$" + Number(c.cost_usd).toFixed(4));
-      if (c.turns != null) parts.push(c.turns + " turn" + (c.turns === 1 ? "" : "s"));
-      if (c.duration_ms != null && c.duration_ms > 0) parts.push((c.duration_ms / 1000).toFixed(1) + "s");
-      return parts.join(" · ");
-    }
-
-    // Trailing-edge debounce per pane so a burst of turn-end events doesn't
-    // hammer /api/jobs/<id> with a refresh per call. 800ms keeps the chip
-    // visibly fresh without amplifying load when several models stream
-    // in parallel.
-    var _COST_REFRESH_DEBOUNCE_MS = 800;
-    async function _termRefreshCostNow(t) {
-      if (!t || !t.pane.isConnected) return;
-      if (t.kind !== "chat" && t.kind !== "chat-codex") return;
-      try {
-        const r = await fetch(`/api/jobs/${t.jobId}?tail=1`, { cache: "no-store" });
-        if (!r.ok) return;
-        const data = await r.json();
-        const pill = t.pane.querySelector(".cost-pill");
-        if (!pill) return;
-        pill.textContent = termFormatCostCompact(data.cost);
-        const verbose = termFormatCost(data.cost);
-        pill.title = verbose
-          ? verbose + "  ·  job " + (t.jobId || "").slice(0, 8)
-          : "aggregated cost / turns / time for this session";
-      } catch (_) { /* ignore */ }
-    }
-    function termRefreshCost(t) {
-      if (!t) return;
-      if (t._costRefreshTimer) clearTimeout(t._costRefreshTimer);
-      t._costRefreshTimer = setTimeout(() => {
-        t._costRefreshTimer = null;
-        _termRefreshCostNow(t);
-      }, _COST_REFRESH_DEBOUNCE_MS);
-    }
+    // termFormatCostCompact / termFormatCost / _termRefreshCostNow /
+    // termRefreshCost (+ _COST_REFRESH_DEBOUNCE_MS) moved to pane-helpers.js
+    // (pure render leaves; loaded before terminals.js, resolve as globals).
 
     function termAutoScroll(t) {
       // Honour the "follow bottom" flag set by user scroll behaviour.
@@ -2030,32 +2020,8 @@
       termAutoScroll(t);
     }
 
-    // Patterns that are pure noise from the operator's POV — Node deprecation
-    // warnings printed to stderr, the `[unhandled rate_limit_event]` line that
-    // claude prints when it hits a rate-limit telemetry frame, blank lines.
-    // Adding patterns here is preferred over surfacing them as "msg system"
-    // blocks that drown the actual conversation.
-    var RAW_NOISE_PATTERNS = [
-      /^\s*$/,                                              // blank
-      /^\(node:\d+\)\s/,                                    // node warnings
-      /^\[unhandled (rate_limit_event|.*)\]\s*$/,           // unhandled telemetry
-      /^DeprecationWarning:/,                               // node deprecation
-      /^\(Use `node --trace-deprecation/,                   // node trace hint
-      /^# job [0-9a-f-]+ kind=/,                            // pump-injected header
-      /^# task:/,                                           // pump-injected task line
-    ];
-    function termRenderRaw(t, line) {
-      // Non-JSON line (rare: e.g. CLI noise). Silence known-noise patterns
-      // entirely; everything else surfaces as a dim system block so we
-      // notice genuinely-unexpected output rather than hiding it.
-      for (const pat of RAW_NOISE_PATTERNS) {
-        if (pat.test(line)) return;
-      }
-      const div = document.createElement("div");
-      div.className = "msg system";
-      div.textContent = line;
-      t.body.appendChild(div);
-    }
+    // termRenderRaw (+ RAW_NOISE_PATTERNS) moved to pane-helpers.js (pure
+    // render leaf; loaded before terminals.js, resolves as a global).
 
     function termRenderUserMessage(t, text) {
       const msg = document.createElement("div");
@@ -2133,10 +2099,8 @@
       termAutoScroll(t);
     }
 
-    function termClearThinkingPlaceholder(t) {
-      if (!t || !t.body) return;
-      t.body.querySelectorAll(".thinking-placeholder").forEach((el) => el.remove());
-    }
+    // termClearThinkingPlaceholder moved to pane-helpers.js (pure render
+    // leaf; loaded before terminals.js, resolves as a global).
 
     function termAssistantBlock(t) {
       if (t.currentAssistant && t.currentAssistant.isConnected) return t.currentAssistant;
@@ -2152,10 +2116,31 @@
       return msg;
     }
 
+    // Streaming assistant text overwrites innerHTML each frame; tool pills /
+    // thinking blocks / todos are appended as siblings into the SAME .text.
+    // Writing markdown straight into .text would nuke them on every repaint
+    // (the "tool shows then vanishes" bug). So text renders into a dedicated
+    // open ".md" segment; non-text children append after it and CLOSE the
+    // segment, so the next text opens a fresh segment below the pill and the
+    // chain order (text → tool → text) is preserved.
+    function termOpenTextSegment(textEl) {
+      const seg = textEl._openSeg;
+      if (seg && seg.isConnected && seg.parentNode === textEl) return seg;
+      const fresh = document.createElement("div");
+      fresh.className = "md";
+      textEl.appendChild(fresh);
+      textEl._openSeg = fresh;
+      return fresh;
+    }
+    function termCloseTextSegment(textEl) {
+      if (textEl) textEl._openSeg = null;
+    }
+
     function termAppendAssistantText(t, text) {
       if (!text) return;
       const block = termAssistantBlock(t);
       const textEl = block.querySelector(".text");
+      const seg = termOpenTextSegment(textEl);
       // Accumulate raw deltas in an internal array buffer rather than
       // re-reading/writing dataset.raw on every chunk. The dataset write
       // incurs a DOM-attribute round-trip and the string concat is O(n²)
@@ -2163,10 +2148,10 @@
       // per rAF flush (when we re-render markdown anyway) and mirror it
       // to dataset.raw there so external readers (see termRenderJsonObject
       // dedupe check) still observe the latest text.
-      if (!Array.isArray(textEl._rawBuf)) {
-        textEl._rawBuf = textEl.dataset.raw ? [textEl.dataset.raw] : [];
+      if (!Array.isArray(seg._rawBuf)) {
+        seg._rawBuf = seg.dataset.raw ? [seg.dataset.raw] : [];
       }
-      textEl._rawBuf.push(text);
+      seg._rawBuf.push(text);
       // Streaming responses arrive as MANY small deltas (a typical 5KB
       // answer can be 50+ chunks of 100 chars). Re-parsing the full
       // accumulated markdown on EVERY delta is O(N²) total work and
@@ -2174,28 +2159,29 @@
       // animation frames: at most one parse per frame regardless of how
       // many deltas land in between. The final result is identical; only
       // the intermediate frames are skipped.
-      if (textEl._renderPending) {
+      if (seg._renderPending) {
         termSetActivity(t, "responding…", "busy");
         return;
       }
-      textEl._renderPending = true;
+      seg._renderPending = true;
       requestAnimationFrame(() => {
-        textEl._renderPending = false;
-        // The pane (and therefore this textEl) may have been removed from
+        seg._renderPending = false;
+        // The pane (and therefore this segment) may have been removed from
         // the DOM between the delta arriving and the rAF callback firing
         // — operator clicked close, termCloseAllFinished swept it, the
         // chat-codex rekey replaced the block, etc. Writing into a
         // detached node leaks the dataset payload + queued buffer for
         // GC's lifetime and pointlessly re-parses markdown. Bail out
         // cleanly when the node is no longer connected.
-        if (!textEl.isConnected) {
-          textEl._rawBuf = [];
+        if (!textEl.isConnected || !seg.isConnected) {
+          seg._rawBuf = [];
           return;
         }
-        const latest = (textEl._rawBuf || []).join("");
-        textEl.dataset.raw = latest;
-        try { textEl.innerHTML = DOMPurify.sanitize(marked.parse(latest)); }
-        catch (_) { textEl.textContent = latest; }
+        const latest = (seg._rawBuf || []).join("");
+        seg.dataset.raw = latest;
+        textEl.dataset.raw = latest;  // mirror for the dedupe readers
+        try { seg.innerHTML = DOMPurify.sanitize(marked.parse(latest)); }
+        catch (_) { seg.textContent = latest; }
       });
       termSetActivity(t, "responding…", "busy");
     }
@@ -2257,124 +2243,12 @@
       wrap.appendChild(pill);
       wrap.appendChild(detail);
       textEl.appendChild(wrap);
+      termCloseTextSegment(textEl);
       // Only register interactive pills that carry a real id — an id-less call
       // (e.g. a codex function_call with no call_id) can never be matched by a
       // result, and registering under a falsy key would collide across calls.
       if (toolUseId) t.toolUseEls.set(toolUseId, { pill, detail });
 
-      // If this is a Bash invocation that boots ANOTHER LLM (codex exec /
-      // claude -p / claude --print), the dispatched subprocess is what the
-      // operator usually wants to watch live. Open it as a tracking pane
-      // automatically (unless they disabled auto-open).
-      if (name === "Bash" && termIsLLMDispatchCommand(input?.command)) {
-        termOpenDispatchTracker(t, toolUseId, input);
-      }
-    }
-
-    // Heuristic: does this Bash command spawn a Claude or Codex agent?
-    function termIsLLMDispatchCommand(cmd) {
-      if (!cmd || typeof cmd !== "string") return false;
-      // Codex CLI dispatch.
-      if (/\bcodex\s+exec(\s|$)/.test(cmd)) return true;
-      // Claude CLI dispatch in non-interactive mode.
-      if (/\bclaude(\.[a-z]+)?\s+(-p\b|--print\b)/i.test(cmd)) return true;
-      // ``/i`` mirrors the -p/--print sibling — Windows shells (cmd.exe)
-      // commonly receive flag names in mixed case (``--Input-Format``)
-      // and dropping the flag here caused us to miss dispatching.
-      if (/\bclaude(\.[a-z]+)?\s+.*--input-format\s+stream-json/i.test(cmd)) return true;
-      return false;
-    }
-
-    // Map<dispatch tool_use_id, dispatch pane state> so termMarkToolResult
-    // can hand the result over to the right tracker pane.
-    var DISPATCH_TRACKERS = new Map();
-
-    function termOpenDispatchTracker(parentTerm, toolUseId, input) {
-      if (!termAutoOpenEnabled()) return;
-      const paneKey = "dispatch:" + toolUseId;
-      if (TERMS.has(paneKey)) return;
-      // Honour the operator's prior close. Without this, F5 (or a
-      // transcript re-mirror) would re-play every Bash tool_use that
-      // looks like a Claude/Codex dispatch and re-spawn its tracker
-      // pane — exactly what the operator was clearing away.
-      if (AUTO_OPENED_ONCE.has(paneKey)) return;
-      suppressAutoOpen(paneKey);
-      const grid = $("#terms-grid");
-      if (!grid) return;
-      const cmd = input?.command || "";
-      // Anchor with (\s|$) — mirrors the termIsLLMDispatchCommand pattern
-      // so the label correctly resolves "Codex" only for ``codex exec``
-      // invocations and never matches ``codex executor`` or similar
-      // identifier prefixes embedded in a longer Bash command.
-      const isCodex = /\bcodex\s+exec(\s|$)/.test(cmd);
-      // tool_use_ids look like `toolu_01XXXXX...` — slice past the prefix
-      // so the label shows characters that actually distinguish dispatches
-      // instead of the literal "toolu_".
-      const shortId = toolUseId.replace(/^toolu_/, "").slice(0, 6) || toolUseId.slice(0, 6);
-      const label = (isCodex ? "Codex" : "Claude") + " dispatch (" + shortId + ")";
-      const pane = document.createElement("div");
-      pane.className = "term-pane focus";
-      pane.dataset.jobId = paneKey;
-      pane.innerHTML = `
-        <div class="term-head">
-          <span class="pill ${isCodex ? "codex" : "claude"} status-pill">dispatch</span>
-          <span class="task" title="${escape(cmd)}">${escape(label)}</span>
-          <span class="activity" title="current activity in this pane">queued…</span>
-          <span class="id">${escape(shortId)}</span>
-          <span class="actions">
-            <button class="expand-btn" title="Show or hide this terminal's output">expand</button>
-            <button class="close-btn" title="Close this pane">close</button>
-          </span>
-        </div>
-        <div class="term-body chat" tabindex="0"></div>
-        <div class="term-foot">
-          <textarea class="stdin-input" rows="1" disabled placeholder="read-only — dispatch is owned by the parent orchestrate session"></textarea>
-          <button class="send-btn" disabled>send</button>
-        </div>
-      `;
-      grid.appendChild(pane);
-      if (termGetLayout() === "list") pane.classList.add("collapsed");
-      const body = pane.querySelector(".term-body");
-      const t = {
-        jobId: paneKey,
-        pane, body,
-        input: pane.querySelector(".stdin-input"),
-        sendBtn: pane.querySelector(".send-btn"),
-        source: null,
-        task: cmd,
-        kind: "dispatch",
-        toolUseEls: new Map(),
-        currentAssistant: null,
-        parentTermId: parentTerm.jobId,
-        toolUseId,
-      };
-      TERMS.set(paneKey, t);
-      termInitAutoFollow(t);
-      DISPATCH_TRACKERS.set(toolUseId, t);
-      pane.querySelector(".close-btn").addEventListener("click", () => {
-        DISPATCH_TRACKERS.delete(toolUseId);
-        termClose(paneKey);
-      });
-      pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        termToggleCollapsed(t);
-      });
-      pane.querySelector(".term-head").addEventListener("click", (e) => {
-        if (e.target.closest("button")) return;
-        termToggleCollapsed(t);
-      });
-      // Render the prompt up-front so the operator sees what's being run.
-      // Use the same .bash-cmd treatment as inline Bash tool pills so the
-      // command is actually legible — the generic .msg.system style is
-      // --text-faint (~48% lightness) and disappears on the dark body.
-      body.appendChild(renderBashCommand(cmd));
-      const waiting = document.createElement("div");
-      waiting.className = "msg system";
-      waiting.style.opacity = "0.7";
-      waiting.textContent = "(waiting for output…)";
-      body.appendChild(waiting);
-      t._waitingMsg = waiting;
-      termRenderEmptyState();
     }
 
     // ----- Inline tool-detail renderers -----
@@ -2427,21 +2301,8 @@
       return wrap;
     }
 
-    function renderBashCommand(command, description) {
-      const wrap = document.createElement("div");
-      wrap.className = "tool-detail bash-view";
-      if (description) {
-        const d = document.createElement("div");
-        d.className = "diff-header";
-        d.textContent = description;
-        wrap.appendChild(d);
-      }
-      const c = document.createElement("pre");
-      c.className = "bash-cmd";
-      c.textContent = "$ " + command;
-      wrap.appendChild(c);
-      return wrap;
-    }
+    // renderBashCommand moved to pane-helpers.js (pure render leaf; loaded
+    // before terminals.js, resolves as a global).
 
     function renderGrep(input) {
       const wrap = document.createElement("div");
@@ -2566,6 +2427,7 @@
       }
       wrap.appendChild(ul);
       textEl.appendChild(wrap);
+      termCloseTextSegment(textEl);
       // Still register so a tool_result event can mark it succeeded/failed.
       t.toolUseEls.set(toolUseId, { pill: wrap, detail: null });
     }
@@ -2594,49 +2456,6 @@
           const result = "\n--- result ---\n" + (typeof content === "string" ? content : JSON.stringify(content, null, 2));
           entry.detail.textContent += result;
         }
-      }
-      // If this tool_use_id has a dispatch tracker pane open, forward the
-      // result into it so the operator sees the dispatched LLM's output as
-      // if it were its own terminal.
-      const tracker = DISPATCH_TRACKERS.get(toolUseId);
-      if (tracker) {
-        if (tracker._waitingMsg) { tracker._waitingMsg.remove(); tracker._waitingMsg = null; }
-        const block = document.createElement("div");
-        block.className = "msg " + (isError ? "system" : "assistant");
-        if (isError) block.style.color = "var(--bad)";
-        const role = document.createElement("div");
-        role.className = "role";
-        role.textContent = isError ? "dispatch failed" : "dispatch result";
-        role.dataset.roleLocked = "1";  // protect from termSetPaneModel retro-rename
-        block.appendChild(role);
-        const text = document.createElement("div");
-        text.className = "text";
-        // Render the result; for chat-style content arrays surface each
-        // element, otherwise dump the JSON / string verbatim.
-        const raw = typeof content === "string"
-          ? content
-          : Array.isArray(content)
-            ? content.map((b) => typeof b === "string" ? b : (b?.text ?? JSON.stringify(b))).join("\n")
-            : JSON.stringify(content, null, 2);
-        try { text.innerHTML = DOMPurify.sanitize(marked.parse(raw)); }
-        catch (_) { text.textContent = raw; }
-        block.appendChild(text);
-        tracker.body.appendChild(block);
-        // Header pill goes from "dispatch" to "done" / "failed". Use the
-        // helper so the prior "running" / "queued" / cancelling classes are
-        // wiped — toggle("done", !isError) on its own left stale classes
-        // when the dispatch had been in "running" state.
-        termSetPillState(
-          tracker.pane.querySelector(".status-pill"),
-          isError ? "bad" : "done",
-          isError ? "failed" : "done",
-        );
-        // The activity chip is initialised to "queued…" at pane creation
-        // and dispatch panes have no streaming events to advance it. If we
-        // don't update it here it stays "queued…" forever even though the
-        // pill already reads DONE — see the screenshot bug.
-        termSetActivity(tracker, isError ? "failed" : "done", isError ? "ended" : "ready");
-        termAutoScroll(tracker);
       }
     }
 
@@ -2792,6 +2611,7 @@
               det.appendChild(sum);
               det.appendChild(pre);
               t2.appendChild(det);
+              termCloseTextSegment(t2);
             }
           }
         } else if (typeof content === "string") {
@@ -2850,988 +2670,171 @@
       t.body.appendChild(pre);
     }
 
-    // ----- PTY (real shell) panes -----
+    // ----- Unified session panes -----
+    // A session pane connects directly to the /api/sessions/<sid>/stream SSE
+    // endpoint and renders a live, writable conversation. The composer is
+    // ALWAYS enabled — the whole point of the unified session API is that the
+    // operator can type at any time regardless of which process "owns" the
+    // session (mirror / acquiring / engine states from the backend).
     //
-    // Created by termOpenDraft when the operator picks Tool=Shell. A
-    // pane hosts an xterm.js instance bound bidirectionally to the
-    // server's PTY master via WebSocket (/api/ptys/<id>/io). All
-    // chat-bubble plumbing is bypassed: bytes in, bytes out.
+    // SessionEvent schema (one JSON object per SSE data: frame):
+    //   { seq, kind, role, text, partial, state }
+    //   kind values: "message" | "tool_use" | "tool_result" | "system" | "state_change"
+    //   The FIRST frame is always a state_change carrying the current state.
+    //   "message" frames carry role ("user" | "assistant" | "system") + text.
 
-    // Reused per pane: when xterm/ResizeObserver aren't available
-    // (older browsers, blocked CDN) the pane shows an inline error
-    // instead of silently appearing broken.
-    function termPtyMissingDeps() {
-      return typeof Terminal === "undefined" || typeof FitAddon === "undefined";
+    // Update the session-state chip in the pane header.
+    // State strings from the backend: "mirror" | "acquiring" | "engine".
+    // Map them to English labels and pill CSS state classes so the operator
+    // can see at a glance who is driving the session.
+    function termSessionChipUpdate(t) {
+      const pill = t.pane && t.pane.querySelector(".status-pill");
+      if (!pill) return;
+      const state = t.state || "mirror";
+      let label, pillCls, activityCls;
+      if (state === "mirror") {
+        label = "mirror"; pillCls = "done"; activityCls = "ready";
+        termSetActivity(t, "idle", "ready");
+      } else if (state === "acquiring") {
+        label = "acquiring…"; pillCls = "running"; activityCls = "busy";
+        termSetActivity(t, "acquiring…", "busy");
+      } else if (state === "engine") {
+        label = "live"; pillCls = "running"; activityCls = "busy";
+        termSetActivity(t, "live", "busy");
+      } else if (state === "foreign") {
+        // Session is driven by an external agent — show as busy/warn so
+        // the operator knows they are not the active driver.
+        label = "external"; pillCls = "warn"; activityCls = "busy";
+        termSetActivity(t, "external", "busy");
+      } else {
+        // Unknown future state — show it as-is with a neutral style.
+        label = state; pillCls = "warn"; activityCls = "ready";
+        termSetActivity(t, state, "ready");
+      }
+      // When a turn is queued (t.pending true) append a visible suffix so
+      // the operator knows a message is waiting to be processed.
+      if (t.pending) label = label + " · queued";
+      termSetPillState(pill, pillCls, label);
     }
 
-    function termPtyWsUrl(ptyId, token) {
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      const base = `${proto}//${location.host}/api/ptys/${encodeURIComponent(ptyId)}/io`;
-      return token
-        ? `${base}?token=${encodeURIComponent(token)}`
-        : base;
-    }
-
-    function termOpenPty(ptyId, meta, initialCommand) {
-      if (TERMS.has(ptyId)) return;
-      const grid = $("#terms-grid");
-      if (!grid) return;
-      const shellLabel = (meta?.argv && meta.argv[0]) || meta?.shell || "shell";
-      const shortShell = String(shellLabel).split(/[\\/]/).pop() || shellLabel;
-      const pane = document.createElement("div");
-      pane.className = "term-pane term-pty focus";
-      pane.dataset.jobId = ptyId;
-      pane.innerHTML = `
-        <div class="term-head">
-          <span class="pill running status-pill" title="PTY ${escape(ptyId)}">connecting</span>
-          <span class="task" title="${escape(meta?.cwd || "")}">${escape(shortShell)} · ${escape(meta?.cwd || "")}</span>
-          <span class="activity" title="current activity in this pane">connecting…</span>
-          <span class="id">${escape(ptyId.slice(0, 8))}</span>
-          <span class="actions">
-            <button class="expand-btn" title="Show or hide this terminal">expand</button>
-            <button class="pin-btn" title="Maximise / restore this pane">pin</button>
-            <button class="kill-btn danger" title="Terminate the shell (SIGTERM)">kill</button>
-            <button class="close-btn" title="Close this pane (and kill the shell)">close</button>
-          </span>
-        </div>
-        <div class="term-body term-pty-body" tabindex="0"></div>
-      `;
-      grid.appendChild(pane);
-
-      const body = pane.querySelector(".term-body");
-      const t = {
-        jobId: ptyId,
-        pane, body,
-        input: null, sendBtn: null,
-        source: null,            // WebSocket goes in here
-        task: meta?.cwd || "",
-        kind: "terminal",
-        shell: meta?.shell || "auto",
-        attached: { images: [], files: [] },
-      };
-      TERMS.set(ptyId, t);
-
-      if (termGetLayout() === "list") pane.classList.add("collapsed");
-
-      pane.addEventListener("click", () => {
-        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
-        pane.classList.add("focus");
-      });
-      pane.querySelector(".term-head").addEventListener("click", (e) => {
-        if (e.target.closest("button")) return;
-        termToggleCollapsed(t);
-      });
-      // Single expand-btn listener: toggles collapsed AND re-fits xterm
-      // on the next frame. The previous implementation registered TWO
-      // separate click listeners on the same button (one toggling
-      // collapse, another calling requestAnimationFrame(sendResize)),
-      // which fired in sequence on every click — wasteful and made it
-      // hard to reason about the order of operations. Consolidated here.
-      pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        termToggleCollapsed(t);
-        // The xterm body has display:none while collapsed, so its computed
-        // pixel size is 0 → fit() can't run. Re-fit on the next frame so
-        // the cols/rows match the new pane geometry once layout settles.
-        requestAnimationFrame(() => {
-          if (pane.classList.contains("collapsed")) return;
-          try { t._fitAddon && t._fitAddon.fit(); } catch (_) {}
-        });
-      });
-      pane.querySelector(".pin-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        pane.classList.toggle("pinned");
-        const btn = pane.querySelector(".pin-btn");
-        btn.classList.toggle("active", pane.classList.contains("pinned"));
-        btn.textContent = pane.classList.contains("pinned") ? "unpin" : "pin";
-        // Re-fit xterm to the new pane size on the next frame.
-        requestAnimationFrame(() => t._fitAddon && t._fitAddon.fit());
-      });
-      pane.querySelector(".close-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        termClosePty(ptyId);
-      });
-      pane.querySelector(".kill-btn").addEventListener("click", async (e) => {
-        e.stopPropagation();
-        try {
-          await postJson(`/api/ptys/${ptyId}/kill`, {});
-        } catch (err) {
-          setMsg("#term-msg", "err", "Kill failed: " + err.message, TERM_MSG_DURATION_MS);
-        }
-      });
-
-      if (termPtyMissingDeps()) {
-        body.innerHTML = `<div class="msg system" style="color:var(--bad);padding:12px">
-          xterm.js failed to load (CDN blocked?). Reload the page or check your network.
-        </div>`;
+    // Handle one parsed SessionEvent object from the SSE stream.
+    // Reuses the existing chat-pane rendering helpers so session bubbles
+    // look identical to regular chat turns.
+    function termHandleSessionEvent(t, ev) {
+      if (!ev || typeof ev !== "object") return;
+      const kind = ev.kind;
+      if (kind === "state_change") {
+        // Store current backend state and refresh the header chip.
+        // Do NOT render as a bubble — state transitions are metadata,
+        // not conversation content.
+        t.state = ev.state || t.state;
+        t.pending = !!ev.pending;
+        termSessionChipUpdate(t);
         return;
       }
-
-      // ----- xterm.js instance -----
-      const term = new Terminal({
-        cursorBlink: true,
-        fontFamily: "var(--ff-mono), JetBrains Mono, Menlo, Consolas, monospace",
-        fontSize: 13,
-        scrollback: 5000,
-        convertEol: false,
-        // Match the dashboard's dark palette so the terminal doesn't feel pasted-in.
-        theme: {
-          background: "#0b0f14",
-          foreground: "#d8dee9",
-          // Dashboard cyan (--accent ≈ #4fcdcd) so the xterm caret speaks the
-          // same signal color as the rest of the "Targeting HUD" cursor set.
-          cursor: "#4fcdcd",
-          selectionBackground: "#3b4252",
-          black: "#3b4252",
-          red:   "#bf616a",
-          green: "#a3be8c",
-          yellow:"#ebcb8b",
-          blue:  "#81a1c1",
-          magenta:"#b48ead",
-          cyan:  "#88c0d0",
-          white: "#e5e9f0",
-          brightBlack: "#4c566a",
-          brightRed:   "#bf616a",
-          brightGreen: "#a3be8c",
-          brightYellow:"#ebcb8b",
-          brightBlue:  "#81a1c1",
-          brightMagenta:"#b48ead",
-          brightCyan:  "#8fbcbb",
-          brightWhite: "#eceff4",
-        },
-      });
-      const fit = new FitAddon.FitAddon();
-      term.loadAddon(fit);
-      if (typeof WebLinksAddon !== "undefined") {
-        try { term.loadAddon(new WebLinksAddon.WebLinksAddon()); } catch (_) {}
+      if (kind === "warning") {
+        // Surface server-side warnings as inline system notices so the
+        // operator sees them without leaving the pane.
+        const warn = document.createElement("div");
+        warn.className = "msg system";
+        warn.style.color = "var(--warn, #e6a817)";
+        warn.textContent = "[warning] " + (ev.text || "");
+        t.body.appendChild(warn);
+        termAutoScroll(t);
+        return;
       }
-      term.open(body);
-      t._term = term;
-      t._fitAddon = fit;
-      // First fit after the next frame so layout has finished.
-      const initialFit = () => {
-        try { fit.fit(); } catch (_) {}
-      };
-      requestAnimationFrame(initialFit);
-
-      // ----- WebSocket -----
-      // meta?.token is set by /api/ptys (POST) for newly-spawned PTYs.
-      // _PTY_TOKENS is the runtime cache for restoreOpenPanes / reattach
-      // — it survives the page lifetime so refreshing the dashboard keeps
-      // existing PTYs reachable as long as the original spawner is the
-      // same browser tab.
-      const token = (meta && meta.token) || (window._PTY_TOKENS && window._PTY_TOKENS[ptyId]);
-      const ws = new WebSocket(termPtyWsUrl(ptyId, token));
-      ws.binaryType = "arraybuffer";
-      t.source = ws;
-      // ``stream: true`` is critical: bytes from the PTY arrive as
-      // arbitrary chunks and a single multi-byte char (Portuguese accents,
-      // emoji, line-drawing glyphs) may straddle two WebSocket frames.
-      // Without streaming mode the decoder emits a U+FFFD replacement for
-      // the split char on each end, corrupting the output. With stream:
-      // true the incomplete trailing bytes are buffered and joined with
-      // the start of the next chunk.
-      const decoder = new TextDecoder("utf-8", { fatal: false });
-      const statusPill = pane.querySelector(".status-pill");
-
-      ws.onopen = () => {
-        termSetPillState(statusPill, "running", "live");
-        termSetActivity(t, "live", "busy");
-        // Sync the server PTY to our actual rendered geometry.
-        sendResize();
-        // ``initialCommand`` accepts three shapes:
-        //   string     -> sent once, followed by Enter
-        //   array      -> sequence of { text, delay, appendCR? } steps
-        //   {text,...} -> single object treated as a one-step sequence
-        const steps = Array.isArray(initialCommand)
-          ? initialCommand
-          : (initialCommand
-              ? (typeof initialCommand === "string"
-                  ? [{ text: initialCommand }]
-                  : [initialCommand])
-              : []);
-        // Steps go as BINARY frames: text frames are reserved for JSON
-        // control messages (resize, etc.) and would be silently dropped
-        // by the server's parser. \r at the end fires Enter.
-        const enc = new TextEncoder();
-        // Track every queued initial-command timer so termClosePty can
-        // cancel them. Otherwise a recursive runStep tail keeps ws + term
-        // alive until the last delay fires even after the user closed
-        // the pane.
-        t._runStepTimers = t._runStepTimers || [];
-        const runStep = (i) => {
-          if (i >= steps.length) return;
-          if (t._closed) return;
-          const s = steps[i] || {};
-          const text = s.text != null ? String(s.text) : "";
-          const appendCR = s.appendCR !== false;
-          const payload = appendCR ? text + "\r" : text;
-          if (ws.readyState === WebSocket.OPEN && payload) {
-            try { ws.send(enc.encode(payload)); } catch (_) {}
+      if (kind === "message") {
+        const role = ev.role || "system";
+        const text = ev.text || "";
+        if (role === "user") {
+          termRenderUserMessage(t, text);
+        } else if (role === "assistant") {
+          // Partial frames arrive during streaming; accumulate them into
+          // the current assistant block exactly like the chat-pane path.
+          termAppendAssistantText(t, text);
+          if (!ev.partial) {
+            // Turn boundary: next assistant frame starts a fresh block.
+            t.currentAssistant = null;
           }
-          if (i + 1 < steps.length) {
-            const nextDelay = Math.max(0, Number(steps[i + 1].delay) || 0);
-            const tm = setTimeout(() => runStep(i + 1), nextDelay);
-            t._runStepTimers.push(tm);
-          }
-        };
-        if (steps.length) {
-          const firstDelay = Math.max(0, Number(steps[0].delay) || 0);
-          const tm = setTimeout(() => runStep(0), firstDelay);
-          t._runStepTimers.push(tm);
-        }
-        term.focus();
-      };
-
-      ws.onmessage = (ev) => {
-        if (typeof ev.data === "string") {
-          // Control frame from server (JSON).
-          let msg;
-          try { msg = JSON.parse(ev.data); } catch (e) { console.warn("[terminals] PTY control frame JSON parse failed: " + (e && e.message ? e.message : e)); return; }
-          if (msg.type === "exit") {
-            termSetPillState(statusPill, "done", "ended");
-            termSetActivity(t, "ended", "ended");
-            pane.classList.add("dead");
-          }
-          return;
-        }
-        // Binary frame: raw bytes from the PTY master. Pass stream:true
-        // so the decoder buffers a partial trailing multi-byte sequence
-        // until the next chunk completes it.
-        const buf = ev.data instanceof ArrayBuffer ? ev.data : new Uint8Array(ev.data);
-        const text = decoder.decode(buf, { stream: true });
-        if (text) term.write(text);
-      };
-
-      ws.onerror = () => {
-        termSetPillState(statusPill, "warn", "disconnected");
-        termSetActivity(t, "disconnected", "ended");
-      };
-
-      ws.onclose = () => {
-        if (!pane.classList.contains("dead")) {
-          // No state class survived the open->close path — drop into the
-          // neutral "cancelled" colour so it visually matches the "this
-          // shell is gone" semantics.
-          termSetPillState(statusPill, "cancelled", "closed");
-          termSetActivity(t, "closed", "ended");
-          pane.classList.add("dead");
-        }
-      };
-
-      // ----- keystroke pipe (xterm -> ws) -----
-      term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          // Send as binary so the server treats it as raw bytes, not
-          // a JSON control message.
-          ws.send(new TextEncoder().encode(data));
-        }
-      });
-
-      // ----- resize plumbing -----
-      let lastCols = 0, lastRows = 0;
-      const sendResize = () => {
-        try { fit.fit(); } catch (_) {}
-        const cols = term.cols, rows = term.rows;
-        if (!cols || !rows) return;
-        if (cols === lastCols && rows === lastRows) return;
-        lastCols = cols; lastRows = rows;
-        if (ws.readyState === WebSocket.OPEN) {
-          try {
-            ws.send(JSON.stringify({ type: "resize", cols, rows }));
-          } catch (e) { console.warn("[terminals] PTY resize send failed: " + (e && e.message ? e.message : e)); }
-        }
-      };
-      term.onResize(({ cols, rows }) => {
-        if (cols === lastCols && rows === lastRows) return;
-        lastCols = cols; lastRows = rows;
-        if (ws.readyState === WebSocket.OPEN) {
-          try {
-            ws.send(JSON.stringify({ type: "resize", cols, rows }));
-          } catch (e) { console.warn("[terminals] PTY resize send failed: " + (e && e.message ? e.message : e)); }
-        }
-      });
-      // Debounce so a window-drag burst (~60 Hz of resize events) collapses
-      // into a handful of fit.fit() calls instead of one per frame. xterm's
-      // fit() reflows + repaints the cell grid, which is the expensive bit —
-      // the WS resize message itself is already deduped via lastCols/Rows.
-      // 80 ms is short enough that the terminal still feels alive during a
-      // drag (user sees a settle within ~5 frames) and long enough to absorb
-      // typical burst patterns. Uses window.debounce (defined in core.js,
-      // loaded earlier in defer order).
-      const debouncedResize = (typeof window.debounce === "function")
-        ? window.debounce(sendResize, 80)
-        : sendResize;
-      if (typeof ResizeObserver !== "undefined") {
-        const ro = new ResizeObserver(() => debouncedResize());
-        ro.observe(body);
-        t._resizeObserver = ro;
-      } else {
-        // Capture the fallback listener so termClosePty can remove it.
-        // Without this, every closed PTY pane leaks a window-level
-        // resize handler that keeps the term object alive forever.
-        t._resizeFallback = debouncedResize;
-        window.addEventListener("resize", debouncedResize);
-      }
-      // (The expand button's own click listener already re-fits xterm on
-      // the post-expand frame; the ResizeObserver above catches every
-      // other geometry change — no extra listener needed here.)
-
-      termRenderEmptyState();
-      persistOpenPanes();
-    }
-
-    function termClosePty(ptyId) {
-      const t = TERMS.get(ptyId);
-      if (!t) return;
-      t._closed = true;
-      // Cancel any pending initial-command timers so their closures
-      // release ws + term references instead of keeping them alive
-      // until the last delay fires.
-      if (Array.isArray(t._runStepTimers)) {
-        for (const tm of t._runStepTimers) {
-          try { clearTimeout(tm); } catch (_) {}
-        }
-        t._runStepTimers = [];
-      }
-      if (t._costRefreshTimer) { clearTimeout(t._costRefreshTimer); t._costRefreshTimer = null; }
-      if (t._autoFollowScrollHandler && t.body) {
-        try { t.body.removeEventListener("scroll", t._autoFollowScrollHandler); } catch (_) {}
-        t._autoFollowScrollHandler = null;
-      }
-      try { t._resizeObserver && t._resizeObserver.disconnect(); } catch (_) {}
-      // Mirror the ResizeObserver cleanup for the legacy window-resize fallback.
-      if (t._resizeFallback) {
-        try { window.removeEventListener("resize", t._resizeFallback); } catch (_) {}
-        t._resizeFallback = null;
-      }
-      try { t.source && t.source.close(); } catch (_) {}
-      // Fire-and-forget kill on the server side too so we don't leak shells.
-      // Both the synchronous throw (rare) AND the Promise rejection (mid-flight
-      // network drop, 4xx/5xx response) need to be surfaced — otherwise the
-      // operator's "close" appears to succeed locally while the shell keeps
-      // running server-side with no diagnostic trail. The earlier guard only
-      // caught the synchronous arm.
-      try {
-        const _killPromise = fetch(`/api/ptys/${ptyId}/kill`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-        if (_killPromise && typeof _killPromise.catch === "function") {
-          _killPromise.catch((e) => console.warn("[terminals] PTY kill fetch rejected: " + (e && e.message ? e.message : e)));
-        }
-      } catch (e) { console.warn("[terminals] PTY kill fetch failed: " + (e && e.message ? e.message : e)); }
-      try { t._term && t._term.dispose(); } catch (_) {}
-      t.pane.remove();
-      TERMS.delete(ptyId);
-      // Prune the in-memory PTY token so the runtime cache mirrors the
-      // localStorage pruning (persistOpenPanes rebuilds tokens from open
-      // panes only). Otherwise closed-shell secrets linger in
-      // window._PTY_TOKENS for the life of the session.
-      if (window._PTY_TOKENS) delete window._PTY_TOKENS[ptyId];
-      // Same suppression as termClose — a PTY pane the operator closed
-      // should stay closed across reloads, even if the shell is still
-      // running on the server side.
-      suppressAutoOpen(ptyId);
-      termRenderEmptyState();
-      persistOpenPanes();
-    }
-
-    // Bring a freshly-opened pane into the operator's view: expand it
-    // (so the body is visible, not just a status row) AND scroll it into
-    // sight. Used after every USER-INITIATED termOpen() call — picker
-    // "Open", New-terminal first message, fork-and-send, resume-from-
-    // dead-chat, etc. Background auto-open (loadJobs polling, restoring
-    // previous state) deliberately skips this so the operator can scan
-    // a list mode without panes ballooning unsolicited.
-    function termFocusNewPane(jobId) {
-      const t = TERMS.get(jobId);
-      if (!t || !t.pane) return;
-      if (t.pane.classList.contains("collapsed")) {
-        termSetCollapsed(t, false);
-      } else {
-        try { t.pane.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
-      }
-    }
-
-    function termOpen(jobId, meta) {
-      if (TERMS.has(jobId)) return;
-      const grid = $("#terms-grid");
-      const taskPreview = (meta?.task || "").replace(/\s+/g, " ").slice(0, 120);
-      const pane = document.createElement("div");
-      pane.className = "term-pane";
-      pane.dataset.jobId = jobId;
-      pane.innerHTML = `
-        <div class="term-head">
-          <span class="pill running status-pill" title="job ${escape(jobId)}">connecting</span>
-          <span class="task" title="${escape(meta?.task || "")}">${escape(taskPreview || jobId)}</span>
-          <span class="activity" title="current activity in this pane">connecting…</span>
-          <span class="cost-pill" title="aggregated cost / turns / time for this session"></span>
-          <span class="id">${escape(jobId.slice(0, 8))}</span>
-          <span class="actions">
-            <button class="expand-btn" title="Show or hide this terminal's output">expand</button>
-            <button class="stop-btn" title="Interrupt the current generation (keep session alive)">stop</button>
-            <button class="search-btn" title="Search in this pane (Ctrl+F)">find</button>
-            <button class="pin-btn" title="Maximise / restore this pane">pin</button>
-            <button class="export-btn" title="Export as markdown">export</button>
-            <button class="cancel-btn danger" title="Cancel the running subprocess">cancel</button>
-            <button class="close-btn" title="Close this pane">close</button>
-          </span>
-        </div>
-        <div class="term-search">
-          <input type="text" placeholder="search in this pane (Esc to close)" />
-          <span class="matches">0 / 0</span>
-          <button class="search-prev">↑</button>
-          <button class="search-next">↓</button>
-          <button class="search-close">×</button>
-        </div>
-        <div class="term-body" tabindex="0"></div>
-        <div class="attach-tray" style="display:none"></div>
-        <div class="term-foot">
-          <textarea class="stdin-input" rows="1" autocomplete="off" placeholder="type, /skill, @file, paste/drop images, Enter sends · Shift+Enter newline"></textarea>
-          <button class="send-btn">send</button>
-        </div>
-      `;
-      grid.appendChild(pane);
-
-      const body = pane.querySelector(".term-body");
-      const input = pane.querySelector(".stdin-input");
-      const sendBtn = pane.querySelector(".send-btn");
-      // Auto-grow the textarea up to a sensible max so long prompts don't
-      // get clipped to one line but also don't eat the entire pane.
-      const autosize = () => {
-        input.style.height = "auto";
-        const next = Math.min(input.scrollHeight, COMPOSER_AUTOSIZE_MAX_PX);
-        input.style.height = next + "px";
-      };
-      input.addEventListener("input", autosize);
-      const kind = meta?.kind || "orchestrate";
-      // Both Claude and Codex chat panes use the same chat-bubble styling.
-      // Even though codex is one-shot per subprocess, the pane renders
-      // multi-turn conversations via SSE rewiring (see termSendCodexNextTurn).
-      if (kind === "chat" || kind === "chat-codex") body.classList.add("chat");
-      const t = {
-        jobId, pane, body, input, sendBtn,
-        source: null,
-        task: meta?.task || "",
-        kind,
-        jsonBuf: [],
-        currentAssistant: null,   // element for the in-progress assistant message
-        toolUseEls: new Map(),    // tool_use_id -> {pill, detail}
-        attached: { images: [], files: [] },
-        sessionId: meta?.session_id || "",  // enables resume on dead-pane
-        model: meta?.model || "",  // seed from /api/jobs; replaced on first init/assistant frame
-      };
-      TERMS.set(jobId, t);
-
-      // Initial state depends on the operator's chosen layout. List mode
-      // opens collapsed (status-bar reading); grid mode opens expanded
-      // (legacy "see every pane at once" view).
-      if (termGetLayout() === "list") pane.classList.add("collapsed");
-
-      // Composer wiring (only meaningful for chat panes; harmless otherwise).
-      // termScheduleComposerInput debounces + race-protects the
-      // /api/skills + /api/files/list fetches; see its definition.
-      input.addEventListener("input", () => termScheduleComposerInput(t));
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") { termCloseAutocomplete(t); return; }
-        if (t._popOpen && e.key === "Enter") {
-          // Pick the highlighted autocomplete row. The second keydown
-          // listener below also matches Enter and would otherwise send
-          // the message simultaneously — stopImmediatePropagation halts
-          // it so the operator's Enter ONLY picks the suggestion.
-          const first = t.pane.querySelector(".composer-pop-row.active");
-          if (first) {
-            first.dispatchEvent(new MouseEvent("mousedown"));
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            return;
-          }
-        }
-      });
-      input.addEventListener("paste", (e) => {
-        const items = e.clipboardData?.items || [];
-        for (const it of items) {
-          if (it.kind === "file" && it.type.startsWith("image/")) {
-            const f = it.getAsFile();
-            if (f) { termPasteImage(t, f); e.preventDefault(); }
-          }
-        }
-      });
-      pane.addEventListener("dragover", (e) => { e.preventDefault(); pane.classList.add("dragover"); });
-      pane.addEventListener("dragleave", () => pane.classList.remove("dragover"));
-      pane.addEventListener("drop", (e) => {
-        e.preventDefault();
-        pane.classList.remove("dragover");
-        for (const f of e.dataTransfer.files || []) {
-          if (f.type.startsWith("image/")) termPasteImage(t, f);
-        }
-      });
-      termInitAutoFollow(t);
-
-      pane.addEventListener("click", () => {
-        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
-        pane.classList.add("focus");
-      });
-      // Clicking the head row toggles expand/collapse. Buttons inside the
-      // head call stopPropagation so the toggle doesn't fire when the user
-      // is hitting "stop", "close", etc.
-      pane.querySelector(".term-head").addEventListener("click", (e) => {
-        if (e.target.closest("button")) return;
-        termToggleCollapsed(t);
-      });
-      pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        termToggleCollapsed(t);
-      });
-      // IMPORTANT: read ``t.jobId`` lazily (not the closure-captured
-      // ``jobId``). chat-codex panes re-key ``t.jobId`` on every
-      // follow-up turn (see termSendCodexNextTurn) — using the captured
-      // value would post to the FIRST turn's id, which has already
-      // exited, and the buttons would silently 404 from turn 2 onwards.
-      pane.querySelector(".close-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        termClose(t.jobId);
-      });
-      pane.querySelector(".cancel-btn").addEventListener("click", async (e) => {
-        e.stopPropagation();
-        try {
-          await postJson(`/api/jobs/${t.jobId}/cancel`, {});
-        } catch (err) {
-          // Previously this branch silently swallowed errors — the operator
-          // clicked "cancel", nothing happened, no toast, no log. Surface
-          // the failure so they know the cancel did not actually land.
-          setMsg("#term-msg", "err", "Cancel failed: " + err.message, TERM_MSG_DURATION_MS);
-        }
-      });
-      pane.querySelector(".stop-btn")?.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        try {
-          await postJson(`/api/jobs/${t.jobId}/interrupt`, {});
-        } catch (err) {
+        } else {
+          // system / unknown roles get a neutral system note.
           const note = document.createElement("div");
           note.className = "msg system";
-          note.style.color = "var(--bad)";
-          note.textContent = "[stop failed: " + err.message + "]";
+          note.textContent = text;
           t.body.appendChild(note);
-          setMsg("#term-msg", "err", "Stop failed: " + err.message, TERM_MSG_DURATION_MS);
         }
-      });
-      pane.querySelector(".pin-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        pane.classList.toggle("pinned");
-        const btn = pane.querySelector(".pin-btn");
-        btn.classList.toggle("active", pane.classList.contains("pinned"));
-        btn.textContent = pane.classList.contains("pinned") ? "unpin" : "pin";
-      });
-      pane.querySelector(".export-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        termExportMarkdown(t);
-      });
-      pane.querySelector(".search-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        termToggleSearch(t);
-      });
-      // In-pane search wiring. The input handler debounces by 150ms — a
-      // fresh TreeWalker walks the entire body text on every keystroke,
-      // which on large panes (100s of KB of DOM text) is O(n) per stroke
-      // and was visibly janking the input cursor.
-      const searchBar = pane.querySelector(".term-search");
-      const searchInput = searchBar.querySelector("input");
-      let _termSearchDebounce = null;
-      searchInput.addEventListener("input", () => {
-        if (_termSearchDebounce) clearTimeout(_termSearchDebounce);
-        _termSearchDebounce = setTimeout(() => termRunSearch(t), 150);
-      });
-      searchInput.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") { termToggleSearch(t, false); return; }
-        if (e.key === "Enter") { e.preventDefault(); termSearchStep(t, e.shiftKey ? -1 : +1); }
-      });
-      searchBar.querySelector(".search-next").addEventListener("click", () => termSearchStep(t, +1));
-      searchBar.querySelector(".search-prev").addEventListener("click", () => termSearchStep(t, -1));
-      searchBar.querySelector(".search-close").addEventListener("click", () => termToggleSearch(t, false));
-      // Ctrl+F / Cmd+F inside the body opens the search bar.
-      pane.addEventListener("keydown", (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
-          e.preventDefault();
-          termToggleSearch(t, true);
-        }
-      });
-      sendBtn.addEventListener("click", () => termSend(t));
-      input.addEventListener("keydown", (e) => {
-        // !e.isComposing prevents Enter from sending mid-IME-composition
-        // text (Japanese/Chinese/Korean input) — matches the transcript
-        // composer's existing guard.
-        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); termSend(t); }
-      });
-
-      // Wire SSE
-      const es = new EventSource(`/api/jobs/${jobId}/stream`);
-      t.source = es;
-      const statusPill = pane.querySelector(".status-pill");
-      // Heartbeat tracking: some browsers (Firefox notably) keep
-      // EventSource.readyState at 0 (CONNECTING) forever when the server
-      // half-closes the socket, so the ``readyState !== CLOSED`` guard in
-      // onerror never trips and the pane stays "live" indefinitely. We
-      // stamp ``_lastSSEEvent`` on every onmessage and run a 15s watchdog;
-      // if no event has arrived in 60s we force the close path ourselves.
-      t._lastSSEEvent = Date.now();
-      const SSE_STALE_MS = 60_000;
-      // Expose a restarter the visibilitychange handler in jobs.js can
-      // call after a pause-on-hidden. Closes over `t`, `es`, `statusPill`
-      // so the resumed timer reuses the same SSE + DOM refs.
-      // Don't kill the pane while the tab is in the background — the
-      // browser throttles SSE in hidden tabs (Chrome especially) which
-      // makes `_lastSSEEvent` look stale even when the server is fine.
-      // Resume the staleness check on visibility restore. Without this,
-      // returning to the dashboard after >60s showed every pane as
-      // "ended/disconnected" until manually reopened.
-      const heartbeatTick = () => {
-        if (!t.pane || !t.pane.isConnected) return;
-        if (t.pane.classList.contains("dead")) return;
-        if (typeof document !== "undefined" && document.hidden) return;
-        if (Date.now() - (t._lastSSEEvent || 0) < SSE_STALE_MS) return;
-        // Stale connection — surface the disconnect and walk the standard
-        // close path so the pane is consistent with a normal "ended" state.
-        try { es.close(); } catch (_) {}
-        termSetPillState(statusPill, "warn", "disconnected");
-        termSetActivity(t, "disconnected", "ended");
-        if (t.kind === "chat-codex") {
-          termCodexAwaitNextTurn(t);
-        } else {
-          termSetDead(t, "ended");
-        }
-        clearInterval(t._sseHeartbeat);
-        t._sseHeartbeat = null;
-      };
-      t._restartSseHeartbeat = () => {
-        if (t._sseHeartbeat) return;
-        t._sseHeartbeat = setInterval(heartbeatTick, 15_000);
-      };
-      t._restartSseHeartbeat();
-      es.onopen = () => {
-        t._lastSSEEvent = Date.now();
-        termSetPillState(statusPill, "running", "live");
-        termSetActivity(t, "live", "busy");
-      };
-      // Each chat tool has its own structured event stream:
-      //   * Claude — Anthropic stream-json (system/assistant/user/result/stream_event)
-      //   * Codex  — Rust CLI rollout events (session_meta/response_item/event_msg)
-      // Non-chat kinds (orchestrate / plan) dump plain text.
-      //
-      // IMPORTANT: do NOT append "\n" here. The server's pump reads stdout
-      // in 1024-byte chunks, so a single long JSON record (e.g. the 8KB
-      // SessionStart hook context) gets split across multiple SSE events.
-      // ``ev.data`` already preserves the original chunk's newline boundaries
-      // (an internal trailing newline becomes a final empty data: line);
-      // forcing an extra "\n" would prematurely terminate a partial line and
-      // hand a corrupt half-record to JSON.parse, which then falls through to
-      // termRenderRaw and dumps it as a raw "msg system" block.
-      es.onmessage = (ev) => {
-        // Refresh the heartbeat timestamp on every event — used by the
-        // stale-connection watchdog above to detect Firefox-style
-        // half-open EventSources that never trip onerror.
-        t._lastSSEEvent = Date.now();
-        if (t.kind === "chat") termHandleChatChunk(t, ev.data);
-        else if (t.kind === "chat-codex") termHandleCodexChunk(t, ev.data);
-        else termAppendChunk(t, ev.data);
-      };
-      es.addEventListener("end", () => {
-        try { es.close(); } catch (_) {}
-        if (t._sseHeartbeat) { clearInterval(t._sseHeartbeat); t._sseHeartbeat = null; }
-        if (t.kind === "chat-codex") {
-          // Codex job exited after one turn. Don't mark the pane dead —
-          // it's our multi-turn vehicle. The next send will spawn a
-          // resume job and rewire SSE in-place.
-          termCodexAwaitNextTurn(t);
-        } else {
-          termSetDead(t, "done");
-        }
-        // Fire-and-forget: a rejection here (e.g. server restarted while the
-        // stream was ending) would otherwise become an unhandled rejection.
-        Promise.resolve(loadJobs()).catch((e) => console.warn("[terminals] loadJobs after SSE end failed: " + (e && e.message ? e.message : e)));
-      });
-      es.onerror = () => {
-        // EventSource fires onerror on any disconnect — including transient
-        // network blips, server restarts, and proxies idling the connection.
-        // The browser will automatically reconnect when readyState ===
-        // CONNECTING. Closing the stream here (or marking the pane dead)
-        // converts a recoverable hiccup into a permanent failure, so we
-        // only react when readyState === CLOSED (the browser has given up)
-        // or when the `end` event has already declared the run finished.
-        if (t.pane.classList.contains("dead")) return;
-        if (es.readyState !== EventSource.CLOSED) return;
-        if (t.kind === "chat-codex") {
-          termCodexAwaitNextTurn(t);
-        } else {
-          termSetDead(t, "ended");
-        }
-      };
-      // Initial cost fetch (also handles resumed sessions that already
-      // have prior turns accumulated on disk).
-      termRefreshCost(t);
-
-      // Codex panes start a turn the moment the subprocess spawns (via
-      // initial_stdin on the server). Lock the composer until SSE 'end'
-      // fires and termCodexAwaitNextTurn captures session_id, so the
-      // operator can't try to send a follow-up before the resume target
-      // is known.
-      if (kind === "chat-codex") termCodexBeginTurn(t);
-
-      termRenderEmptyState();
-      persistOpenPanes();
-    }
-
-    // ----- IDE transcript mirror panes -----
-    // (the standalone transcript picker was merged into the unified
-    // #term-picker; ``termRefreshTranscriptPicker`` lives near the top
-    // of this file and just forwards to ``termRefreshPicker``.)
-
-    function termOpenTranscript(sessionId) {
-      const paneKey = "ide:" + sessionId;
-      if (TERMS.has(paneKey)) return;
-      const grid = $("#terms-grid");
-      const pane = document.createElement("div");
-      pane.className = "term-pane focus";
-      pane.dataset.jobId = paneKey;
-      pane.innerHTML = `
-        <div class="term-head">
-          <span class="pill claude status-pill">IDE mirror</span>
-          <span class="task" title="mirror of Claude Code session ${escape(sessionId)}">IDE chat ${escape(sessionId.slice(0, 8))}…</span>
-          <span class="activity" title="current activity in this pane">mirroring…</span>
-          <span class="id">${escape(sessionId.slice(0, 8))}</span>
-          <span class="actions">
-            <button class="expand-btn" title="Show or hide this terminal's output">expand</button>
-            <button class="close-btn" title="Close this pane">close</button>
-          </span>
-        </div>
-        <div class="term-body chat" tabindex="0"></div>
-        <div class="term-foot">
-          <textarea class="stdin-input" rows="1" placeholder="type to fork this IDE session — Enter forks &amp; sends · Shift+Enter newline"></textarea>
-          <button class="send-btn">fork &amp; send</button>
-        </div>
-      `;
-      grid.appendChild(pane);
-      const body = pane.querySelector(".term-body");
-      const t = {
-        jobId: paneKey,
-        pane, body,
-        input: pane.querySelector(".stdin-input"),
-        sendBtn: pane.querySelector(".send-btn"),
-        source: null,
-        task: "IDE session " + sessionId,
-        kind: "transcript",
-        jsonBuf: [],
-        currentAssistant: null,
-        toolUseEls: new Map(),
-      };
-      TERMS.set(paneKey, t);
-      // IDE mirror panes ALWAYS start collapsed regardless of layout.
-      // They're passive observers — until the mirrored session emits
-      // anything worth seeing, the body is empty and would otherwise
-      // show as a huge dark rectangle in split/grid mode (the original
-      // bug). Activity events still pulse the head row via has-update
-      // so the operator notices when there's new IDE traffic and can
-      // click to expand.
-      pane.classList.add("collapsed");
-      termInitAutoFollow(t);
-      pane.querySelector(".close-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        termClose(paneKey);
-      });
-      pane.querySelector(".expand-btn")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        termToggleCollapsed(t);
-      });
-      pane.querySelector(".term-head").addEventListener("click", (e) => {
-        if (e.target.closest("button")) return;
-        termToggleCollapsed(t);
-      });
-      pane.addEventListener("click", () => {
-        document.querySelectorAll(".term-pane.focus").forEach((p) => p.classList.remove("focus"));
-        pane.classList.add("focus");
-      });
-
-      // First send forks the IDE session into a writable dashboard chat
-      // (claude --resume <sid>). The mirror pane is KEPT OPEN alongside
-      // the fork so the operator can compare the original IDE branch
-      // (still owned by the IDE writer) to the new dashboard branch
-      // side-by-side. Mirror's composer is disabled after the first fork
-      // — additional forks should come from the IDE-side itself.
-      // The `forking` flag + immediate UI lock below prevents a double
-      // POST when the operator hits Enter twice while the cold-start
-      // `claude --resume` is still spawning (which would otherwise create
-      // two parallel forks responding to the same prompt).
-      let forking = false;
-      const forkAndSend = async () => {
-        if (forking) return;
-        const text = t.input.value.trim();
-        if (!text) return;
-        forking = true;
-        // Lock the composer + clear the text BEFORE the await so the
-        // operator gets instant feedback and a second Enter is a no-op.
-        t.input.value = "";
-        t.input.disabled = true;
-        t.sendBtn.disabled = true;
-        t.sendBtn.textContent = "forking…";
-        try {
-          const res = await postJson("/api/jobs", {
-            kind: "chat",
-            task: text,
-            resume_session_id: sessionId,
-          });
-          // Banner inside the mirror documenting what just happened.
-          const banner = document.createElement("div");
-          banner.className = "msg system";
-          banner.style.color = "var(--warn)";
-          banner.textContent = `[forked into dashboard chat ${res.id.slice(0,8)} — new pane opened to the right]`;
-          t.body.appendChild(banner);
-          // Mirror's composer stays locked; this branch is now history.
-          t.input.placeholder = "mirror pane is read-only — continue in the fork pane";
-          t.sendBtn.textContent = "forked";
-          // Route through termSetPillState so the pill ends up with EXACTLY
-          // the warn class (and "forked" text), with every prior state
-          // (running/done/bad/queued/cancelling/cancelled) stripped.
-          // Direct ``classList.add("warn")`` previously left those stacked
-          // and the CSS cascade could resolve to the wrong colour.
-          termSetPillState(t.pane.querySelector(".status-pill"), "warn", "forked");
-          // Open the writable chat pane next to this one AND expand +
-          // scroll it into view so the operator sees their fork land
-          // (otherwise list-mode tucks it away as a collapsed row at the
-          // bottom of the grid and the mirror banner is the only feedback,
-          // which makes the whole flow feel like nothing happened).
-          termOpen(res.id, res);
-          termFocusNewPane(res.id);
-          await loadJobs();
-        } catch (e) {
-          const err = document.createElement("div");
-          err.className = "msg system";
-          err.style.color = "var(--bad)";
-          err.textContent = `[fork failed: ${e.message}]`;
-          t.body.appendChild(err);
-          setMsg("#term-msg", "err", "Fork failed: " + e.message, TERM_MSG_DURATION_MS);
-          // Restore the composer so the operator can retry.
-          t.input.value = text;
-          t.input.disabled = false;
-          t.sendBtn.disabled = false;
-          t.sendBtn.textContent = "fork & send";
-          forking = false;
-        }
-      };
-      t.sendBtn.addEventListener("click", forkAndSend);
-      t.input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-          e.preventDefault();
-          forkAndSend();
-        }
-      });
-      // Auto-grow the fork prompt up to a sensible cap so multi-line
-      // prompts (which the placeholder advertises via Shift+Enter) don't
-      // get clipped to one row. Previously this textarea was the ONLY
-      // composer in the file without autosize wiring — typing more than
-      // one line meant the operator couldn't see what they were writing.
-      const transcriptAutosize = () => {
-        t.input.style.height = "auto";
-        t.input.style.height = Math.min(t.input.scrollHeight, COMPOSER_AUTOSIZE_MAX_PX) + "px";
-      };
-      t.input.addEventListener("input", transcriptAutosize);
-
-      const statusPill = pane.querySelector(".status-pill");
-      // Stream is lazy: only attach the EventSource while the pane is
-      // expanded. Browsers cap HTTP/1.1 connections per origin at ~6, so
-      // 6 restored transcript panes auto-streaming at once would starve
-      // every other AJAX request (jobs polling, sessions, etc.) and make
-      // the dashboard appear stuck. Collapsed panes are passive observers
-      // — there's nothing to render — so they don't need to hold a slot.
-      // termSetCollapsed wires expand -> openStream / collapse -> close.
-      t.openStream = () => {
-        if (t.source) return;
-        const es = new EventSource(`/api/transcripts/${sessionId}/stream`);
-        t.source = es;
-        es.onopen = () => {
-          // ``IDE live`` keeps the "claude" tool-identity class for colour
-          // while running. We don't add a state class here — running is the
-          // implicit default for an active mirror.
-          statusPill.textContent = "IDE live";
-          termSetActivity(t, "mirroring…", "busy");
-        };
-        es.onmessage = (ev) => termHandleTranscriptChunk(t, ev.data + "\n");
-        es.addEventListener("end", () => {
-          termSetPillState(statusPill, "done", "IDE ended");
-          termSetActivity(t, "ended", "ready");
-          try { es.close(); } catch (_) {}
-          t.source = null;
-        });
-        es.onerror = () => {
-          // Same rationale as the chat-pane onerror: don't paint the pane
-          // as "disconnected" while the browser is still trying to reconnect
-          // (readyState === CONNECTING). Only flip the status when the
-          // browser has given up (CLOSED). Otherwise a momentary network
-          // glitch turns a perfectly healthy mirror pane red until F5.
-          if (t.pane.classList.contains("dead")) return;
-          if (es.readyState !== EventSource.CLOSED) return;
-          termSetPillState(statusPill, "warn", "disconnected");
-          termSetActivity(t, "disconnected", "ended");
-        };
-      };
-      t.closeStream = () => {
-        if (!t.source) return;
-        try { t.source.close(); } catch (_) {}
-        t.source = null;
-        statusPill.textContent = "IDE paused";
-        // Reuse the enriched paused-state text the hydrator built (size
-        // + relative mtime) so collapsing a pane lands back on the same
-        // informative row it had before expand, instead of regressing
-        // to the bare "expand to resume" hint.
-        termSetActivity(t, t._pausedActivity || "paused (expand to resume)", "ready");
-      };
-      // Transcript panes always start collapsed (see the classList.add
-      // above), so we deliberately do NOT openStream here — the lazy
-      // path keeps the browser's connection budget free for AJAX until
-      // the operator actually expands the pane. Render the same idle
-      // state closeStream() uses so a never-opened pane and a
-      // collapsed-after-open pane are visually indistinguishable,
-      // instead of leaving the stale "mirroring…" template text.
-      statusPill.textContent = "IDE paused";
-      termSetActivity(t, "paused (expand to resume)", "ready");
-
-      // Hydrate the pane header from /api/transcripts without opening
-      // the SSE stream. The shared helper applies title (ai-title
-      // preferred → first-user-message fallback), tooltip, last-
-      // modified time and size — same code path the 5s poller uses so
-      // initial render and subsequent refreshes stay consistent.
-      fetchTranscriptsListCached().then((data) => {
-        const entry = (data.transcripts || []).find((e) => e.session_id === sessionId);
-        if (entry) applyTranscriptStatus(t, entry, sessionId);
-      }).catch(() => { /* label stays as the SID placeholder */ });
-
-      // Make sure the periodic status poll is running — restores the
-      // "live status bar while collapsed" feel without keeping a per-
-      // pane EventSource open. Idempotent; safe to call on every open.
-      ensureTranscriptStatusPoll();
-
-      termRenderEmptyState();
-      termRefreshTranscriptPicker();
-      persistOpenPanes();
-    }
-
-    function termHandleTranscriptChunk(t, chunk) {
-      // Same array buffer pattern as the codex/chat handlers — push the
-      // delta and process completed lines in one pass instead of repeatedly
-      // concatenating + slicing the buffer string per newline.
-      if (!Array.isArray(t.jsonBuf)) t.jsonBuf = t.jsonBuf ? [t.jsonBuf] : [];
-      t.jsonBuf.push(chunk);
-      const joined = t.jsonBuf.join("");
-      const lastNl = joined.lastIndexOf("\n");
-      if (lastNl === -1) { termAutoScroll(t); return; }
-      const complete = joined.slice(0, lastNl);
-      const remnant = joined.slice(lastNl + 1);
-      t.jsonBuf = remnant ? [remnant] : [];
-      for (const line of complete.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        let obj;
-        try { obj = JSON.parse(trimmed); } catch (_) { continue; }
-        termRenderTranscriptRecord(t, obj);
+        termAutoScroll(t);
+        return;
       }
-      termAutoScroll(t);
+      if (kind === "thinking") {
+        // Chain-of-thought: render as a collapsed <details> inside the
+        // assistant bubble (same shape as the live stream-json path) so long
+        // internal monologues stay inspectable without drowning the answer.
+        const text = ev.text || "";
+        if (text.trim()) {
+          const block = termAssistantBlock(t);
+          const t2 = block.querySelector(".text");
+          const det = document.createElement("details");
+          det.className = "thinking-block";
+          const sum = document.createElement("summary");
+          sum.textContent = `thinking · ${text.length} chars`;
+          const pre = document.createElement("pre");
+          pre.textContent = text;
+          det.appendChild(sum);
+          det.appendChild(pre);
+          t2.appendChild(det);
+          termCloseTextSegment(t2);
+        }
+        termAutoScroll(t);
+        return;
+      }
+      if (kind === "tool_use") {
+        // Render a collapsible tool pill via the shared helper.
+        // ev.id / ev.name / ev.input mirror the transcript record shape.
+        termAddToolPill(t, ev.id || "", ev.name || "tool", ev.input || {});
+        termAutoScroll(t);
+        return;
+      }
+      if (kind === "tool_result") {
+        // Mark the matching pill done/error.
+        termMarkToolResult(t, ev.tool_use_id || ev.id || "", !!ev.is_error, ev.content || ev.output || "");
+        termAutoScroll(t);
+        return;
+      }
+      if (kind === "system") {
+        const note = document.createElement("div");
+        note.className = "msg system";
+        note.textContent = ev.text || "";
+        t.body.appendChild(note);
+        termAutoScroll(t);
+        return;
+      }
+      // Unknown event kinds: silently ignore to stay forward-compatible.
+    }
+
+    // Stable per-tab id sent as the `owner` of session turns so the backend
+    // registry can tell turns from different browser tabs apart. sessionStorage
+    // is per-tab and survives reloads, which is exactly the lifetime we want.
+    // Memoized so every send in this tab reuses the same id.
+    function termClientId() {
+      if (termClientId._id) return termClientId._id;
+      let id = null;
+      try { id = sessionStorage.getItem("dash.sessionOwnerId"); } catch (_) {}
+      if (!id) {
+        id = (window.crypto && crypto.randomUUID)
+          ? crypto.randomUUID()
+          // Fallback for very old browsers without crypto.randomUUID. This is
+          // only a tab discriminator, not a security token, so Math.random is
+          // fine here.
+          : ("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+              const r = Math.random() * 16 | 0;
+              const v = c === "x" ? r : (r & 0x3 | 0x8);
+              return v.toString(16);
+            }));
+        try { sessionStorage.setItem("dash.sessionOwnerId", id); } catch (_) {}
+      }
+      termClientId._id = id;
+      return id;
     }
 
     // Strip IDE/system wrapper blocks from a user message. If nothing
@@ -3872,77 +2875,6 @@
       }
       s = s.trim();
       return s || null;
-    }
-
-    function termRenderTranscriptRecord(t, obj) {
-      // Claude Code JSONL records have shapes like:
-      //   {type:"user",      message:{role:"user", content:"..." | [...]}}
-      //   {type:"assistant", message:{role:"assistant", content:[{type:"text",text}, {type:"tool_use",...}]}}
-      //   {type:"tool_use_result", ...}
-      //   {type:"attachment", ... }   // hooks/observations
-      //   {type:"last-prompt", lastPrompt:"..."}
-      //   {type:"ai-title", aiTitle:"..."}
-      // We map them to the same UI primitives as the chat panes.
-      const type = obj.type;
-      // Mirror the chat-mode behaviour: capture the model id so subsequent
-      // assistant blocks render with the real model name in the role chip.
-      const declaredModel = obj.model || (obj.message && obj.message.model);
-      if (declaredModel) termSetPaneModel(t, declaredModel);
-      if (type === "user" && obj.message) {
-        const content = obj.message.content;
-        if (typeof content === "string") {
-          const cleaned = termCleanUserPrompt(content);
-          if (cleaned) termRenderUserMessage(t, cleaned);
-        } else if (Array.isArray(content)) {
-          // Could be tool_result blocks too.
-          for (const blk of content) {
-            if (blk.type === "tool_result") {
-              termMarkToolResult(t, blk.tool_use_id, !!blk.is_error, blk.content);
-            } else if (blk.type === "text" && typeof blk.text === "string") {
-              const cleaned = termCleanUserPrompt(blk.text);
-              if (cleaned) termRenderUserMessage(t, cleaned);
-            }
-          }
-        }
-        return;
-      }
-      if (type === "assistant" && obj.message && Array.isArray(obj.message.content)) {
-        let hadText = false;
-        for (const blk of obj.message.content) {
-          if (blk.type === "text" && typeof blk.text === "string") {
-            // Each transcript "assistant" entry is a discrete message - start fresh.
-            t.currentAssistant = null;
-            termAppendAssistantText(t, blk.text);
-            hadText = true;
-          } else if (blk.type === "tool_use") {
-            termAddToolPill(t, blk.id, blk.name, blk.input);
-          }
-        }
-        // Transcripts have no `result` frame to close a turn — a complete
-        // assistant text record IS the turn boundary. Mark the pane
-        // waiting so the chip doesn't get stuck at "responding…" forever
-        // on an idle IDE session. Tool-only records stay busy because
-        // the matching tool_result usually closes the activity shortly.
-        if (hadText) termSetActivity(t, "waiting", "waiting");
-        return;
-      }
-      if (type === "tool_use_result" || type === "tool_result") {
-        const id = obj.tool_use_id || obj.id;
-        if (id) termMarkToolResult(t, id, !!obj.is_error, obj.content ?? obj.output ?? "");
-        return;
-      }
-      if (type === "last-prompt") {
-        // Meta event — duplicates the corresponding `type:"user"` record.
-        // Skip to avoid showing the user's message twice.
-        return;
-      }
-      if (type === "ai-title" && typeof obj.aiTitle === "string") {
-        // Surface the session title once at the top.
-        const head = t.pane.querySelector(".term-head .task");
-        if (head) head.textContent = obj.aiTitle;
-        return;
-      }
-      // Attachments and other meta frames: ignore quietly.
     }
 
     // Suppression set for auto-open. Two semantics in one bag:
@@ -4007,68 +2939,17 @@
       if (!id) return;
       if (AUTO_OPENED_ONCE.delete(id)) persistSuppressAutoOpen();
     }
-    // User preference: if disabled, auto-open does nothing.
-    function termAutoOpenEnabled() {
-      return localStorage.getItem("dash.autoOpenChats") !== "0";
-    }
-    function termSetAutoOpen(enabled) {
-      localStorage.setItem("dash.autoOpenChats", enabled ? "1" : "0");
-      const btn = $("#term-autoopen-toggle");
-      if (!btn) return;
-      btn.classList.toggle("active", !!enabled);
-      btn.setAttribute("aria-pressed", enabled ? "true" : "false");
-      btn.setAttribute(
-        "title",
-        enabled
-          ? "Auto-open new chats: ON (click to disable)"
-          : "Auto-open new chats: OFF (click to enable)",
-      );
-    }
-    function termAutoOpenActive(jobs) {
-      if (!termAutoOpenEnabled()) return;
-      // Only auto-open when the operator is actually on the Terminals view,
-      // so we don't yank focus while they're reading Memory or Decisions.
-      if (!$("#view-terminals").classList.contains("active")) return;
-      for (const j of (jobs || [])) {
-        if (j.kind !== "chat" && j.kind !== "chat-codex") continue;
-        if (j.status !== "running" && j.status !== "queued") continue;
-        if (TERMS.has(j.id)) continue;
-        if (AUTO_OPENED_ONCE.has(j.id)) continue;
-        suppressAutoOpen(j.id);
-        termOpen(j.id, j);
-      }
-      // Also mirror live IDE Claude Code sessions running outside the
-      // dashboard (any transcript file written-to in the last 5 minutes).
-      termAutoOpenActiveTranscripts();
-    }
+    // Auto-open is GONE. The dashboard never pushes panes onto the canvas by
+    // itself — not dashboard chat jobs, not external IDE transcripts. The
+    // Terminals tab is a manual launcher + status list: the operator launches
+    // what they want and opens each row on the canvas with the ⊞ control. The
+    // suppressAutoOpen bookkeeping above is retained only so the launch paths
+    // can mark freshly-minted ids without re-introducing any auto-open.
 
-    // IDE transcript files touched within this window count as "live".
-    // Claude Code writes to the JSONL on every user/assistant turn, so a
-    // few minutes of silence is a safe "abandoned" threshold.
+    // IDE transcript files touched within this window count as "live" for the
+    // explicit "open all running" button below. (Auto-open no longer uses this —
+    // the poll-driven transcript mirror was removed; see termAutoOpenActive.)
     var TRANSCRIPT_ACTIVE_WINDOW_MS = 5 * 60 * 1000;
-    async function termAutoOpenActiveTranscripts() {
-      if (!termAutoOpenEnabled()) return;
-      if (!$("#view-terminals").classList.contains("active")) return;
-      try {
-        const r = await fetch("/api/transcripts", { cache: "no-store" });
-        if (!r.ok) return;
-        const data = await r.json();
-        const now = Date.now();
-        for (const t of (data.transcripts || [])) {
-          const sid = t.session_id;
-          if (!sid) continue;
-          const key = "ide:" + sid;
-          if (TERMS.has(key)) continue;
-          if (AUTO_OPENED_ONCE.has(key)) continue;
-          const mtime = t.modified ? Date.parse(t.modified) : 0;
-          if (!Number.isFinite(mtime) || mtime <= 0) continue;
-          if ((now - mtime) > TRANSCRIPT_ACTIVE_WINDOW_MS) continue;
-          suppressAutoOpen(key);
-          termOpenTranscript(sid);
-        }
-      } catch (_) { /* ignore - we'll retry next poll */ }
-    }
-
     async function termOpenAllRunning() {
       // Combines two sources of "active chat":
       //   1. Dashboard chat jobs (running / queued / cancelling).
@@ -4086,9 +2967,12 @@
             ["running", "queued", "cancelling"].includes(j.status)
           );
           for (const j of candidates) {
-            if (TERMS.has(j.id)) { already++; continue; }
-            termOpen(j.id, j);
+            const target = termJobCanvasTarget(j.id, j);
+            if (TERMS.has(j.id) || TERMS.has(target.key) || _CANVAS_ON_KEYS.has(target.key)) { already++; continue; }
+            termSendToCanvas(_statusRowTerm(target.kind, target.key));
             suppressAutoOpen(j.id);
+            if (target.key !== j.id) suppressAutoOpen(target.key);
+            if (j.kind === "chat" && j.session_id) suppressAutoOpen("ide:" + j.session_id);
             opened++;
           }
         }
@@ -4105,13 +2989,17 @@
           for (const t of tx) {
             const sid = t.session_id;
             if (!sid) continue;
-            const key = "ide:" + sid;
+            // Claude transcripts open as session panes; key dedup + suppress
+            // on the real pane key ("session:"+sid) and honour any legacy
+            // "ide:"+sid bookkeeping so we never double-open.
+            const sessionKey = "session:" + sid;
+            const ideKey = "ide:" + sid;
             const mtime = t.modified ? Date.parse(t.modified) : 0;
             if (!Number.isFinite(mtime) || mtime <= 0) continue;
             if ((now - mtime) > TRANSCRIPT_ACTIVE_WINDOW_MS) continue;
-            if (TERMS.has(key)) { already++; continue; }
-            suppressAutoOpen(key);
-            termOpenTranscript(sid);
+            if (TERMS.has(sessionKey) || TERMS.has(ideKey) || _CANVAS_ON_KEYS.has(sessionKey)) { already++; continue; }
+            suppressAutoOpen(sessionKey);
+            termRouteSessionToCanvas(sid);
             opened++;
           }
         }
@@ -4140,9 +3028,11 @@
 
     function termPaneIsFinished(t) {
       if (!t || !t.pane) return false;
-      // Drafts and transcripts have no "finished" state by design.
+      // Drafts have no "finished" state by design. Session panes keep an
+      // always-on composer (the operator can resume an "ended" session at
+      // any time), so the sweep leaves them alone too.
       if (t.isDraft) return false;
-      if (t.kind === "transcript") return false;
+      if (t.kind === "session") return false;
       // Gold-standard signal: chat SSE ended / PTY exited explicitly
       // dropped the pane into dead state.
       if (t.pane.classList.contains("dead")) return true;
@@ -4183,58 +3073,32 @@
     }
 
     document.addEventListener("DOMContentLoaded", () => {
-      $("#term-open")?.addEventListener("click", async () => {
-        const raw = $("#term-picker").value;
-        if (!raw) return;
-        const sep = raw.indexOf(":");
-        const source = raw.slice(0, sep);
-        const id = raw.slice(sep + 1);
-        // Picker click = "I explicitly want this pane". Lift any prior
-        // suppression so the pane behaves like a fresh open: re-closes
-        // re-suppress, auto-open paths take the id back into account.
-        if (source === "ide") {
-          unsuppressAutoOpen("ide:" + id);
-          termOpenTranscript(id);
-          termFocusNewPane("ide:" + id);
-          return;
-        }
-        // Default: dashboard-spawned job.
-        try {
-          unsuppressAutoOpen(id);
-          const r = await fetch("/api/jobs", { cache: "no-store" });
-          const data = await r.json();
-          const meta = (data.jobs || []).find((j) => j.id === id);
-          termOpen(id, meta || { task: "" });
-          termFocusNewPane(id);
-          await loadJobs();
-        } catch (e) {
-          setMsg("#term-msg", "err", e.message, TERM_MSG_DURATION_MS);
-        }
-      });
+      // The Terminals tab is now a launcher + status list. "New terminal" opens
+      // the launcher; the old "open a pane" picker and the inline-pane controls
+      // (open-all / collapse-all / auto-open / close-all) were removed when
+      // panes moved entirely into the canvas window.
+      // Launcher controls now live in the toolbar; "New terminal" launches the
+      // configured resource into the status list (open it on the canvas later).
+      wireLauncherToolbar();
       $("#term-new")?.addEventListener("click", termOpenDraft);
-      $("#term-open-all")?.addEventListener("click", termOpenAllRunning);
-      // Restore the auto-open preference and wire its toggle.
-      termSetAutoOpen(termAutoOpenEnabled());
-      $("#term-autoopen-toggle")?.addEventListener("click", () => {
-        termSetAutoOpen(!termAutoOpenEnabled());
-      });
-      $("#term-close-all")?.addEventListener("click", termCloseAllFinished);
-      $("#term-collapse-all")?.addEventListener("click", termCollapseAll);
-      // Apply the persisted layout to the grid container, then wire the
-      // icon button group — each button carries its target layout in
-      // data-layout and we delegate via the group's click event.
-      termApplyLayout(termGetLayout());
-      document.querySelector(".term-layout-group")?.addEventListener("click", (e) => {
-        const btn = e.target.closest(".layout-btn");
-        if (!btn || !btn.dataset.layout) return;
-        termSetLayout(btn.dataset.layout);
-      });
-      // Initial picker fill (single unified source).
+      // Render the status rows from the current job/session state.
+      termRenderStatusList();
+      // Initial status-list fill (single unified source).
       termRefreshTranscriptPicker();
       // Restore panes that were open at the last unload. Fires once on
       // boot; rebuilds chat / PTY / IDE-transcript panes from
       // localStorage by re-fetching their server-side state. Drafts and
       // dispatch trackers are intentionally NOT restored.
       restoreOpenPanes();
+
+      // Wire the dashboard-side CanvasBus client once. On load: clear any
+      // ghost badges if the canvas window's heartbeat is stale, then say
+      // `hello` so an already-open canvas re-announces its `ready` open set
+      // (which repaints badges for panes mirrored there).
+      var bus = canvasEnsureBus();
+      if (bus) {
+        canvasClearStaleBadges();
+        bus.post({ type: "hello" });
+      }
     });
 

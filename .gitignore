@@ -12,12 +12,13 @@ __pycache__/
 # pytest.ini is a local-only test config for this template repo
 # (target projects ship their own).
 pytest.ini
-
 # Inside tests/: track only files whose name starts with "test_".
 tests/*
 !tests/test_*
 !tests/conftest.py
 !tests/_diff_render_runner.js
+!tests/_split_tree_runner.js
+!tests/_canvas_bus_runner.js
 
 # ─────────────────────────────────────────────────────────────
 # AI workflow — generated content
@@ -46,12 +47,23 @@ tests/*
 .ai/pipelines/*
 !.ai/pipelines/.gitkeep
 
+# Eval harness run outputs: arm-*.jsonl and archived runs are regenerated per
+# run (machine-specific timings, transient). The curated record lives in
+# .ai/eval/ABLATION.md; .gitkeep preserves results/ and results/proposals/.
+.ai/eval/results/*
+!.ai/eval/results/.gitkeep
+!.ai/eval/results/proposals/
+.ai/eval/results/proposals/*
+!.ai/eval/results/proposals/.gitkeep
+
 # ─────────────────────────────────────────────────────────────
 # AI workflow — local / per-developer files
 # ─────────────────────────────────────────────────────────────
 .ai/local/
 .ai/dashboard/.server-*.log
 .ai/dashboard/.server-*.err
+# Per-session runtime lock files written by the dashboard session engine.
+.ai/dashboard/sessions/
 
 # ─────────────────────────────────────────────────────────────
 # Local-only repo extras (not shipped via install.sh, not pushed)
@@ -69,3 +81,11 @@ tests/*
 .github/assets/*
 !.github/assets/diagrams/
 !.github/assets/diagrams/**
+!.github/assets/screenshots/
+!.github/assets/screenshots/**
+
+.ai/qa-screens/
+.superpowers/
+.ai/reviews/
+# git worktrees (isolated workspaces)
+.worktrees/

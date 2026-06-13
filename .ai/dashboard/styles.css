@@ -1181,6 +1181,43 @@
       flex: 1 1 280px;
       max-width: 480px;
     }
+    /* Launcher controls live in the toolbar now: pick what to launch, the tool
+       and the model, then "New terminal" (pinned to the right edge) launches. */
+    .terms-toolbar .term-launch-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+    .terms-toolbar .term-launch-field .draft-label {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    .terms-toolbar .term-launch-field select {
+      background: var(--surf-2);
+      color: var(--text);
+      border: 1px solid var(--border-soft);
+      padding: 6px 8px;
+      font: inherit;
+      font-size: 13px;
+    }
+    .terms-toolbar .term-launch-field select:focus {
+      outline: 1px solid var(--accent);
+      border-color: var(--accent);
+    }
+    .terms-toolbar .term-launch-hint {
+      align-self: end;
+      color: var(--text-dim);
+      font-size: 12px;
+      max-width: 280px;
+    }
+    /* "New terminal" sits at the far right of the launcher bar. */
+    .terms-toolbar #term-new {
+      margin-left: auto;
+      align-self: end;
+    }
     /* Status-bar list layout: each pane is a row. Collapsed rows are
        one-line status indicators; expanded rows reveal the full
        body + composer. Replaces the old 2-col grid. */
@@ -1197,24 +1234,91 @@
     .terms-grid > .term-pane { order: 1; }
     .terms-grid > .term-pane.is-waiting,
     .terms-grid > .term-pane.needs-action { order: 0; }
-    .terms-grid.layout-split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); }
-    .terms-grid.layout-split > .term-pane { order: 0; }
-    .terms-grid.layout-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: var(--s-3); }
-    .terms-grid.layout-grid > .term-pane { order: 0; }
-    /* Grid items default to align-self:stretch — that makes a collapsed
-       pane in the same row as an expanded one balloon to the expanded
-       pane's height, producing a phantom "empty body" rectangle. Force
-       collapsed panes to keep their natural (head-only) height instead. */
-    .terms-grid.layout-split  > .term-pane.collapsed,
-    .terms-grid.layout-grid   > .term-pane.collapsed { align-self: start; }
-    /* Segmented layout selector — three icon buttons sharing a single
-       outer border. Height tuned to sit on the same baseline as .btn. */
-    .term-layout-group { display: inline-flex; gap: 0; border: 1px solid var(--border-soft); background: var(--surf-1); height: 38px; }
-    .term-layout-group .layout-btn { all: unset; cursor: var(--cur-pointer); display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 100%; color: var(--text-dim); border-right: 1px solid var(--border-soft); transition: color 140ms var(--easing), background-color 140ms var(--easing); }
-    .term-layout-group .layout-btn:last-child { border-right: 0; }
-    .term-layout-group .layout-btn:hover { color: var(--accent); background: var(--panel-inset); }
-    .term-layout-group .layout-btn.active { color: var(--on-accent); background: var(--accent); }
-    .term-layout-group .layout-btn svg { display: block; fill: currentColor; }
+    /* Layout selector (.layout-split / .layout-grid / .term-layout-group)
+       removed in Chunk 5b-1 — the Terminals tab is a status list and the
+       canvas window owns multi-pane geometry. */
+    /* ── Status rows (Chunk 5b-1) ───────────────────────────────────────
+       Each session / job is a single read-only row: status pill, activity
+       chip, tool/model, task preview, and the send-to-canvas control. */
+    .terms-status-rows { display: flex; flex-direction: column; gap: var(--s-2); }
+    .term-status-row {
+      display: flex;
+      align-items: center;
+      gap: var(--s-3);
+      padding: 8px 12px;
+      background: var(--surf-1);
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid transparent;
+      min-height: 38px;
+      box-sizing: border-box;
+    }
+    .term-status-row .status-pill { flex: 0 0 auto; }
+    .term-status-row .activity {
+      flex: 0 1 auto; min-width: 0; max-width: 22ch;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: var(--text-dim); font-size: 12px;
+    }
+    /* Live transcript activity: a running tool stands out in the accent, the
+       "thinking…" state reads as a quieter italic. */
+    .term-status-row .activity.act-tool { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .term-status-row .activity.act-thinking { font-style: italic; }
+    .term-status-row .activity.act-result,
+    .term-status-row .activity.act-text { color: var(--text-dim); font-style: italic; }
+    .term-status-row .row-tool { flex: 0 0 auto; color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .term-status-row .row-task {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+    }
+    /* Read-only metrics chips (model · duration · cost · turns · exit).
+       Sits between the task and the action buttons; margin-left:auto on
+       .row-actions keeps the buttons pinned right while these hug the task. */
+    .term-status-row .row-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s-2); }
+    .term-status-row .meta-chip {
+      font-size: 11px; color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .term-status-row .meta-chip.meta-model { text-transform: none; letter-spacing: 0; opacity: 0.85; }
+    .term-status-row .meta-chip.meta-cost { color: var(--text); }
+    .term-status-row .meta-chip.meta-exit-bad { color: var(--bad); }
+    .term-status-row .row-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s-2); margin-left: auto; }
+    .term-status-row .send-to-canvas {
+      all: unset; cursor: var(--cur-pointer);
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; color: var(--text-dim);
+      border: 1px solid var(--border-soft); background: var(--surf-1);
+      transition: color 140ms var(--easing), border-color 140ms var(--easing);
+    }
+    .term-status-row .send-to-canvas:hover { color: var(--accent); border-color: var(--accent); }
+    .term-status-row.on-canvas { border-left-color: var(--accent); }
+    /* On-canvas state lives ON the ⊞ button: it renders SELECTED — filled
+       accent + a solid accent border + a soft ring — so the row reads
+       "open on the canvas" without a separate text badge. */
+    .term-status-row .send-to-canvas.on-canvas,
+    .term-head .actions .send-to-canvas.on-canvas {
+      color: var(--on-accent);
+      background: var(--accent);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+    .term-status-row .send-to-canvas.on-canvas:hover,
+    .term-head .actions .send-to-canvas.on-canvas:hover {
+      color: var(--on-accent); background: var(--accent);
+    }
+    /* Collapsible "finished" group keeps terminal sessions out of the way. */
+    .terms-finished-group { border: 0; margin: 0; }
+    .terms-finished-group > summary {
+      cursor: var(--cur-pointer); color: var(--text-dim);
+      font-size: 12px; padding: 6px 4px; list-style: none;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .terms-finished-group > summary::-webkit-details-marker { display: none; }
+    .terms-finished-group[open] > summary { color: var(--text); }
+    .terms-finished-group .term-status-row { opacity: 0.78; }
     /* Standalone icon buttons (open-all / collapse-all / close-finished /
        auto-open). Same height as .btn so the whole toolbar lines up. */
     .term-icon-btn { all: unset; cursor: var(--cur-pointer); display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 38px; color: var(--text-dim); border: 1px solid var(--border-soft); background: var(--surf-1); transition: color 140ms var(--easing), border-color 140ms var(--easing), background-color 140ms var(--easing); box-sizing: border-box; }
@@ -1251,6 +1355,102 @@
     body.density-compact .term-body.chat { gap: 6px; }
     body.density-compact .term-body.chat .msg { margin: 0; padding: 4px 8px; }
     body.density-compact .term-foot { padding: 4px 6px; }
+    /* ── Canvas window (app/canvas.html) ──────────────────────────────────
+       The canvas lays panes out free-form from SplitTree.computeRects rather
+       than the dashboard's flow/grid. #canvas-root is the positioning context;
+       each .canvas-pane is absolutely placed at its computed rect, and the
+       .term-pane PaneCore mounts inside fills it. Gutters are drawn as overlays
+       on top (computeRects does NOT subtract gutter width), so panes tile edge
+       to edge here. */
+    #canvas-root {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--surf-1);
+    }
+    .canvas-pane {
+      position: absolute;
+      overflow: hidden;
+      box-sizing: border-box;
+      /* Stack the canvas head bar above the mounted .term-pane so the pane
+         body fills whatever the head leaves. */
+      display: flex;
+      flex-direction: column;
+    }
+    .canvas-pane.dragging { opacity: 0.5; }
+    .canvas-pane.focused {
+      outline: 1px solid var(--accent);
+      outline-offset: -1px;
+    }
+    /* In the canvas, the mounted pane should fill its absolute host (the
+       dashboard's min/max-height flow constraints don't apply here). It is the
+       flex remainder under the head bar. */
+    .canvas-pane > .term-pane,
+    .canvas-pane > .term-pane:not(.collapsed) {
+      width: 100%;
+      flex: 1 1 auto;
+      min-height: 0;
+      max-height: none;
+    }
+
+    /* ── Canvas pane head (drag handle + close) ───────────────────────────── */
+    .canvas-pane > .canvas-pane-head {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 22px;
+      padding: 0 6px;
+      background: var(--surf-3);
+      border-bottom: 1px solid var(--border-soft);
+      cursor: grab;
+      user-select: none;
+      font: 11px/1 var(--ff-mono);
+      color: var(--text-2);
+    }
+    .canvas-pane > .canvas-pane-head:active { cursor: grabbing; }
+    .canvas-pane-title {
+      flex: 1 1 auto;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .canvas-pane-close {
+      flex: 0 0 auto;
+      background: transparent;
+      border: 0;
+      color: inherit;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    .canvas-pane-close:hover { color: var(--bad); }
+
+    /* ── Drag-to-split drop-zone highlight (overlay, never eats the drop) ──── */
+    .canvas-dropzone {
+      position: absolute;
+      z-index: 50;
+      pointer-events: none;
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      border: 1px solid var(--accent);
+      box-sizing: border-box;
+    }
+
+    /* ── Resizable gutters (overlays centred on each split seam) ──────────── */
+    .canvas-gutter {
+      position: absolute;
+      z-index: 40;
+      background: transparent;
+      touch-action: none; /* let pointer events drive the resize, not scroll */
+    }
+    .canvas-gutter-row { cursor: col-resize; }
+    .canvas-gutter-col { cursor: row-resize; }
+    .canvas-gutter:hover {
+      background: color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+
     .term-pane {
       background: var(--surf-2);
       border: 1px solid var(--border-soft);
@@ -1464,6 +1664,22 @@
       border-color: var(--bad);
       background: var(--panel-inset);
     }
+    /* Send-to-canvas: an icon-only control (⊞) so it stays compact next to the
+       text action buttons. Narrower min-width than the labelled actions; the
+       glyph carries the meaning, the title carries the words. */
+    .term-head .actions .send-to-canvas {
+      min-width: 30px;
+      padding: 6px 8px;
+      font-size: 13px;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+    .term-head .actions .send-to-canvas:hover {
+      color: var(--accent-2);
+      border-color: var(--accent-2);
+    }
+    /* On-canvas state is shown on the ⊞ button itself (selected look — see the
+       .send-to-canvas.on-canvas rule near the status rows). No text badge. */
     /* Narrow pane: progressively drop secondary chrome so the PRIMARY
        actions (close + cancel + stop + expand) stay visible. In split /
        grid layouts the pane width drops below 700px and the original
@@ -1853,6 +2069,12 @@
        stay visible. */
     .term-body.chat .msg.assistant .text { white-space: normal; }
     .term-body.chat .msg.assistant .text :is(p, ul, ol) { margin: 3px 0; }
+    /* Streamed assistant text renders into one or more ".md" segments so tool
+       pills / thinking blocks can be appended as siblings without the markdown
+       repaint wiping them. The segment is a layout-neutral wrapper: it must add
+       no box of its own, and consecutive segments collapse seamlessly so a
+       reply split by a tool call still reads as continuous prose. */
+    .term-body.chat .msg.assistant .text > .md { display: contents; }
     .term-body.chat .msg.assistant .text ul,
     .term-body.chat .msg.assistant .text ol { padding-left: 22px; }
     .term-body.chat .msg.assistant .text li { margin: 0; padding: 0; }
@@ -3711,7 +3933,6 @@
         min-height: 44px;
         padding: 10px 12px;
       }
-      .term-layout-group .layout-btn,
       .term-icon-btn {
         min-width: 44px;
         min-height: 44px;
@@ -3759,11 +3980,8 @@
        separate block here would be dead duplication / a second source of truth. */
 
     @media (max-width: 768px) {
-      .terms-grid.layout-split,
-      .terms-grid.layout-grid {
-        grid-template-columns: 1fr;
-      }
-
+      /* Terminals layout selector removed in 5b-1 — no split/grid columns to
+         collapse on mobile anymore. */
       #view-timeline .tl-row,
       body #view-timeline .tl-row {
         grid-template-columns: 1fr;

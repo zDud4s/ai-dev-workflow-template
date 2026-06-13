@@ -16,18 +16,12 @@ for ``.ai/dashboard/app/terminals.js`` after batches 1-7. Targets:
       search call burn 100+ms (new defensive cap added this batch).
 
   LOW — new fixes in this batch:
-    1. `isCodex` regex inside `termOpenDispatchTracker` was missing the
-       `(\\s|$)` word-end anchor that its sibling
-       `termIsLLMDispatchCommand` uses — could mis-label a Bash command
-       containing `codex executor` as a Codex dispatch.
-    2. `--input-format stream-json` regex inside
-       `termIsLLMDispatchCommand` was missing the `/i` flag that its
-       `-p/--print` sibling carries, so a mixed-case
-       `--Input-Format Stream-Json` invocation slipped past detection.
-    3. Magic number `220` (composer textarea max height) appeared at
+    1. The dispatch tracker pane path has been removed from the Terminals tab;
+       LLM dispatch tool calls now remain regular parent-stream tool pills.
+    2. Magic number `220` (composer textarea max height) appeared at
        five sites — extracted to module-level
        `COMPOSER_AUTOSIZE_MAX_PX`.
-    4. Magic number `4000` (toast duration) appeared at 17 sites —
+    3. Magic number `4000` (toast duration) appeared at 17 sites —
        extracted to module-level `TERM_MSG_DURATION_MS`.
 
 Pattern mirrors ``tests/test_terminals_batch7.py`` and
@@ -67,51 +61,26 @@ def _slice_function(src: str, header: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LOW Fix 1 — isCodex regex anchored with (\s|$)
+# LOW Fix 1 — dispatch tracker pane path removed
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_tracker_isCodex_regex_has_word_end_anchor():
-    """``termOpenDispatchTracker`` builds an ``isCodex`` flag from the
-    Bash command — its regex must mirror the
-    ``termIsLLMDispatchCommand`` pattern with ``(\\s|$)`` so a command
-    starting with ``codex executor`` (or any other identifier prefixed
-    by ``codex exec``) is not mis-labelled as a Codex dispatch.
-    """
-    body = _slice_function(_src(), "function termOpenDispatchTracker(")
-    # The bare-`exec` pattern (no anchor) must be gone from this site.
-    assert "/\\bcodex\\s+exec/.test(cmd)" not in body, (
-        "termOpenDispatchTracker's isCodex regex regressed to the "
-        "anchorless ``/\\bcodex\\s+exec/`` pattern — a Bash command "
-        "containing ``codex executor`` would be mis-labelled as Codex"
-    )
-    # The anchored form must be present.
-    assert "/\\bcodex\\s+exec(\\s|$)/" in body, (
-        "termOpenDispatchTracker's isCodex must use the anchored "
-        "``/\\bcodex\\s+exec(\\s|$)/`` pattern matching its sibling "
-        "in termIsLLMDispatchCommand"
-    )
+def test_dispatch_tracker_inline_path_removed():
+    src = _src()
+    assert "function termOpenDispatchTracker" not in src
+    assert "termOpenDispatchTracker(" not in src
+    assert "DISPATCH_TRACKERS" not in src
 
 
 # ---------------------------------------------------------------------------
-# LOW Fix 2 — --input-format stream-json regex is case-insensitive
+# LOW Fix 2 — detector helper removed with dispatch tracker
 # ---------------------------------------------------------------------------
 
 
-def test_input_format_stream_json_regex_is_case_insensitive():
-    """The ``--input-format stream-json`` arm inside
-    ``termIsLLMDispatchCommand`` must carry the ``/i`` flag that its
-    sibling ``-p/--print`` line uses; Windows users frequently invoke
-    the CLI with mixed-case flags."""
-    body = _slice_function(_src(), "function termIsLLMDispatchCommand(")
-    # We expect the regex literal to end with ``/i``.
-    has_i_flag = bool(
-        re.search(r"/\\bclaude.*--input-format\\s\+stream-json/i", body)
-    )
-    assert has_i_flag, (
-        "termIsLLMDispatchCommand's --input-format regex must carry "
-        "the /i flag so mixed-case flag names still trip detection"
-    )
+def test_llm_dispatch_detector_removed_with_tracker():
+    src = _src()
+    assert "function termIsLLMDispatchCommand" not in src
+    assert "termIsLLMDispatchCommand(" not in src
 
 
 # ---------------------------------------------------------------------------
@@ -120,11 +89,11 @@ def test_input_format_stream_json_regex_is_case_insensitive():
 
 
 def test_composer_autosize_max_is_a_named_constant():
-    """The five textarea-autosize sites must reference the
-    ``COMPOSER_AUTOSIZE_MAX_PX`` module-level constant rather than
-    the literal ``220`` (which conflated UX intent with a magic
-    number wherever it appeared)."""
-    src = _src()
+    """Composer autosize uses the named ``COMPOSER_AUTOSIZE_MAX_PX``
+    constant rather than the literal ``220``. After the canvas convergence
+    the interactive composer (chat / session / transcript) lives in
+    pane-core.js, so the constant and its use-sites are asserted there."""
+    src = (TERMINALS_JS.parent / "pane-core.js").read_text(encoding="utf-8")
     # The constant must be declared.
     assert re.search(
         r"var\s+COMPOSER_AUTOSIZE_MAX_PX\s*=\s*220",
@@ -138,13 +107,13 @@ def test_composer_autosize_max_is_a_named_constant():
         "swap to ``COMPOSER_AUTOSIZE_MAX_PX`` so future UX tweaks are "
         "single-line affairs"
     )
-    # And the named-constant form must be present at least 3 times
-    # (the file has 5 composers; we accept >=3 to allow conservative
-    # rollout).
+    # The named-constant form must appear beyond the declaration — the
+    # chat / session / transcript composers in pane-core.js each autosize
+    # through it.
     refs = len(re.findall(r"COMPOSER_AUTOSIZE_MAX_PX", src))
-    assert refs >= 4, (
+    assert refs >= 2, (
         f"only {refs} references to COMPOSER_AUTOSIZE_MAX_PX — expected "
-        ">=4 (declaration + at least 3 use sites)"
+        ">=2 (declaration + at least one use site)"
     )
 
 
@@ -264,19 +233,10 @@ def test_body_normalize_still_gated_behind_active_flag():
 
 
 def test_search_input_listener_still_debounced():
-    """REGRESSION (batch 2) — the in-pane search input listener must
-    debounce keystrokes via setTimeout/clearTimeout so a fast typist
-    doesn't trigger a fresh TreeWalker scan per character."""
+    """The old inline pane search listener disappeared with inline panes."""
     src = _src()
-    anchor_idx = src.find('searchInput.addEventListener("input"')
-    assert anchor_idx != -1, "search input listener anchor missing"
-    region = src[anchor_idx : anchor_idx + 400]
-    assert "setTimeout" in region, (
-        "search input listener regressed — debounce setTimeout missing"
-    )
-    assert "clearTimeout" in region, (
-        "search input listener regressed — clearTimeout (reset) missing"
-    )
+    assert 'searchInput.addEventListener("input"' not in src
+    assert "function termOpen(" not in src
 
 
 # ---------------------------------------------------------------------------

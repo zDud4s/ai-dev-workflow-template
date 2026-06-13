@@ -1,0 +1,1 @@
+Create solution.py exposing `flatten(xs)` that returns a single flat list containing every non-list element of xs, in order, no matter how deeply lists are nested. Strings are atomic values, not sequences to descend into.

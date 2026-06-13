@@ -35,11 +35,18 @@ from pathlib import Path
 TERMINALS_JS = (
     Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "app" / "terminals.js"
 )
+PANE_CORE_JS = (
+    Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "app" / "pane-core.js"
+)
 STYLES_CSS = Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "styles.css"
 
 
 def _src() -> str:
     return TERMINALS_JS.read_text(encoding="utf-8")
+
+
+def _pane_core_src() -> str:
+    return PANE_CORE_JS.read_text(encoding="utf-8")
 
 
 def _css() -> str:
@@ -220,28 +227,9 @@ def test_pill_helper_used_at_codex_onopen():
     )
 
 
-def test_pill_helper_used_at_fork_banner():
-    """The fork-and-send branch must mutate the original status pill
-    through termSetPillState. The previous ``sp.textContent = "forked";
-    sp.classList.add("warn")`` left running/done/bad/queued stacked,
-    and the cascade resolved unpredictably."""
-    src = _src()
-    # Find the fork-banner site. The marker is the unique inline string
-    # ``t.sendBtn.textContent = "forked";`` immediately followed by the
-    # pill mutation.
-    marker = 't.sendBtn.textContent = "forked";'
-    idx = src.find(marker)
-    assert idx != -1, "could not find the fork-banner site"
-    window = src[idx : idx + 600]
-    assert "termSetPillState" in window, (
-        "the fork-banner site must route through termSetPillState — "
-        "direct classList.add('warn') leaves stale state classes stacked"
-    )
-    # And the ad-hoc ``sp.textContent = "forked"`` should not remain.
-    assert 'sp.textContent = "forked"' not in window, (
-        "the ad-hoc ``sp.textContent = \"forked\"`` line should be gone "
-        "(termSetPillState passes the text as its third arg)"
-    )
+# Removed: the fork-and-send affordance (forkAndSend / IDE transcript mirror
+# pane) was deleted when Claude conversations converged on the unified
+# session pane, so there is no fork-banner site left to assert on.
 
 
 # ----- Already-closed sanity checks -----
@@ -280,9 +268,12 @@ def test_skills_cache_invalidated_on_error_regression():
 
 def test_sse_heartbeat_watchdog_regression():
     """Regression guard for the SSE heartbeat watchdog from batch 3."""
-    src = _src()
-    assert "_lastSSEEvent" in src
-    assert "setInterval" in src and "clearInterval" in src
+    body = _slice_function(_pane_core_src(), "function paneCoreMountChat(")
+    assert "new EventSource" in body
+    assert "t._lastSSEEvent = Date.now()" in body
+    assert "Date.now() - (t._lastSSEEvent || 0) < SSE_STALE_MS" in body
+    assert "setInterval(heartbeatTick" in body
+    assert "clearInterval(t._sseHeartbeat)" in body
 
 
 def test_composer_pick_caret_recheck_regression():

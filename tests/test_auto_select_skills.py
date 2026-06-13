@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import CLAUDE_SKILLS_DIR, WORKFLOW_DIR
+from conftest import CLAUDE_SKILLS_DIR, REPO_ROOT, WORKFLOW_DIR
 
 PLANNER = CLAUDE_SKILLS_DIR / "planner" / "SKILL.md"
 ORCHESTRATE = CLAUDE_SKILLS_DIR / "orchestrate" / "SKILL.md"
 DISPATCH = WORKFLOW_DIR / "dispatch.md"
+AUTO_SELECT_JS = REPO_ROOT / ".ai" / "dashboard" / "app" / "auto-select.js"
 
 
 @pytest.fixture(scope="module")
@@ -33,6 +34,13 @@ def test_planner_has_auto_select_section(planner_text):
     assert "## Auto-select output block" in planner_text, (
         "planner skill must document the Selected models block format"
     )
+
+
+def test_js_threshold_default_is_5():
+    text = AUTO_SELECT_JS.read_text(encoding="utf-8")
+
+    assert "THRESHOLD_DEFAULT = 5" in text
+    assert "THRESHOLD_DEFAULT = 3" not in text
 
 
 def test_planner_documents_strict_format(planner_text):
@@ -158,3 +166,23 @@ def test_dispatch_error_table_has_new_rows(dispatch_text):
         assert marker in dispatch_text, (
             f"dispatch error table missing row referencing {marker!r}"
         )
+
+
+def test_planner_references_single_source(planner_text):
+    section = planner_text.split("**Adaptive scoring", 1)[1].split("**Fill.", 1)[0]
+    assert "auto_select_scorer.py" in section or "auto_select_scorer" in section
+    assert "single source of truth" in section.lower() or "canonical" in section.lower()
+
+    agents_planner = REPO_ROOT / ".agents" / "skills" / "planner" / "SKILL.md"
+    agents_section = agents_planner.read_text(encoding="utf-8").split(
+        "**Adaptive scoring", 1
+    )[1].split("**Fill.", 1)[0]
+    assert "auto_select_scorer.py" in agents_section or "auto_select_scorer" in agents_section
+
+
+def test_metrics_schema_clarifies_budget_field(orchestrate_text):
+    section = orchestrate_text.split("## Metrics logging", 1)[1].split(
+        "## Pipeline error table", 1
+    )[0]
+    assert "budget" in section
+    assert "effective_budget" in section or "effective" in section.lower()

@@ -1,0 +1,1 @@
+Create solution.py exposing `is_balanced(s)` that returns True if every bracket in s is correctly matched and nested, and False otherwise. The bracket pairs are (), [], and {}. Characters that are not brackets are ignored.

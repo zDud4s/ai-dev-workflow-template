@@ -61,6 +61,8 @@ Output caps by Size: small ≤40, medium ≤80, large ≤120 lines. Need more �
 
 - Size classification
 - Risk level + Risk matches
+- Change type: `code | non-code`
+- TDD-able: `yes | no`; `no` = no observable behavior expressible as an automated test
 - Problem summary
 - Relevant files
 - Constraints
@@ -77,7 +79,7 @@ Prefer `Validation.Commands` whose output makes pass/fail unambiguous (exit code
 
 ## Submission checklist
 
-Before emitting, verify: (1) Size/Risk stated at top; (2) all Output format sections present (skip Memory tags only for trivial); (3) packets fully filled — no TODOs, all `.ai/packets/execute.md` fields done; (4) if `Tests to add` non-empty, execute's `## Tests / To add:` matches it after normalization; (5) if Risk=elevated OR Size=medium/large, include "Review required"; (6) token budget respected. Else revise.
+Before emitting, verify: (1) Size/Risk/Change type/TDD-able stated at top (skip Change type and TDD-able only for `TRIVIAL:`); (2) all Output format sections present (skip Memory tags only for trivial); (3) packets fully filled — no TODOs, all `.ai/packets/execute.md` fields done; (4) if `Tests to add` non-empty, execute's `## Tests / To add:` matches it after normalization; (5) if Risk=elevated OR Size=medium/large, include "Review required"; (6) token budget respected. Else revise.
 
 ## Auto-select output block
 
@@ -90,7 +92,7 @@ review:  tool=<v>  model=<v>  [reasoning_effort=<v>]  reason="<≤120 chars>"
 rescue:  tool=<v>  model=<v>  [reasoning_effort=<v>]  reason="<≤120 chars>"
 ```
 
-**Adaptive scoring (when `auto_select.adaptive: true`).** Before applying the static table for each phase, read the last 200 records from `.ai/ledgers/metrics.jsonl` filtered to `(phase, size_bucket, risk)`. Group by `(tool, model, effort)`. For each candidate with ≥5 samples, `score = 0.6 * success_rate + 0.2 * (1 - normalized_duration) + 0.2 * budget_alignment(effort, effective_budget)`, where `success_rate = (exit_code == 0 AND handoff_complete AND review_verdict ∈ {approve, null}) / total`. Pick the highest scorer. **Guard rail:** if the top adaptive candidate differs from the static pick AND has `success_rate < 0.7`, use the static table. **Cold-start:** any phase with <5 samples falls back to the static table (per-phase). `reason` annotates the source: `reason="adaptive: <n> samples, sr=<rate>"` or `reason="static: <key>"`.
+**Adaptive scoring (when `auto_select.adaptive: true`).** The canonical scoring algorithm is defined by `.ai/dashboard/scripts/auto_select_scorer.py` (single source of truth). Concise summary: read metrics from `.ai/ledgers/metrics.jsonl`, group records by `(phase, size, risk)`, keep each group's last `per_group_tail` records sorted by `ts`, then score each `(tool, model, reasoning_effort)` candidate with at least 5 samples; **Cold-start:** candidates/groups below 5 samples fall back to the static table. `success_rate` is raw successes/n for display, but the score's success term is the Wilson 95% lower bound; duration uses median duration normalized across the group's medians; budget fit uses `budget_alignment(effort, effective_budget)`; weights are `0.6/0.2/0.2`. **Guard rail:** if the top adaptive candidate differs from the static pick AND has `wilson_lower < 0.7`, use the static table. `reason` annotates the source: `reason="adaptive: <n> samples, sr=<rate>"` or `reason="static: <key>"`.
 
 **Fill.** (1) `effective_budget` = `auto_select.token_budget`; bump one rung (`low→medium→high`, `high` stays) if `Risk level: elevated` OR `Size: large`. (2) For each phase in `auto_select.phases` (default `[execute, review, rescue]`), look up `(phase, Size, Risk level, effective_budget)` in `.ai/workflow/auto-models.md`; rows in order, first match wins, `*` matches any. (3) Emit one line per match; OMIT `reasoning_effort` when `effort == n/a` — never emit `reasoning_effort=n/a`. Both claude and codex rows may carry an explicit effort. (4) No match → omit that phase. (5) `reason`: double-quoted, ≤120 chars, no embedded `"`. 
 

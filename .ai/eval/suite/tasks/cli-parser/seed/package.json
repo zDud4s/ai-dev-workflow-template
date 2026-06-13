@@ -1,0 +1,8 @@
+{
+  "name": "cli-parser",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  }
+}

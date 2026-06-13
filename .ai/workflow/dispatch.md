@@ -140,7 +140,7 @@ Sequential phases of the same task MUST emit a byte-identical prefix; volatile c
 
 ## Resume rule
 
-When resuming an executor session (`codex exec resume --last`), pass only the prompt. Never pass config flags (`-m`, `--config`, `--sandbox`, `--full-auto`) on resume — they will be rejected or ignored inconsistently.
+When resuming an executor session (`codex exec resume --last`), pass only the prompt. Never pass config flags (`-m`, `--config`, `--sandbox`, `--full-auto`) on resume — they will be rejected or ignored inconsistently. The same applies to `--dangerously-bypass-approvals-and-sandbox`: a resume cannot carry it, so a resumed write-capable run stalls on codex's sandbox approvals and won't match the permission allow rule. A review send-back (which must edit files) therefore uses a fresh write-capable `execute` dispatch — the full dispatcher command with the bypass flag — not a resume.
 
 ## Dispatch error table
 

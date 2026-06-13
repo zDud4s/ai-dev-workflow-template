@@ -756,25 +756,38 @@
     var _modelsCache = null;
     var _modelsTableDelegationWired = false;
 
-    // Mirror the comments at the top of .ai/models.yaml.
-    // Catalog of available models per tool. Listed newest-first within each family.
-    // Last refreshed: May 2026.
-    //   Claude — https://platform.claude.com/docs/en/about-claude/models/overview
-    //   Codex  — https://developers.openai.com/codex/models
+    // Catalog of available models per tool, newest-first within each family.
+    //
+    // SINGLE SOURCE OF TRUTH: the `catalog:` block in .ai/models.yaml. The
+    // server reads it and ships it in /api/settings; applyModelCatalog() (below)
+    // overwrites this object in place once that response lands. The literal here
+    // is only a seed/fallback so the pickers render correctly before the first
+    // fetch (and if the server is unreachable) — DON'T treat it as the place to
+    // add new models; add them to models.yaml instead.
     var MODELS_BY_TOOL = {
-      claude: [
-        "claude-opus-4-7",     // most capable, agentic coding flagship
-        "claude-opus-4-6",
-        "claude-sonnet-4-6",   // 1M ctx, balanced speed/intelligence
-        "claude-haiku-4-5",    // fastest / cheapest
-      ],
-      codex: [
-        "gpt-5.5",             // current frontier
-        "gpt-5.4",             // computer-use, 1M ctx
-        "gpt-5.4-mini",        // fast subagent
-        "gpt-5.3-codex",       // previous codex generation
-      ],
+      claude: ["claude-opus-4-8", "claude-fable-5", "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
+      codex:  ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
     };
+
+    // Overwrite MODELS_BY_TOOL from the server's catalog (the live models.yaml
+    // `catalog:` block). Mutates the SAME object in place rather than
+    // reassigning, because terminals.js captured this reference at parse time
+    // for its draft-terminal picker — reassigning would leave it stale.
+    function applyModelCatalog(catalog) {
+      if (!catalog || typeof catalog !== "object") return;
+      var next = {};
+      Object.keys(catalog).forEach(function (tool) {
+        var list = catalog[tool];
+        if (Array.isArray(list) && list.length) next[tool] = list.slice();
+      });
+      if (!Object.keys(next).length) return;  // empty/garbage payload — keep seed
+      // Drop tools no longer present, then copy the fresh lists over.
+      Object.keys(MODELS_BY_TOOL).forEach(function (tool) {
+        if (!(tool in next)) delete MODELS_BY_TOOL[tool];
+      });
+      Object.keys(next).forEach(function (tool) { MODELS_BY_TOOL[tool] = next[tool]; });
+    }
+    window.applyModelCatalog = applyModelCatalog;
 
     function modelOptionsHtml(tool, currentModel) {
       const list = MODELS_BY_TOOL[tool] || [];

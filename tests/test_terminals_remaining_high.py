@@ -142,27 +142,17 @@ def test_pane_task_query_is_scoped():
     )
 
 
-# ----- Fix 5: SSE heartbeat present -----
+# ----- Fix 5: inline chat SSE heartbeat retired with inline panes -----
 
 
-def test_sse_heartbeat_present():
-    """A heartbeat timestamp must be tracked on the term object so the
-    Firefox half-open EventSource case (readyState stuck at 0) is detected
-    and the pane is forced into the close path."""
+def test_inline_chat_sse_heartbeat_removed_with_inline_panes():
+    """The heartbeat lived in the removed non-PTY inline job pane."""
     src = _src()
-    assert "_lastSSEEvent" in src, (
-        "chat SSE wiring must stamp t._lastSSEEvent (or similar) on each "
-        "event to detect stale connections."
-    )
-    # And there must be a setInterval-style watchdog referencing it.
-    assert "setInterval" in src, (
-        "SSE wiring must run an interval-based watchdog that consults the "
-        "heartbeat timestamp."
-    )
-    # The interval handle must be cleaned up somewhere (termClose et al.)
+    assert "_lastSSEEvent" not in src
+    assert "function termOpen(" not in src
+    # PTY cleanup still tears down heartbeat-style interval handles.
     assert "clearInterval" in src, (
-        "the heartbeat interval must be torn down (clearInterval) when the "
-        "pane closes — otherwise it leaks a timer per closed pane."
+        "interval handles must still be torn down when panes close."
     )
 
 
@@ -207,13 +197,23 @@ def test_postjson_errors_show_msg():
     )
 
 
-def test_term_open_optional_chain():
-    """#term-open may be absent in stripped shells; disabled writes must be guarded."""
+def test_launcher_toolbar_guards_missing_controls():
+    """#term-open was removed in the canvas convergence; the Terminals tab
+    now launches via the toolbar (#term-launchtype / #term-tool /
+    #term-model). Those lookups must be captured in locals and guarded with
+    an early return so a stripped shell (controls absent) doesn't throw on a
+    null .value / .addEventListener."""
     src = _src()
-    assert not re.search(r'\$\("#term-open"\)\.disabled\s*=', src), (
-        "terminals.js must not assign to $(\"#term-open\").disabled directly; "
-        "capture the lookup in a local and guard it before writing .disabled"
+    # The removed button must not be referenced anywhere anymore.
+    assert not re.search(r'\$\("#term-open"\)', src), (
+        "#term-open was removed in the canvas convergence — drop any "
+        "remaining reference to it in terminals.js"
     )
-    assert '$("#term-open")?.addEventListener' in src or 'const termOpenBtn = $("#term-open")' in src, (
-        "terminals.js should use optional chaining or a guarded local for #term-open"
+    body = _slice_function(src, "function wireLauncherToolbar(")
+    assert 'const launchSel = $("#term-launchtype")' in body, (
+        "wireLauncherToolbar must capture the #term-launchtype lookup in a local"
+    )
+    assert "if (!launchSel || !toolSel || !modelSel) return;" in body, (
+        "wireLauncherToolbar must early-return when its control lookups are "
+        "absent (stripped shell) before writing .value / wiring listeners"
     )

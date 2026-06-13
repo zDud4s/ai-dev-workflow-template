@@ -17,10 +17,21 @@ TERMINALS_JS = (
     / "app"
     / "terminals.js"
 )
+PANE_CORE_JS = (
+    Path(__file__).resolve().parent.parent
+    / ".ai"
+    / "dashboard"
+    / "app"
+    / "pane-core.js"
+)
 
 
 def _src() -> str:
     return TERMINALS_JS.read_text(encoding="utf-8")
+
+
+def _pane_core_src() -> str:
+    return PANE_CORE_JS.read_text(encoding="utf-8")
 
 
 def _region(src: str, anchor: str, span: int = 1200) -> str:
@@ -80,7 +91,7 @@ def test_simple_line_diff_has_size_guard() -> None:
 
 def test_termRunSearch_is_debounced() -> None:
     """The search input handler must coalesce keystrokes via setTimeout/clearTimeout."""
-    src = _src()
+    src = _pane_core_src()
     # Find the input listener wiring region. The anchor is the input registration.
     anchor_idx = src.find('searchInput.addEventListener("input"')
     assert anchor_idx != -1, "search input listener not found"

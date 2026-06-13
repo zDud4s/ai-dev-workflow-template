@@ -121,66 +121,24 @@ def test_termSendCodexNextTurn_loadJobs_catches_rejection():
     )
 
 
-def test_termOpen_chat_SSE_end_loadJobs_catches_rejection():
-    """The chat-pane SSE 'end' handler inside termOpen fires loadJobs()
-    so the run list reconciles when a job exits. Wrap it so a server
-    hiccup at exact-end doesn't leak an unhandled rejection.
-    """
+def test_inline_termOpen_sse_handler_removed():
+    """The non-PTY inline job pane was removed when chats moved to canvas."""
     src = _src()
-    # We can't easily isolate just the addEventListener("end") body, so
-    # look for the diagnostic phrase the fix introduces.
-    assert "[terminals] loadJobs after SSE end failed" in src, (
-        "termOpen's SSE 'end' handler must wrap loadJobs() in "
-        'Promise.resolve(loadJobs()).catch(...) with the '
-        '"[terminals] loadJobs after SSE end failed" warn prefix'
-    )
+    assert "function termOpen(" not in src
+    assert "[terminals] loadJobs after SSE end failed" not in src
 
 
 # ---------------------------------------------------------------------------
-# Target 2 — fetch kill silent failure in termClosePty
+# Target 2 — dashboard inline PTY cleanup retired
 # ---------------------------------------------------------------------------
 
 
-def test_termClosePty_kill_fetch_catches_async_rejection():
-    """The fire-and-forget /api/ptys/<id>/kill fetch must chain .catch
-    on its returned Promise — the prior try/catch only covered the
-    synchronous arm, so a mid-flight network drop OR a 4xx/5xx that
-    the browser fetch surfaces as a rejected Promise (rarely) used to
-    vanish with no console trace, leaving the operator unsure whether
-    the shell actually died on the server side.
-    """
-    body = _slice_function(_src(), "function termClosePty(")
-    # Capture the fetch construct and assert .catch attaches downstream
-    # (either directly or via an intermediate variable / Promise.resolve).
-    # Accept any of these shapes:
-    #   const _p = fetch(...); _p.catch(...)
-    #   fetch(...).catch(...)
-    #   Promise.resolve(fetch(...)).catch(...)
-    has_async_catch = bool(
-        re.search(
-            r"fetch\(`/api/ptys/\$\{ptyId\}/kill`[^)]*\)\s*\)?\s*\.catch\(",
-            body,
-        )
-        or re.search(
-            r"_killPromise\s*\.?catch\(",
-            body,
-        )
-        or re.search(
-            r"Promise\.resolve\(\s*fetch\(`/api/ptys",
-            body,
-        )
-    )
-    assert has_async_catch, (
-        "termClosePty must chain .catch on the fire-and-forget kill "
-        "fetch's returned Promise so async rejections surface in the "
-        "console; the existing try/catch only covers synchronous throws"
-    )
-    # Diagnostic phrase the fix introduces.
-    assert "[terminals] PTY kill fetch rejected" in body, (
-        "termClosePty's async kill catch handler must use the "
-        '"[terminals] PTY kill fetch rejected"  warn prefix so '
-        "leaked-shell incidents are greppable in the console"
-    )
+def test_dashboard_inline_pty_cleanup_removed():
+    """PTY panes are canvas-owned; terminals.js should not retain dead cleanup."""
+    src = _src()
+    assert "function termOpenPty" not in src
+    assert "function termClosePty" not in src
+    assert "/api/ptys/${ptyId}/kill" not in src
 
 
 # ---------------------------------------------------------------------------
@@ -213,19 +171,9 @@ def test_no_console_log_self_test_in_prod():
     )
 
 
-def test_chat_resume_still_propagates_model():
-    """REGRESSION (batch 4) — termSendResumeChat must still include
-    t.model in the resume POST payload, otherwise a resumed dead chat
-    silently flips back to the server-default model."""
-    body = _slice_function(_src(), "async function termSendResumeChat(")
-    has_model = (
-        "payload.model = t.model" in body
-        or "model: t.model" in body
-    )
-    assert has_model, (
-        "termSendResumeChat regressed — must propagate t.model on the "
-        "resume /api/jobs POST so the operator's chosen model survives"
-    )
+# Removed: chat-resume model propagation — the dead-chat resume path
+# (termSendResumeChat) was deleted when Claude chats converged on the
+# unified session pane.
 
 
 def test_dispatch_result_pill_routes_through_helper():

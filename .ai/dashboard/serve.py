@@ -45,6 +45,7 @@ import atexit
 import datetime as _dt
 import hashlib
 import http.server
+import importlib
 import json
 import os
 import queue as _stdqueue
@@ -79,6 +80,9 @@ if _SCRIPTS_DIR not in sys.path:
 # behind one interface.
 import pty_session as _pty_session  # noqa: E402 — scripts/ helper
 import todos_parser as _todos_parser  # noqa: E402 — scripts/ helper
+import auto_select_scorer  # noqa: E402 — scripts/ helper
+import session_registry  # noqa: E402 — scripts/ helper
+import session_lock  # noqa: E402 — scripts/ helper
 
 from _improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
@@ -97,6 +101,11 @@ BOUND_PORT = PORT
 # once at import time drops the routing overhead to a single dispatch
 # table lookup + a hashed regex execution.
 _RE_TRANSCRIPT_STREAM = re.compile(r"/api/transcripts/([0-9a-fA-F-]+)/stream")
+_RE_SESSION_STREAM = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/stream")
+_RE_SESSION_INPUT = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/input")
+_RE_SESSION_RELEASE = re.compile(r"/api/sessions/([0-9a-fA-F-]+)/release")
+_RE_SESSION_INTERRUPT = re.compile(r"/api/sessions/([^/]+)/interrupt")
+_RE_SESSION_BRANCH = re.compile(r"/api/sessions/([^/]+)/branch")
 _RE_AGENT_PROPOSAL_GET = re.compile(r"/api/agents/proposals/([A-Za-z0-9_\-]+)")
 _RE_SKILL_PROPOSAL_GET = re.compile(r"/api/skills/proposals/([A-Za-z0-9_\-]+)")
 _RE_JOB_STREAM = re.compile(r"/api/jobs/([0-9a-f-]+)/stream")
@@ -287,13 +296,27 @@ def _bound_path_cache(cache: dict, max_size: int = _PATH_CACHE_MAX) -> None:
             break
 _TRANSCRIPT_PREVIEW_CACHE: dict[str, tuple[int, str | None, str | None]] = {}
 _TRANSCRIPT_PREVIEW_LOCK = threading.Lock()
+# mtime-keyed cache of the per-session model for the status list:
+# session_id -> (mtime_ns, model_str_or_None). Computed from a cheap head
+# read (see _lookup_session_model) so an active multi-MB transcript isn't
+# re-scanned on every /api/sessions poll.
+_TRANSCRIPT_MODEL_CACHE: dict[str, tuple[int, str | None]] = {}
+_TRANSCRIPT_MODEL_LOCK = threading.Lock()
+# mtime-keyed cache of the per-session live activity for the status list:
+# session_id -> (mtime_ns, {"text","kind"} | None). Tail-read per poll only
+# when the transcript changed (see _lookup_session_activity).
+_TRANSCRIPT_ACTIVITY_CACHE: dict[str, tuple[int, dict | None]] = {}
+_TRANSCRIPT_ACTIVITY_LOCK = threading.Lock()
 # mtime-keyed cache of parsed agent-run .md files: (str(path), st.st_mtime_ns) -> parsed dict.
 _AGENT_RUN_PARSE_CACHE: dict[str, tuple[int, dict]] = {}
 _AGENT_RUN_PARSE_LOCK = threading.Lock()
-# Memo of resolved ~/.claude/projects/<slug> dir (None included), keyed by
-# (str(cwd), str(projects_root)) so a changed projects-root override never
-# returns a dir resolved against a stale root.
-_TRANSCRIPTS_DIR_CACHE: dict[tuple[str, "str | None"], "Path | None"] = {}
+# Memo of resolved ~/.claude/projects/<slug> dir, keyed by (str(cwd),
+# str(projects_root)) so a changed projects-root override never returns a dir
+# resolved against a stale root. Positive entries do not expire; negative
+# entries expire quickly because Claude may create the project dir just after
+# the first lookup.
+_TRANSCRIPTS_DIR_NEG_TTL_S = 3.0
+_TRANSCRIPTS_DIR_CACHE: dict[tuple[str, str | None], tuple[Path | None, float]] = {}
 # Caps concurrent /api/suggestions/<id>/draft + /api/agents/suggest requests.
 # Both endpoints spawn long-running `claude -p` / `codex` subprocesses
 # (timeout_seconds, default 120s) on the request thread; without a cap a
@@ -378,6 +401,137 @@ MAX_SSE_SESSION_S = 1800  # 30 minutes
 # at 4 MiB and tail from the last line boundary inside that window — live tail
 # then picks up from EOF so new records still arrive.
 MAX_TRANSCRIPT_CATCHUP_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+
+def _jsonl_line_to_session_events(line: str) -> "list[dict]":
+    """Normalize one JSONL line from a Claude transcript into SessionEvent dicts.
+
+    Returns a list (possibly empty) of events WITHOUT a ``seq`` field — the
+    caller assigns ``seq`` per emitted event, since one transcript line can
+    expand into several events (an assistant turn carries text + one or more
+    tool_use blocks; a user turn carries tool_result blocks). Emitting one
+    event per block — rather than collapsing the whole line into a single
+    event — is what lets the canvas render a tool_use pill with its real name
+    and input, and attach each tool_result to the pill it belongs to.
+
+    SessionEvent schema (seq added by caller):
+      message:     {"kind":"message","role":str,"text":str,"partial":False,"state":None}
+      tool_use:    {"kind":"tool_use","role":str,"id":str,"name":str,"input":dict,"text":str}
+      tool_result: {"kind":"tool_result","role":str,"tool_use_id":str,"is_error":bool,"content":str,"text":str}
+      thinking:    {"kind":"thinking","role":str,"text":str,"partial":False,"state":None}
+      system:      {"kind":"system","role":"system","text":str,"partial":False,"state":None}
+    """
+    line = line.strip()
+    if not line:
+        return []
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(obj, dict):
+        return []
+
+    msg_type = obj.get("type")
+    message = obj.get("message") or {}
+    role = message.get("role") or obj.get("role")
+
+    # user / assistant message lines
+    if msg_type in ("user", "assistant"):
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content.strip()
+            if not text:
+                return []
+            return [{
+                "kind": "message", "role": role or msg_type, "text": content,
+                "partial": False, "state": None,
+            }]
+        if not isinstance(content, list):
+            return []
+        # One event per block, in transcript order: text -> message, tool_use ->
+        # tool_use (with id/name/input so the pill renders), tool_result ->
+        # tool_result (with tool_use_id so it binds to the pill).
+        events: "list[dict]" = []
+        text_buf: "list[str]" = []
+
+        def _flush_text():
+            joined = "".join(text_buf)
+            text_buf.clear()
+            if joined.strip():
+                events.append({
+                    "kind": "message", "role": role or msg_type, "text": joined,
+                    "partial": False, "state": None,
+                })
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text_buf.append(block.get("text") or "")
+            elif btype == "thinking":
+                # Chain-of-thought. Flush any buffered text first so the
+                # thought lands in transcript order (thinking precedes the
+                # answer), then emit it as its own event. The client renders
+                # it as a collapsed <details> inside the assistant bubble, so
+                # long monologues don't drown the answer but stay inspectable.
+                _flush_text()
+                thought = block.get("thinking")
+                if isinstance(thought, str) and thought.strip():
+                    events.append({
+                        "kind": "thinking", "role": role or msg_type,
+                        "text": thought, "partial": False, "state": None,
+                    })
+            elif btype == "tool_use":
+                _flush_text()
+                name = block.get("name") or "tool"
+                tinput = block.get("input")
+                if not isinstance(tinput, dict):
+                    tinput = {}
+                events.append({
+                    "kind": "tool_use", "role": role,
+                    "id": block.get("id") or "", "name": name, "input": tinput,
+                    "text": name, "partial": False, "state": None,
+                })
+            elif btype == "tool_result":
+                _flush_text()
+                result_content = block.get("content")
+                result_text = ""
+                if isinstance(result_content, str):
+                    result_text = result_content
+                elif isinstance(result_content, list):
+                    result_text = " ".join(
+                        b.get("text") or "" for b in result_content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                events.append({
+                    "kind": "tool_result", "role": role,
+                    "tool_use_id": block.get("tool_use_id") or "",
+                    "is_error": bool(block.get("is_error")),
+                    "content": result_text, "text": result_text,
+                    "partial": False, "state": None,
+                })
+        _flush_text()
+        return events
+
+    # system / init lines
+    if msg_type in ("system", "init"):
+        content = obj.get("content") or message.get("content") or ""
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text") or "" for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        if not isinstance(content, str) or not content.strip():
+            return []
+        return [{
+            "kind": "system", "role": "system", "text": content,
+            "partial": False, "state": None,
+        }]
+
+    # Unknown or empty type — skip
+    return []
+
 
 # Directories the fallback ``ROOT.rglob("*")`` walk in ``_handle_files_list``
 # must not descend into. Without this, the autocomplete endpoint walks the
@@ -1149,8 +1303,8 @@ def _claude_projects_root() -> Path | None:
 def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
     """Pick the ``~/.claude/projects/<slug>`` directory matching ``cwd``.
 
-    Claude Code's slug rule (observed): replace ``:``, ``/``, ``\\`` and
-    spaces with ``-``. We try a few common variants because case-folding
+    Claude Code's slug rule (observed): replace ``:``, ``/``, ``\\``, ``.``
+    and spaces with ``-``. We try a few common variants because case-folding
     of the drive letter has been seen both ways across machines."""
     root = _claude_projects_root()
     # Key the memo by BOTH the cwd and the current projects root. The root is
@@ -1158,18 +1312,24 @@ def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
     # OVERRIDE`` to point at a tmp tree); keying on cwd alone would hand back a
     # stale dir resolved against a previous root once that override changes.
     key = (str(cwd), str(root) if root is not None else None)
-    if key in _TRANSCRIPTS_DIR_CACHE:
-        return _TRANSCRIPTS_DIR_CACHE[key]
+    now = time.monotonic()
+    cached = _TRANSCRIPTS_DIR_CACHE.get(key)
+    if cached is not None:
+        cached_path, cached_ts = cached
+        if cached_path is not None:
+            return cached_path
+        if now - cached_ts < _TRANSCRIPTS_DIR_NEG_TTL_S:
+            return None
     if root is None:
-        _TRANSCRIPTS_DIR_CACHE[key] = None
+        _TRANSCRIPTS_DIR_CACHE[key] = (None, time.monotonic())
         return None
     s = str(cwd)
-    slug_lower = (s[0].lower() + s[1:]).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
-    slug_upper = (s[0].upper() + s[1:]).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
+    slug_lower = (s[0].lower() + s[1:]).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-").replace(".", "-")
+    slug_upper = (s[0].upper() + s[1:]).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-").replace(".", "-")
     for slug in (slug_lower, slug_upper, slug_lower.lower()):
         p = root / slug
         if p.is_dir():
-            _TRANSCRIPTS_DIR_CACHE[key] = p
+            _TRANSCRIPTS_DIR_CACHE[key] = (p, time.monotonic())
             return p
     # Last-ditch: scan all subdirs and check if any transcript records this cwd.
     target = str(cwd).lower()
@@ -1189,12 +1349,12 @@ def _transcripts_dir_for_cwd(cwd: Path) -> Path | None:
                         except (json.JSONDecodeError, ValueError):
                             continue
                         if str(obj.get("cwd") or "").lower() == target:
-                            _TRANSCRIPTS_DIR_CACHE[key] = sub
+                            _TRANSCRIPTS_DIR_CACHE[key] = (sub, time.monotonic())
                             return sub
                         break  # only peek first record per file
             except OSError:
                 continue
-    _TRANSCRIPTS_DIR_CACHE[key] = None
+    _TRANSCRIPTS_DIR_CACHE[key] = (None, time.monotonic())
     return None
 
 
@@ -2870,6 +3030,20 @@ def _apply_improvement(skill_path: Path, new_content: str, source: str,
     return True
 
 
+def _check_held_out_gate(proposal_id: str) -> dict:
+    try:
+        eval_root = str(ROOT / ".ai" / "eval")
+        if eval_root not in sys.path:
+            sys.path.insert(0, eval_root)
+        gate = importlib.import_module("harness.gate")
+        verdict = gate.evaluate_proposal(proposal_id)
+        if not isinstance(verdict, dict):
+            return {"decision": "allow", "reason": "gate error: invalid verdict"}
+        return verdict
+    except Exception as e:
+        return {"decision": "allow", "reason": f"gate error: {e}"}
+
+
 def _check_skill_regression(skill_id: str, cfg: dict) -> dict | None:
     """Decide whether the last ``applied`` improvement to this skill
     regressed enough to warrant auto-revert.
@@ -4357,6 +4531,55 @@ def _read_yaml_field(path: Path, field: str) -> dict:
     return out
 
 
+# Hard-coded mirror of the ``catalog:`` block in .ai/models.yaml. Used ONLY
+# as a last resort when the file is missing/unreadable or PyYAML is absent —
+# the live source of truth is always the YAML. Keep the shape identical to
+# what _read_models_catalog returns: {tool: [model_id, ...]}, newest-first.
+_MODELS_CATALOG_FALLBACK: dict[str, list[str]] = {
+    "claude": ["claude-opus-4-8", "claude-fable-5", "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    "codex":  ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+}
+
+
+def _read_models_catalog(path: Path | None = None) -> dict[str, list[str]]:
+    """Read the ``catalog:`` block from .ai/models.yaml — the single source of
+    truth for which models exist per tool.
+
+    Returns ``{tool: [model_id, ...]}`` newest-first. Each catalog entry is a
+    mapping ``{id: ..., ...}``; only the ``id`` is surfaced here (notes/labels
+    stay in the YAML as inline comments). Falls back to
+    ``_MODELS_CATALOG_FALLBACK`` on any failure (missing file, no PyYAML, no
+    ``catalog`` block, malformed shape) so model pickers never render empty.
+    """
+    if path is None:
+        path = ROOT / ".ai" / "models.yaml"
+    try:
+        import yaml  # local import — PyYAML only needed by this helper
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+        catalog = parsed.get("catalog")
+        if not isinstance(catalog, dict):
+            return {k: list(v) for k, v in _MODELS_CATALOG_FALLBACK.items()}
+        out: dict[str, list[str]] = {}
+        for tool, entries in catalog.items():
+            if not isinstance(entries, list):
+                continue
+            ids: list[str] = []
+            for entry in entries:
+                if isinstance(entry, dict):
+                    mid = entry.get("id")
+                elif isinstance(entry, str):
+                    mid = entry
+                else:
+                    mid = None
+                if isinstance(mid, str) and mid.strip():
+                    ids.append(mid.strip())
+            if ids:
+                out[str(tool)] = ids
+        return out or {k: list(v) for k, v in _MODELS_CATALOG_FALLBACK.items()}
+    except Exception:  # noqa: BLE001 — a bad config must never break model pickers
+        return {k: list(v) for k, v in _MODELS_CATALOG_FALLBACK.items()}
+
+
 def _spawn_job(
     job_id: str,
     kind: str,
@@ -4408,6 +4631,10 @@ def _spawn_job(
             JOBS[job_id]["command"] = " ".join(argv[1:])
             JOBS[job_id]["session_id"] = session_id
             JOBS[job_id]["model"] = model
+            # Mark fork jobs so the stdout pump knows to overwrite session_id
+            # with the new (forked) id claude mints, rather than keeping source.
+            if fork_session_id:
+                JOBS[job_id]["forked_from"] = fork_session_id
         _start_subprocess_job(
             job_id=job_id,
             kind=kind,
@@ -4584,6 +4811,7 @@ def _start_subprocess_job(
                 "exit_code": None,
                 "started_at": None,
                 "ended_at": None,
+                "last_stdout_ts": 0.0,
             }
         sid_for_path = JOBS[job_id].get("session_id")
 
@@ -4690,6 +4918,8 @@ def _start_subprocess_job(
                         logf.write(publishable.encode("utf-8"))
                         logf.flush()
                     _publish_chunk(job_id, publishable)
+                    with JOBS_LOCK:
+                        JOBS[job_id]["last_stdout_ts"] = time.monotonic()
                     if track_cost:
                         for line in publishable.split("\n"):
                             line = line.strip()
@@ -4701,6 +4931,7 @@ def _start_subprocess_job(
                                 continue
                             if obj.get("type") == "result":
                                 _update_job_cost(job_id, obj)
+                                _maybe_mark_session_turn_done(job_id, obj)
                             # Codex emits a ``session_meta`` event on its first
                             # JSON line with ``payload.id`` = the rollout/session
                             # id. We capture it once so the next-turn handler
@@ -4713,6 +4944,11 @@ def _start_subprocess_job(
                                     with JOBS_LOCK:
                                         if not JOBS[job_id].get("session_id"):
                                             JOBS[job_id]["session_id"] = sid
+                            # A forked chat job (POST /api/jobs with
+                            # fork_session_id): claude mints a new session id and
+                            # reports it in its init event. Capture it so the job
+                            # row exposes the forked sid to the caller.
+                            _maybe_capture_forked_sid(job_id, kind, obj)
 
                 # Flush any final partial line (no trailing newline). Add a
                 # synthetic ``\n`` so downstream line-based parsers can still
@@ -4927,6 +5163,302 @@ def _cancel_job(job_id: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# SessionRegistry + EngineProtocol adapter
+#
+# _session_engine_factory(sid, model) returns an adapter that implements
+# EngineProtocol (submit / interrupt / kill / is_ready) over a "chat" job
+# started with ``claude --resume <sid>``.
+# SESSION_REGISTRY is instantiated once at module level; the endpoints
+# for Tasks 6-8 will call SESSION_REGISTRY.submit_turn() / .release().
+
+# Seconds after the last stdout chunk within which the engine is considered
+# "recently active" for the concurrency heuristic in the registry. Kept at
+# >= 3x the watch interval so scheduler jitter or a slow tick cannot make the
+# engine mis-cede the trailing bytes of its own reply as a foreign write.
+STDOUT_CORROBORATION_WINDOW_S = 3.0
+# ---------------------------------------------------------------------------
+
+class _ResumeEngineAdapter:
+    """EngineProtocol adapter over a dashboard resume job.
+
+    At construction, immediately launches ``claude --resume <sid>`` via
+    _start_subprocess_job (kind="chat"). submit(), interrupt(), and kill()
+    delegate to the existing stdin/cancel helpers.
+    """
+
+    def __init__(self, job_id: str):
+        self._job_id = job_id
+
+    # --- EngineProtocol -------------------------------------------------------
+
+    def submit(self, turn: dict) -> bool:
+        """Write a user turn to the stdin of the resume subprocess.
+
+        turn is a dict such as {"text": "..."} (and eventually images/files;
+        for now only text is handled). Returns True if the write succeeded,
+        False if the subprocess is gone or its stdin is closed — the registry
+        uses this to fail safe instead of leaving a turn wedged in-flight.
+        """
+        text = turn.get("text") or ""
+        # Reuses _send_to_stdin which already handles JSON-wrapping for kind=chat.
+        ok, _err = _send_to_stdin(self._job_id, text)
+        return ok
+
+    def interrupt(self) -> None:
+        """Send an interrupt envelope to the resume subprocess."""
+        _interrupt_chat_turn(self._job_id)
+
+    def kill(self) -> None:
+        """Cancel/terminate the resume job."""
+        _cancel_job(self._job_id)
+
+    def is_ready(self) -> bool:
+        """True as soon as the subprocess is alive (proc set in JOBS)."""
+        with JOBS_LOCK:
+            j = JOBS.get(self._job_id)
+            if not j:
+                return False
+            return j.get("proc") is not None
+
+    def recently_active(self) -> bool:
+        """True when the engine produced stdout within STDOUT_CORROBORATION_WINDOW_S seconds.
+
+        Used by the session registry as a corroboration signal to attribute .jsonl
+        growth to our engine rather than the IDE.
+        """
+        with JOBS_LOCK:
+            j = JOBS.get(self._job_id)
+            if not j:
+                return False
+            ts = j.get("last_stdout_ts", 0.0)
+        if ts <= 0.0:
+            return False
+        return (time.monotonic() - ts) < STDOUT_CORROBORATION_WINDOW_S
+
+
+def _session_engine_factory(sid: str, model: str) -> _ResumeEngineAdapter:
+    """Build an EngineProtocol adapter for session ``sid``.
+
+    Generates a fresh job_id, registers the job in JOBS with session_id=sid so
+    that _start_subprocess_job resolves the correct transcript file, and
+    starts the ``claude --resume <sid>`` subprocess in the background.
+    """
+    job_id = str(uuid.uuid4())
+    # Resume an existing transcript; if the .jsonl does not exist yet this is a
+    # brand-new session, so create it with --session-id instead of --resume
+    # (a `claude --resume <unknown>` would fail). This lets dashboard-started
+    # chats run through the same baton state machine as resumed IDE chats.
+    tdir = _transcripts_dir_for_cwd(ROOT)
+    transcript_exists = bool(tdir and (tdir / f"{sid}.jsonl").exists())
+    argv = _build_chat_argv(model=model, session_id=sid, resume=transcript_exists)
+
+    # Pre-populate JOBS with session_id before calling _start_subprocess_job
+    # so the runner can determine log_path from the transcript.
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "id": job_id,
+            "kind": "chat",
+            "task": f"session-resume:{sid}",
+            "status": "queued",
+            "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+            "pid": None,
+            "log_path": None,
+            "exit_code": None,
+            "started_at": None,
+            "ended_at": None,
+            "session_id": sid,
+            "model": model,
+            "last_stdout_ts": 0.0,
+        }
+
+    _start_subprocess_job(
+        job_id=job_id,
+        kind="chat",
+        task=f"session-resume:{sid}",
+        argv=argv,
+    )
+
+    adapter = _ResumeEngineAdapter(job_id)
+
+    # The subprocess is launched on a worker thread, so it is almost never
+    # alive at the instant submit_turn() checks engine.is_ready(). Without a
+    # follow-up trigger the session would dwell in ACQUIRING forever and the
+    # buffered first turn would never reach the engine. Poll for readiness in
+    # the background and promote ACQUIRING -> ENGINE (which flushes the
+    # buffered turn into the engine stdin) as soon as the process is up.
+    def _await_engine_ready() -> None:
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if adapter.is_ready():
+                try:
+                    SESSION_REGISTRY.mark_engine_ready(sid)
+                except KeyError:
+                    # Session was released/removed before the engine came up —
+                    # nothing left to promote.
+                    print(f"[serve] engine-ready: session {sid} gone before promotion", flush=True)
+                return
+            time.sleep(0.05)
+        print(f"[serve] engine for session {sid} never reported ready (spawn failed?)", flush=True)
+
+    threading.Thread(
+        target=_await_engine_ready,
+        daemon=True,
+        name=f"engine-ready-{sid[:8]}",
+    ).start()
+
+    return adapter
+
+
+# Cross-process file lock: prevents two dashboard processes from running an
+# engine on the same session simultaneously. Lock files live under sessions/.
+SESSION_LOCK = session_lock.SessionLock(ROOT / ".ai" / "dashboard" / "sessions")
+
+SESSION_REGISTRY = session_registry.SessionRegistry(
+    engine_factory=_session_engine_factory,
+    lock_acquire=lambda sid, owner: SESSION_LOCK.try_acquire(sid, owner or "dashboard"),
+    lock_release=SESSION_LOCK.release,
+    lock_heartbeat=SESSION_LOCK.heartbeat,
+)
+
+# Poll interval for the background foreign-write watcher (seconds).
+WATCH_INTERVAL_S = 1.0
+
+
+class ForeignWriteWatcher:
+    """Background watcher that detects file growth or disappearance for every
+    registered session.  poll_once() is driven by _watcher_loop() at a regular
+    interval; tests drive it directly to avoid real sleeps.
+    """
+
+    def poll_once(self) -> None:
+        """Snapshot the session table and stat each .jsonl file once."""
+        with SESSION_REGISTRY._lock:
+            items = list(SESSION_REGISTRY._sessions.items())
+        for sid, s in items:
+            try:
+                st = os.stat(s.jsonl_path)
+                SESSION_REGISTRY.note_jsonl_growth(sid, st.st_size, st.st_mtime)
+                SESSION_REGISTRY.tick(sid)
+                # Keep the file lock alive for sessions that currently own an engine.
+                if s.state.value in ("engine", "acquiring"):
+                    SESSION_LOCK.heartbeat(sid)
+            except OSError:
+                # File gone or rotated; reconcile the session back to MIRROR.
+                SESSION_REGISTRY.note_jsonl_gone(sid)
+
+
+def _watcher_loop() -> None:
+    """Loop that calls ForeignWriteWatcher.poll_once() every WATCH_INTERVAL_S.
+
+    One bad tick must not kill the loop, so the body is wrapped and any
+    unexpected exception is logged.  The OSError path inside poll_once() does
+    real work (note_jsonl_gone) and is not silenced here.
+    """
+    watcher = ForeignWriteWatcher()
+    while True:
+        try:
+            watcher.poll_once()
+        except Exception as e:  # noqa: BLE001 — log and continue so the loop survives
+            print("[serve] watcher: %r" % e, flush=True)
+        time.sleep(WATCH_INTERVAL_S)
+
+
+def _maybe_capture_forked_sid(job_id: str, kind: str, obj: dict) -> None:
+    """Record the new session id minted by a ``--fork-session`` chat job.
+
+    A forked chat job is spawned with ``--resume <src> --fork-session`` (via
+    ``POST /api/jobs`` with ``fork_session_id``); claude keeps the history but
+    writes new turns under a freshly-generated session id, reported in its
+    ``system``/init event. We overwrite JOBS[job_id]["session_id"] with it so the
+    job row exposes the forked sid. Only acts on chat jobs flagged
+    ``forked_from``; a plain resume keeps its sid.
+    """
+    if kind != "chat" or obj.get("type") != "system":
+        return
+    new_sid = obj.get("session_id")
+    if not new_sid:
+        return
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is None or not j.get("forked_from"):
+            return
+        if new_sid != j.get("session_id"):
+            j["session_id"] = new_sid
+
+
+def _copy_transcript_with_new_sid(src_path: Path, dst_path: Path, new_sid: str) -> int:
+    """Copy a Claude transcript to ``dst_path`` while rewriting each record's
+    ``sessionId`` to ``new_sid``; return the number of records written.
+
+    This is how a session is branched: the new transcript carries the full
+    history under a fresh id, so resuming it (``claude --resume <new_sid>``)
+    continues the conversation independently of the source. Per-record
+    ``uuid``/``parentUuid`` links are internal to the transcript and stay
+    self-consistent, so only ``sessionId`` is rewritten.
+
+    The write is atomic (temp file + ``os.replace``) so a crash mid-copy can
+    never leave a partial ``<new_sid>.jsonl`` that a later resume would read.
+    Non-JSON lines (none expected in a well-formed transcript) are preserved
+    verbatim so an unexpected line never corrupts the copy.
+    """
+    count = 0
+    tmp_path = dst_path.with_name(dst_path.name + ".tmp")
+    with src_path.open("r", encoding="utf-8", errors="replace") as fin, \
+            tmp_path.open("w", encoding="utf-8", newline="\n") as fout:
+        for line in fin:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                rec = json.loads(stripped)
+            except (json.JSONDecodeError, ValueError):
+                fout.write(stripped + "\n")
+                count += 1
+                continue
+            if isinstance(rec, dict):
+                rec["sessionId"] = new_sid
+                fout.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+            else:
+                fout.write(stripped + "\n")
+            count += 1
+    os.replace(str(tmp_path), str(dst_path))
+    return count
+
+
+def _maybe_mark_session_turn_done(job_id: str, obj: dict) -> None:
+    """Advance the session-registry baton when a ``type=result`` event arrives.
+
+    Called from the stdout pump whenever a complete JSON line is parsed.
+    Only acts when:
+      - obj["type"] == "result"
+      - the job's task starts with "session-resume:"
+      - the session id extracted from the job is registered in SESSION_REGISTRY
+
+    This is the production linchpin that drives mark_turn_done so the baton
+    advances and a queued pending turn (if any) is dispatched to the engine.
+    """
+    if obj.get("type") != "result":
+        return
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if not j:
+            return
+        task = j.get("task", "")
+        if not task.startswith("session-resume:"):
+            return
+        sid = j.get("session_id")
+    if not sid:
+        return
+    if sid not in SESSION_REGISTRY._sessions:
+        return
+    try:
+        SESSION_REGISTRY.mark_turn_done(sid)
+    except Exception as exc:
+        print(f"[serve] mark_turn_done failed for session {sid}: {exc}", flush=True)
+
+# ---------------------------------------------------------------------------
+
 _PID_ALIVE_CACHE: dict[int, tuple[float, bool]] = {}
 _PID_ALIVE_TTL_SECONDS = 2.0
 
@@ -5087,6 +5619,42 @@ def _evict_old_jobs() -> None:
             JOBS.pop(jid, None)
 
 
+# How often the background reaper reconciles dead PIDs and bounds the JOBS
+# dict. Reconciliation also runs request-driven on GET /api/jobs, but that
+# only fires when a browser is polling. With no client attached, a job whose
+# subprocess died (or was killed out-of-band) would otherwise sit in
+# ``running`` forever — pinning its proc handle + subscriber queues — and
+# finished entries would never be evicted, so the dict could grow unbounded
+# between the rare HTTP hits. 30s keeps the leak window small without adding
+# meaningful load (one tasklist batch per tick on Windows).
+JOB_REAP_INTERVAL_S = 30.0
+
+
+def _job_reaper_tick() -> int:
+    """One reaper pass: flip dead-PID jobs to failed and bound the dict.
+
+    Split out from :func:`_job_reaper_loop` so it can be exercised in tests
+    without spinning the ``while True`` loop. Returns the number of jobs
+    reconciled this pass."""
+    flipped = _reconcile_running_pids()
+    _evict_old_jobs()
+    return flipped
+
+
+def _job_reaper_loop() -> None:
+    """Background daemon: run :func:`_job_reaper_tick` on a fixed cadence so
+    dead job subprocesses are reaped and the JOBS dict stays bounded even when
+    no browser is polling ``/api/jobs``. One bad tick must not kill the loop."""
+    while True:
+        time.sleep(JOB_REAP_INTERVAL_S)
+        try:
+            n = _job_reaper_tick()
+            if n:
+                print(f"[serve] job reaper: reconciled {n} dead job(s)", flush=True)
+        except Exception as e:  # noqa: BLE001 — log and continue so the loop survives
+            print(f"[serve] job reaper tick failed: {e}", flush=True)
+
+
 # Record types considered "interesting" for a chat-pane catch-up dump.
 # Hook outputs, queue ops, file snapshots and attachment frames are
 # operational metadata the human reader never wants to see.
@@ -5243,48 +5811,291 @@ def _lookup_session_title(session_id: str) -> str | None:
     return title
 
 
-def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 3) -> dict:
-    """Aggregate METRICS_FILE into per-(phase, size, risk, budget) rankings.
+def _lookup_session_model(session_id: str) -> str | None:
+    """Best-effort: the model an IDE session is running, for the status list.
 
-    Mirrors the planner's adaptive scorer from
-    `.claude/skills/planner/SKILL.md` "Adaptive scoring" so the dashboard
-    surfaces the same information the scorer would see.
-
-    Schema returned::
-
-        {
-          "samples": <int>,         # total records considered (post-tail)
-          "groups": [
-            {
-              "key": {
-                "phase": "execute" | ...,
-                "size":  "small" | ... | null,
-                "risk":  "low" | "elevated" | null,
-                "budget": "low" | "medium" | "high" | null
-              },
-              "candidates": [
-                {
-                  "tool": "<str>",
-                  "model": "<str>",
-                  "reasoning_effort": "<str|null>",
-                  "samples": <int>,
-                  "success_rate": <float 0..1>,
-                  "mean_duration_ms": <int>,
-                  "score": <float 0..1>     # 0.6 sr + 0.2 (1-norm_dur) + 0.2 budget_align(1)
-                },
-                ... up to top 3 ...
-              ]
-            },
-            ...
-          ]
-        }
-
-    `success_rate` counts records where `exit_code == 0` AND
-    `handoff_complete` is `True` or `None` AND `review_verdict` is `approve`,
-    `null`, or absent. `mean_duration_ms` averages `duration_ms` across the
-    group. Candidates with fewer than `min_samples` records are dropped; if a
-    group ends up empty it is omitted.
+    Returns the first ``message.model`` found near the head of the transcript
+    (early-exit), or None. IDE transcripts carry no model in their JOBS-less
+    session record, so without this the status row can't show one. Reads only
+    the head — never the full file — so it stays cheap on the 2-4s poll.
     """
+    if not session_id or session_id == "unknown":
+        return None
+    try:
+        tdir = _transcripts_dir_for_cwd(ROOT)
+    except OSError:
+        return None
+    if tdir is None or not tdir.is_dir():
+        return None
+    f = tdir / f"{session_id}.jsonl"
+    if not f.is_file():
+        return None
+    HEAD_LINES = 400  # enough to pass IDE/system preamble and reach a model
+    try:
+        with f.open("r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i > HEAD_LINES:
+                    break
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                msg = rec.get("message")
+                if isinstance(msg, dict):
+                    mdl = msg.get("model")
+                    # Skip Claude Code's "<synthetic>" placeholder (injected
+                    # assistant messages carry no real model) — keep scanning
+                    # for the actual model the session is running.
+                    if isinstance(mdl, str) and mdl and not mdl.startswith("<"):
+                        return mdl
+    except OSError:
+        return None
+    return None
+
+
+def _summarise_tool_use(name: str, tinput: dict) -> str:
+    """One-line label for a tool_use block: what the agent is doing right now.
+
+    e.g. ``Bash · npm test`` / ``Edit serve.py`` / ``Grep "TODO"``. Falls back
+    to the bare tool name when the input shape is unknown.
+    """
+    name = name or "tool"
+    ti = tinput if isinstance(tinput, dict) else {}
+
+    def _base(path):
+        if not isinstance(path, str) or not path:
+            return ""
+        return re.split(r"[\\/]", path.rstrip("\\/"))[-1]
+
+    def _clip(s, n=60):
+        s = " ".join(str(s).split())
+        return s[:n] + "…" if len(s) > n else s
+
+    if name == "Bash":
+        cmd = ti.get("command") or ti.get("description") or ""
+        return _clip("Bash · " + cmd) if cmd else "Bash"
+    if name in ("Edit", "Write", "Read", "NotebookEdit", "MultiEdit"):
+        b = _base(ti.get("file_path") or ti.get("notebook_path"))
+        return f"{name} {b}" if b else name
+    if name in ("Grep", "Glob"):
+        pat = ti.get("pattern") or ""
+        return _clip(f'{name} "{pat}"') if pat else name
+    if name in ("Agent", "Task"):
+        d = ti.get("description") or ti.get("subagent_type") or ""
+        return _clip(f"{name} · {d}") if d else name
+    if name == "WebFetch":
+        return _clip("WebFetch · " + (ti.get("url") or ""))
+    if name == "WebSearch":
+        return _clip("WebSearch · " + (ti.get("query") or ""))
+    if name == "Skill":
+        return _clip("Skill · " + (ti.get("skill") or "")) or name
+    return name
+
+
+def _lookup_session_activity(session_id: str) -> dict | None:
+    """Best-effort "what is this session doing right now", from the transcript
+    tail. Returns ``{"text": str, "kind": str}`` or None.
+
+    Claude Code flushes each content block as its own JSONL record as the turn
+    streams, so the most recent content block reflects live state:
+
+      * ``tool_use`` with no following ``tool_result`` → the tool is running
+        now (``kind="tool"``, text like ``Bash · npm test``).
+      * ``tool_result`` → a tool just returned; the model will continue
+        (``kind="result"``, ``processing…``).
+      * ``thinking`` → ``kind="thinking"``, ``thinking…``.
+
+    A trailing plain ``text`` block is deliberately treated as "no live
+    activity" (returns None): from outside the process a finished reply
+    awaiting the user looks identical to one still streaming, so claiming
+    "responding…" would overclaim. The caller falls back to a plain "live".
+
+    Reads only a tail window so an active multi-MB transcript stays cheap.
+    """
+    if not session_id or session_id == "unknown":
+        return None
+    try:
+        tdir = _transcripts_dir_for_cwd(ROOT)
+    except OSError:
+        return None
+    if tdir is None or not tdir.is_dir():
+        return None
+    f = tdir / f"{session_id}.jsonl"
+    if not f.is_file():
+        return None
+    TAIL_BYTES = 64 * 1024
+    try:
+        size = f.stat().st_size
+        with f.open("rb") as fb:
+            if size > TAIL_BYTES:
+                fb.seek(size - TAIL_BYTES)
+                fb.readline()  # drop the partial first line
+            chunk = fb.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+    for line in reversed(chunk.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            rec = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if rec.get("type") not in ("user", "assistant"):
+            continue  # skip ai-title / mode / last-prompt / summary meta rows
+        msg = rec.get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, str):
+            # A bare user/assistant string (typed prompt or plain reply) is
+            # not a live-progress signal — see docstring.
+            return None
+        if not isinstance(content, list):
+            continue
+        # Inspect the LAST meaningful block of this (most recent) record.
+        for block in reversed(content):
+            if not isinstance(block, dict):
+                continue
+            bt = block.get("type")
+            if bt == "tool_use":
+                return {"text": _summarise_tool_use(block.get("name"), block.get("input")), "kind": "tool"}
+            if bt == "tool_result":
+                return {"text": "processing…", "kind": "result"}
+            if bt == "thinking":
+                return {"text": "thinking…", "kind": "thinking"}
+            if bt == "text":
+                # Turn-end vs mid-stream is indistinguishable from outside —
+                # don't overclaim. Fall back to a plain "live".
+                return None
+        # Record had no recognisable block — keep looking further back.
+    return None
+
+
+# Cache of resolved Codex rollout paths: session_id -> Path. A rollout's path
+# never changes once created, so this is keyed by id alone (no mtime).
+_CODEX_ROLLOUT_PATH_CACHE: dict[str, "Path | None"] = {}
+_CODEX_ROLLOUT_PATH_LOCK = threading.Lock()
+
+
+def _codex_rollout_path(session_id: str) -> "Path | None":
+    """Locate the rollout file for a Codex session id under
+    ``~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl``.
+
+    The id is the trailing component of the filename, so a name-glob finds it
+    without parsing dates. Result is cached (the path is stable); a negative
+    result is cached as None so a missing rollout isn't re-walked every poll.
+    """
+    if not session_id or session_id == "unknown":
+        return None
+    with _CODEX_ROLLOUT_PATH_LOCK:
+        if session_id in _CODEX_ROLLOUT_PATH_CACHE:
+            return _CODEX_ROLLOUT_PATH_CACHE[session_id]
+    root = _codex_sessions_root()
+    found: "Path | None" = None
+    if root is not None:
+        try:
+            found = next(root.rglob(f"rollout-*{session_id}.jsonl"), None)
+        except OSError:
+            found = None
+    with _CODEX_ROLLOUT_PATH_LOCK:
+        _CODEX_ROLLOUT_PATH_CACHE[session_id] = found
+        _bound_path_cache(_CODEX_ROLLOUT_PATH_CACHE)
+    return found
+
+
+def _summarise_codex_call(name: str, raw: str) -> str:
+    """One-line label for a Codex function_call / custom_tool_call."""
+    name = name or "tool"
+
+    def _clip(s, n=60):
+        s = " ".join(str(s).split())
+        return s[:n] + "…" if len(s) > n else s
+
+    # shell_command / local_shell carry a JSON ``arguments`` with a command.
+    if name in ("shell", "shell_command", "local_shell", "container.exec"):
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except (json.JSONDecodeError, ValueError):
+            args = {}
+        cmd = args.get("command") if isinstance(args, dict) else None
+        if isinstance(cmd, list):
+            cmd = " ".join(str(c) for c in cmd)
+        return _clip("shell · " + cmd) if cmd else "shell"
+    # apply_patch carries the patch text; pull the file it touches.
+    if name == "apply_patch":
+        m = re.search(r"\*\*\* (?:Update|Add|Delete) File: (.+)", raw or "")
+        if m:
+            f = re.split(r"[\\/]", m.group(1).strip())[-1]
+            return f"apply_patch · {f}"
+        return "apply_patch"
+    return name
+
+
+def _lookup_codex_activity(session_id: str) -> dict | None:
+    """Best-effort live activity for a Codex session, from its rollout tail.
+
+    Mirrors _lookup_session_activity for Codex's rollout schema:
+      * ``function_call`` (no following ``function_call_output``) → a tool is
+        running now (``shell · …`` / ``apply_patch · file``).
+      * ``custom_tool_call`` → ``apply_patch · file``.
+      * ``*_output`` → ``processing…``.
+      * ``reasoning`` → ``thinking…``.
+    A trailing ``agent_message`` / plain message is treated as no live signal.
+    """
+    path = _codex_rollout_path(session_id)
+    if path is None or not path.is_file():
+        return None
+    TAIL_BYTES = 64 * 1024
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fb:
+            if size > TAIL_BYTES:
+                fb.seek(size - TAIL_BYTES)
+                fb.readline()
+            chunk = fb.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+    for line in reversed(chunk.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            rec = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        rtype = rec.get("type")
+        pl = rec.get("payload") or {}
+        ptype = pl.get("type")
+        if rtype == "response_item":
+            if ptype in ("function_call_output", "custom_tool_call_output"):
+                return {"text": "processing…", "kind": "result"}
+            if ptype == "function_call":
+                return {"text": _summarise_codex_call(pl.get("name"), pl.get("arguments") or ""), "kind": "tool"}
+            if ptype == "custom_tool_call":
+                return {"text": _summarise_codex_call(pl.get("name"), pl.get("input") or ""), "kind": "tool"}
+            if ptype == "reasoning":
+                return {"text": "thinking…", "kind": "thinking"}
+            if ptype == "message":
+                return None  # turn text — don't overclaim
+        elif rtype == "event_msg":
+            if ptype in ("exec_command_begin",):
+                cmd = pl.get("command")
+                if isinstance(cmd, list):
+                    cmd = " ".join(str(c) for c in cmd)
+                return {"text": _summarise_codex_call("shell", json.dumps({"command": cmd})), "kind": "tool"}
+            if ptype in ("agent_reasoning", "agent_reasoning_delta"):
+                return {"text": "thinking…", "kind": "thinking"}
+            if ptype == "agent_message":
+                return None
+    return None
+
+
+def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 5) -> dict:
+    """Aggregate METRICS_FILE into adaptive auto-select rankings."""
     empty = {
         "samples": 0,
         "min_samples": min_samples,
@@ -5301,90 +6112,13 @@ def _load_auto_select_ranking(max_records: int = 200, min_samples: int = 3) -> d
     rows = _load_jsonl_cached(METRICS_FILE)
     if not rows:
         return empty
-    tail = rows[-max_records:] if len(rows) > max_records else rows
-
-    groups: dict[tuple, dict[tuple, list[dict]]] = {}
-    sample_count = 0
-    last_ts: str | None = None
-    for rec in tail:
-        if not isinstance(rec, dict):
-            continue
-        phase = rec.get("phase")
-        if not phase:
-            continue
-        sample_count += 1
-        ts = rec.get("ts")
-        if isinstance(ts, str) and (last_ts is None or ts > last_ts):
-            last_ts = ts
-        group_key = (
-            phase,
-            rec.get("size"),
-            rec.get("risk"),
-            rec.get("budget"),
-        )
-        cand_key = (
-            rec.get("tool") or "unknown",
-            rec.get("model") or "unknown",
-            rec.get("reasoning_effort"),
-        )
-        groups.setdefault(group_key, {}).setdefault(cand_key, []).append(rec)
-
-    out_groups: list[dict] = []
-    dropped = 0
-    for gkey, cands in groups.items():
-        scored: list[dict] = []
-        for ckey, records in cands.items():
-            n = len(records)
-            if n < min_samples:
-                dropped += 1
-                continue
-            successes = sum(
-                1
-                for r in records
-                if r.get("exit_code") == 0
-                and r.get("handoff_complete") in (True, None)
-                and r.get("review_verdict") in (None, "approve")
-            )
-            sr = successes / n
-            durations = [r.get("duration_ms") for r in records if isinstance(r.get("duration_ms"), int)]
-            mean_dur = int(sum(durations) / len(durations)) if durations else 0
-            scored.append({
-                "tool": ckey[0],
-                "model": ckey[1],
-                "reasoning_effort": ckey[2],
-                "samples": n,
-                "success_rate": round(sr, 3),
-                "mean_duration_ms": mean_dur,
-            })
-        if not scored:
-            continue
-        # Normalize duration across this group to compute score, then keep top 3.
-        durs = [c["mean_duration_ms"] for c in scored]
-        dmin, dmax = min(durs), max(durs)
-        spread = (dmax - dmin) or 1
-        for c in scored:
-            norm_dur = (c["mean_duration_ms"] - dmin) / spread
-            # budget_alignment baseline = 1 (controller already filtered by budget)
-            c["score"] = round(0.6 * c["success_rate"] + 0.2 * (1 - norm_dur) + 0.2, 3)
-        scored.sort(key=lambda c: c["score"], reverse=True)
-        out_groups.append({
-            "key": {
-                "phase": gkey[0],
-                "size": gkey[1],
-                "risk": gkey[2],
-                "budget": gkey[3],
-            },
-            "candidates": scored[:3],
-        })
-
-    out_groups.sort(key=lambda g: (g["key"]["phase"], g["key"]["size"] or "", g["key"]["risk"] or "", g["key"]["budget"] or ""))
-    return {
-        "samples": sample_count,
-        "min_samples": min_samples,
-        "groups": out_groups,
-        "dropped_candidates": dropped,
-        "last_record_ts": last_ts,
-    }
+    return auto_select_scorer.score_groups(
+        rows,
+        min_samples=min_samples,
+        effective_budget=None,
+        per_group_tail=max_records,
+        static_pick=None,
+    )
 
 
 def _load_timeline_runs(max_events: int = 500) -> list[dict]:
@@ -5819,6 +6553,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if m:
             self._handle_transcript_stream(m.group(1))
             return
+        m = _RE_SESSION_STREAM.fullmatch(parsed.path)
+        if m:
+            self._handle_session_stream(m.group(1))
+            return
         if parsed.path == "/api/skills":
             self._handle_skills_list()
             return
@@ -5979,6 +6717,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             m = _RE_AGENT_PROPOSAL_DECIDE.fullmatch(parsed.path)
             if m:
                 self._handle_agent_proposal_decision(m.group(1), m.group(2))
+                return
+            m = _RE_SESSION_INPUT.fullmatch(parsed.path)
+            if m:
+                self._handle_session_input(m.group(1), body)
+                return
+            m = _RE_SESSION_RELEASE.fullmatch(parsed.path)
+            if m:
+                self._handle_session_release(m.group(1))
+                return
+            m = _RE_SESSION_INTERRUPT.fullmatch(parsed.path)
+            if m:
+                self._handle_session_interrupt(m.group(1))
+                return
+            m = _RE_SESSION_BRANCH.fullmatch(parsed.path)
+            if m:
+                self._handle_session_branch(m.group(1))
                 return
             self._json(404, {"error": "unknown endpoint", "path": parsed.path})
 
@@ -6797,12 +7551,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _handle_auto_select(self, parsed) -> None:
         """Auto-select scorer ranking — aggregated from .ai/ledgers/metrics.jsonl.
         Powers the Auto-select view. Accepts `?min_samples=N` (clamp 1..50,
-        default 3); invalid values fall back to the default."""
+        default 5); invalid values fall back to the default."""
         raw = urllib.parse.parse_qs(parsed.query or "").get("min_samples", [None])[0]
         try:
             min_samples = max(1, min(50, int(raw)))
         except (TypeError, ValueError):
-            min_samples = 3
+            min_samples = 5
         self._json(200, _load_auto_select_ranking(min_samples=min_samples))
 
     # ----- settings (workflow update) helpers -----
@@ -7166,6 +7920,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "phases":       phases_list,
             },
             "phases": phases_out,
+            # Single source of truth for the model pickers — read live from the
+            # ``catalog:`` block in models.yaml so the dashboard never carries a
+            # second copy of the model list (see core.js applyModelCatalog).
+            "catalog": _read_models_catalog(models_path),
         })
 
     def _handle_improver_update(self, body: dict) -> None:
@@ -7722,6 +8480,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             new_content = new_md.read_text(encoding="utf-8")
         except OSError as e:
             self._json(500, {"error": "could not read proposal body", "detail": str(e)})
+            return
+        held_out = _check_held_out_gate(proposal_id)
+        obj["held_out"] = held_out
+        try:
+            pj.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+        except OSError as e:
+            print(f"[serve] failed to write proposal {pj} (held-out gate): {e}", flush=True)
+        if held_out.get("decision") == "block":
+            self._json(409, {
+                "error": "proposal regresses the held-out set",
+                "held_out": held_out,
+            })
             return
         ok = _apply_improvement(
             skill_path, new_content,
@@ -8563,18 +9333,259 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 print(f"[serve] transcript stream close failed: {e}", flush=True)
 
+    def _handle_session_stream(self, session_id: str) -> None:
+        """SSE: unified SessionEvent stream for a session.
+
+        Emits a leading state_change frame with the session's current registry
+        state, then tails the session's .jsonl normalizing each line via
+        _jsonl_line_to_session_events (one line can expand to several events).
+
+        For Phase 1 both mirror/acquiring and engine states fall through to the
+        same .jsonl tail path — the engine writes to the same file, so the
+        stream stays consistent. The engine path is validated manually (Task 10).
+        """
+        if _browser_cross_origin_blocked(self.headers):
+            self._json(403, {"error": "origin not allowed"})
+            return
+
+        # Validate that session_id is a UUID.
+        try:
+            uuid.UUID(session_id)
+        except ValueError:
+            self._json(404, {"error": "session not found", "session_id": session_id})
+            return
+
+        # Discover the .jsonl file the same way _handle_transcript_stream does.
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        path = (tdir / f"{session_id}.jsonl") if tdir else None
+
+        # Also accept a session that is only in the registry (engine-started, no
+        # file yet) — fall back to a 404 only when neither source is available.
+        with SESSION_REGISTRY._lock:
+            reg_session = SESSION_REGISTRY._sessions.get(session_id)
+            reg_state = reg_session.state.value if reg_session is not None else None
+
+        if (path is None or not path.is_file()) and reg_state is None:
+            self._json(404, {"error": "session not found", "session_id": session_id})
+            return
+
+        # Use registry state when available; default to "mirror".
+        state_label = reg_state if reg_state is not None else "mirror"
+
+        # If we have a registry entry but no file yet, try again via registry.
+        if path is None or not path.is_file():
+            if reg_session is not None and reg_session.jsonl_path:
+                path = Path(reg_session.jsonl_path)
+            if path is None or not path.is_file():
+                self._json(404, {"error": "session not found", "session_id": session_id})
+                return
+
+        try:
+            fh = path.open("rb")
+        except OSError as e:
+            self._json(500, {"error": str(e)})
+            return
+
+        def _open_stream_file():
+            return path.open("rb")
+
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+        except OSError:
+            try:
+                fh.close()
+            except OSError as exc:
+                print("[serve] session stream: file close on header flush error: %r" % (exc,), flush=True)
+            return
+
+        # Leading state_change frame — always emitted first.
+        # Include the pending flag so the chip can show "em fila" immediately.
+        _leading_pending = (reg_session.pending_turn is not None) if reg_session is not None else False
+        state_event = json.dumps({
+            "seq": 0,
+            "kind": "state_change",
+            "role": None,
+            "text": None,
+            "partial": False,
+            "state": state_label,
+            "pending": _leading_pending,
+        })
+        if not self._write_sse_frame(state_event):
+            try:
+                fh.close()
+            except OSError as exc:
+                print("[serve] session stream: file close on state frame write error: %r" % (exc,), flush=True)
+            return
+
+        # Catch-up: flush existing content, capped to avoid large memory use.
+        try:
+            fh.seek(0, 2)  # SEEK_END
+            size = fh.tell()
+            truncated = size > MAX_TRANSCRIPT_CATCHUP_BYTES
+            if truncated:
+                fh.seek(size - MAX_TRANSCRIPT_CATCHUP_BYTES)
+                fh.readline()  # discard partial first line
+            else:
+                fh.seek(0)
+            existing = fh.read()
+            pos = fh.tell()
+        except OSError:
+            try:
+                fh.close()
+            except Exception as e:
+                print(f"[serve] session stream close failed: {e}", flush=True)
+            return
+
+        seq = 1
+        if existing:
+            for raw_line in existing.decode("utf-8", "replace").replace("\r\n", "\n").split("\n"):
+                for evt in _jsonl_line_to_session_events(raw_line):
+                    evt["seq"] = seq
+                    if not self._write_sse_frame(json.dumps(evt)):
+                        try:
+                            fh.close()
+                        except Exception as e:
+                            print(f"[serve] session stream close failed: {e}", flush=True)
+                        return
+                    seq += 1
+
+        # Live tail: poll for appended bytes, normalize each new line.
+        session_start = time.monotonic()
+        last_size = pos
+        last_emitted_state = state_label
+        last_emitted_pending = _leading_pending  # track pending alongside state
+        # Per-stream cursor into the session's append-only warnings list. Seed
+        # at 0 so a freshly connected stream replays every warning raised so far
+        # (incl. ones recorded before connect), and — because we never clear the
+        # shared list — concurrent streams on the same session each get them all.
+        warn_seen = 0
+        idle_ticks = 0
+        max_idle_ticks = 240  # ~4 minutes at 1 s; client will reconnect
+        try:
+            while idle_ticks < max_idle_ticks:
+                if time.monotonic() - session_start > MAX_SSE_SESSION_S:
+                    self._write_sse_event("end", '{"reason":"max_session"}')
+                    return
+                try:
+                    readable, _, _ = select.select([self.connection], [], [], 1.0)
+                except (OSError, ValueError):
+                    return
+                if readable and self._sse_client_gone():
+                    return
+                # Surface registry state transitions (mirror -> acquiring ->
+                # engine) so the pane chip updates live. The leading frame only
+                # captured the state at connect time; without this an open
+                # stream would never see the session go live.
+                # Also surface the pending flag and drain any conflict warnings.
+                with SESSION_REGISTRY._lock:
+                    _rs = SESSION_REGISTRY._sessions.get(session_id)
+                    _cur_state = _rs.state.value if _rs is not None else None
+                    _cur_pending = (_rs.pending_turn is not None) if _rs is not None else False
+                    # Emit only the warnings appended since this stream last
+                    # looked, WITHOUT clearing the shared list — so multiple
+                    # concurrent streams on the same session each receive every
+                    # warning (no first-reader-wins drop). The list is
+                    # append-only and bounded by the rare anomaly count.
+                    if _rs is not None:
+                        _ws = _rs.warnings[warn_seen:]
+                        warn_seen = len(_rs.warnings)
+                    else:
+                        _ws = []
+                if _cur_state and (_cur_state != last_emitted_state or _cur_pending != last_emitted_pending):
+                    last_emitted_state = _cur_state
+                    last_emitted_pending = _cur_pending
+                    _sframe = json.dumps({
+                        "seq": seq, "kind": "state_change", "role": None,
+                        "text": None, "partial": False, "state": _cur_state,
+                        "pending": _cur_pending,
+                    })
+                    if not self._write_sse_frame(_sframe):
+                        return
+                    seq += 1
+                # Emit each drained warning as its own SSE frame.
+                for _wmsg in _ws:
+                    _wframe = json.dumps({
+                        "seq": seq, "kind": "warning", "role": None,
+                        "text": _wmsg, "partial": False, "state": None,
+                    })
+                    if not self._write_sse_frame(_wframe):
+                        return
+                    seq += 1
+                try:
+                    st = path.stat()
+                except OSError:
+                    break
+                if st.st_size < last_size:
+                    try:
+                        fh.close()
+                        fh = _open_stream_file()
+                    except OSError:
+                        break
+                    last_size = 0
+                if st.st_size > last_size:
+                    idle_ticks = 0
+                    try:
+                        fh.seek(last_size)
+                        chunk = fh.read(st.st_size - last_size)
+                    except OSError:
+                        break
+                    text = chunk.decode("utf-8", "replace").replace("\r\n", "\n")
+                    for raw_line in text.split("\n"):
+                        for evt in _jsonl_line_to_session_events(raw_line):
+                            evt["seq"] = seq
+                            if not self._write_sse_frame(json.dumps(evt)):
+                                return
+                            seq += 1
+                    last_size = st.st_size
+                else:
+                    idle_ticks += 1
+                    try:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        return
+            self._write_sse_event("end", "{}")
+        finally:
+            try:
+                fh.close()
+            except Exception as e:
+                print(f"[serve] session stream close failed: {e}", flush=True)
+
     def _handle_sessions_list(self) -> None:
-        """List chat sessions (claude + codex) that have a session_id, so the
-        dashboard can offer "Resume" picker entries."""
+        """Return a unified list merging IDE transcript sessions and in-memory
+        dashboard chat sessions.
+
+        (a) IDE sessions: discovered via the same transcript directory used by
+            _handle_transcripts_list — one entry per .jsonl file in
+            ~/.claude/projects/<slug>/.
+        (b) Dashboard sessions: in-memory chat / chat-codex JOBS that carry a
+            session_id (the existing behavior).
+
+        Items are de-duplicated by sid (session_id). When a sid appears in both
+        sources the dashboard-job record is treated as authoritative for
+        kind/model/status/timing fields, while transcript fields (title,
+        modified, size) fill any gaps.
+
+        Every item includes back-compat keys expected by existing tests
+        (session_id, task, model) plus the new additions (sid, state,
+        has_engine, title, modified, size).
+        """
+        # -- (b) Collect dashboard JOBS sessions ----------------------------
+        by_sid: dict[str, dict] = {}
         with JOBS_LOCK:
-            sessions = []
             for j in JOBS.values():
                 if j.get("kind") not in {"chat", "chat-codex"}:
                     continue
                 sid = j.get("session_id")
                 if not sid:
                     continue
-                sessions.append({
+                by_sid[sid] = {
+                    # Back-compat keys — must remain unchanged.
                     "session_id": sid,
                     "kind": j.get("kind"),
                     "task": (j.get("task") or "")[:120],
@@ -8583,8 +9594,169 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "ended_at": j.get("ended_at"),
                     "status": j.get("status"),
                     "last_job_id": j.get("id"),
-                })
-        sessions.sort(key=lambda s: s.get("started_at") or "", reverse=True)
+                    # Running totals so the status list can show duration /
+                    # cost / turns without a second /api/jobs round-trip.
+                    "cost": j.get("cost") if isinstance(j.get("cost"), dict) else None,
+                    "exit_code": j.get("exit_code"),
+                    "activity": None,
+                    # New unified keys.
+                    "sid": sid,
+                    "title": None,
+                    "modified": None,
+                    "size": None,
+                    "source": "dashboard",
+                }
+
+        # -- (a) Collect IDE transcript sessions ----------------------------
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        if tdir is not None:
+            try:
+                files = sorted(tdir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            except OSError:
+                files = []
+            TASK_PREVIEW_LIMIT = 60
+            for idx, p in enumerate(files):
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                session_id = p.stem
+                task = None
+                title = None
+                model = None
+                activity = None
+                if idx < TASK_PREVIEW_LIMIT:
+                    mtime_ns = st.st_mtime_ns
+                    with _TRANSCRIPT_PREVIEW_LOCK:
+                        cached = _TRANSCRIPT_PREVIEW_CACHE.get(session_id)
+                    if cached is not None and cached[0] == mtime_ns:
+                        _, task, title = cached
+                    else:
+                        task = _lookup_session_task(session_id)
+                        title = _lookup_session_title(session_id)
+                        with _TRANSCRIPT_PREVIEW_LOCK:
+                            _TRANSCRIPT_PREVIEW_CACHE[session_id] = (mtime_ns, task, title)
+                            _bound_path_cache(_TRANSCRIPT_PREVIEW_CACHE)
+                    with _TRANSCRIPT_MODEL_LOCK:
+                        mcached = _TRANSCRIPT_MODEL_CACHE.get(session_id)
+                    if mcached is not None and mcached[0] == mtime_ns:
+                        model = mcached[1]
+                    else:
+                        model = _lookup_session_model(session_id)
+                        with _TRANSCRIPT_MODEL_LOCK:
+                            _TRANSCRIPT_MODEL_CACHE[session_id] = (mtime_ns, model)
+                            _bound_path_cache(_TRANSCRIPT_MODEL_CACHE)
+                    with _TRANSCRIPT_ACTIVITY_LOCK:
+                        acached = _TRANSCRIPT_ACTIVITY_CACHE.get(session_id)
+                    if acached is not None and acached[0] == mtime_ns:
+                        activity = acached[1]
+                    else:
+                        activity = _lookup_session_activity(session_id)
+                        with _TRANSCRIPT_ACTIVITY_LOCK:
+                            _TRANSCRIPT_ACTIVITY_CACHE[session_id] = (mtime_ns, activity)
+                            _bound_path_cache(_TRANSCRIPT_ACTIVITY_CACHE)
+                modified = _dt.datetime.fromtimestamp(
+                    st.st_mtime, _dt.timezone.utc
+                ).isoformat(timespec="seconds")
+                if session_id in by_sid:
+                    # Enrich the existing dashboard-job record with transcript info.
+                    entry = by_sid[session_id]
+                    if entry.get("title") is None:
+                        entry["title"] = title
+                    if entry.get("modified") is None:
+                        entry["modified"] = modified
+                    if entry.get("size") is None:
+                        entry["size"] = st.st_size
+                    if not entry.get("task"):
+                        entry["task"] = (task or "")[:120]
+                    if not entry.get("model") and model:
+                        entry["model"] = model
+                    entry["activity"] = activity
+                else:
+                    # New IDE-only entry.
+                    by_sid[session_id] = {
+                        # Back-compat keys.
+                        "session_id": session_id,
+                        "kind": "ide",
+                        "task": (task or "")[:120],
+                        "model": model,
+                        "started_at": None,
+                        "ended_at": None,
+                        "status": None,
+                        "last_job_id": None,
+                        "cost": None,
+                        "exit_code": None,
+                        # New unified keys.
+                        "sid": session_id,
+                        "title": title,
+                        "modified": modified,
+                        "size": st.st_size,
+                        "source": "ide",
+                        "activity": activity,
+                    }
+
+        # -- (c) Codex sessions: live activity from the rollout tail ---------
+        # chat-codex JOBS aren't Claude transcripts, so the IDE loop above
+        # never touched them. Resolve each one's rollout and derive the same
+        # tool/thinking activity, cached by the rollout's mtime.
+        for sid, entry in by_sid.items():
+            if entry.get("kind") != "chat-codex":
+                continue
+            rp = _codex_rollout_path(sid)
+            if rp is None:
+                continue
+            try:
+                cm = rp.stat().st_mtime_ns
+            except OSError:
+                continue
+            with _TRANSCRIPT_ACTIVITY_LOCK:
+                ac = _TRANSCRIPT_ACTIVITY_CACHE.get(sid)
+            if ac is not None and ac[0] == cm:
+                entry["activity"] = ac[1]
+            else:
+                a = _lookup_codex_activity(sid)
+                with _TRANSCRIPT_ACTIVITY_LOCK:
+                    _TRANSCRIPT_ACTIVITY_CACHE[sid] = (cm, a)
+                    _bound_path_cache(_TRANSCRIPT_ACTIVITY_CACHE)
+                entry["activity"] = a
+
+        # -- Annotate each entry with registry state / has_engine -----------
+        with SESSION_REGISTRY._lock:
+            registry_snapshot = {
+                sid: (s.state.value, s.engine is not None)
+                for sid, s in SESSION_REGISTRY._sessions.items()
+            }
+        for sid, entry in by_sid.items():
+            reg = registry_snapshot.get(sid)
+            entry["state"] = reg[0] if reg is not None else "mirror"
+            entry["has_engine"] = reg[1] if reg is not None else False
+
+        # A session minted via POST /input (create-on-first-turn) lives in the
+        # registry for a couple of seconds before claude writes its transcript —
+        # and it has no JOBS entry. Without this it would be invisible in the
+        # list during that window, so a just-launched terminal "disappears"
+        # until the .jsonl lands. Surface registry-known sessions immediately.
+        _now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+        for sid, (state, has_engine) in registry_snapshot.items():
+            if sid in by_sid:
+                continue
+            by_sid[sid] = {
+                "session_id": sid, "kind": "ide", "task": "", "model": None,
+                # A live registry session is "now" — stamp modified so it sorts
+                # to the top of the active list instead of the bottom.
+                "started_at": _now_iso, "ended_at": None, "status": None,
+                "last_job_id": None, "sid": sid, "title": None,
+                "cost": None, "exit_code": None, "activity": None,
+                "modified": _now_iso, "size": None, "source": "registry",
+                "state": state, "has_engine": has_engine,
+            }
+
+        sessions = list(by_sid.values())
+        # Sort: prefer modified timestamp (IDE), fall back to started_at (dashboard).
+        sessions.sort(
+            key=lambda s: s.get("modified") or s.get("started_at") or "",
+            reverse=True,
+        )
         self._json(200, {"sessions": sessions})
 
     def _handle_job_get(self, job_id: str, qs: dict[str, list[str]]) -> None:
@@ -8903,6 +10075,146 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(code, {"error": err})
             return
         self._json(200, {"ok": True})
+
+    # UUID pattern used to validate session ids on the /api/sessions/* endpoints.
+    _UUID_RE = re.compile(
+        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
+
+    def _handle_session_input(self, sid: str, body: dict) -> None:
+        """POST /api/sessions/<sid>/input {text, model?, owner?}
+
+        Validates that ``sid`` is a UUID and ``text`` is non-empty, then calls
+        SESSION_REGISTRY.get_or_create + submit_turn.  Maps the registry result
+        to an HTTP status:
+          "accepted" -> 200 {"status": "accepted"}
+          "queued"   -> 202 {"status": "queued"}
+          "rejected" -> 409 {"status": "already_queued"}
+
+        An optional ``owner`` field (client/tab id) is validated against the
+        same short-id pattern used elsewhere and forwarded to submit_turn for
+        multi-tab ownership tracking.  Defaults to None when absent.
+        """
+        # Validate sid is a canonical UUID before doing anything else.
+        if not self._UUID_RE.match(sid):
+            self._json(400, {"error": "sid must be a UUID"})
+            return
+        # Validate text is present and non-empty.
+        text = body.get("text") or ""
+        if not isinstance(text, str) or not text.strip():
+            self._json(400, {"error": "text is required and must be non-empty"})
+            return
+        # Validate optional owner field: must match [A-Za-z0-9._-], max 64 chars.
+        owner = body.get("owner") or None
+        if owner is not None:
+            if not isinstance(owner, str) or len(owner) > 64 or not re.fullmatch(r"[A-Za-z0-9._-]+", owner):
+                self._json(400, {"error": "owner must be a short id matching [A-Za-z0-9._-]{1,64}"})
+                return
+        # Resolve the session transcript path (may be None if no .claude/projects dir).
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        jsonl_path = str(tdir / f"{sid}.jsonl") if tdir else f"{sid}.jsonl"
+        # Pick the model: body wins, otherwise fall back to session.model in
+        # models.yaml, otherwise the hard-coded fallback used by job creation.
+        model_override = (body.get("model") or "").strip() or None
+        # Validate the body-provided model id against the same regex used by
+        # _handle_jobs_create. The trusted models.yaml default skips this check.
+        if model_override and (
+            len(model_override) > 80
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", model_override)
+        ):
+            self._json(400, {"error": "model must be a short id matching [A-Za-z0-9._-]{1,80}"})
+            return
+        if not model_override:
+            session_cfg = _read_yaml_field(ROOT / ".ai" / "models.yaml", "session")
+            model_override = (session_cfg.get("model") if isinstance(session_cfg, dict) else None) or "claude-sonnet-4-6"
+        SESSION_REGISTRY.get_or_create(sid, jsonl_path=jsonl_path)
+        result = SESSION_REGISTRY.submit_turn(sid, {"text": text}, model_override, owner=owner)
+        # Map the registry result to the appropriate HTTP status code.
+        if result == "accepted":
+            self._json(200, {"status": "accepted"})
+        elif result == "queued":
+            self._json(202, {"status": "queued"})
+        else:
+            # "rejected" means the pending slot was already occupied.
+            self._json(409, {"status": "already_queued"})
+
+    def _handle_session_release(self, sid: str) -> None:
+        """POST /api/sessions/<sid>/release
+
+        Validates that ``sid`` is a UUID, then releases the session back to
+        MIRROR state via SESSION_REGISTRY.release.  Responds 200 {"status":
+        "released"}.
+        """
+        # Validate sid is a canonical UUID.
+        if not self._UUID_RE.match(sid):
+            self._json(400, {"error": "sid must be a UUID"})
+            return
+        # Ensure the session exists in the registry (create in MIRROR if not).
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        jsonl_path = str(tdir / f"{sid}.jsonl") if tdir else f"{sid}.jsonl"
+        SESSION_REGISTRY.get_or_create(sid, jsonl_path=jsonl_path)
+        SESSION_REGISTRY.release(sid)
+        self._json(200, {"status": "released"})
+
+    def _handle_session_interrupt(self, sid: str) -> None:
+        """POST /api/sessions/<sid>/interrupt
+
+        Signals the running engine to stop mid-turn and reconciles registry
+        state so writing_ours() returns False immediately.
+
+        Design choice: responds 200 even when the sid is not in the registry
+        (idempotent — interrupting a gone or never-started session is a no-op).
+        """
+        # Validate sid is a canonical UUID.
+        if not self._UUID_RE.match(sid):
+            self._json(400, {"error": "sid must be a UUID"})
+            return
+        with SESSION_REGISTRY._lock:
+            session = SESSION_REGISTRY._sessions.get(sid)
+            if session is not None and session.engine is not None:
+                # Signal the subprocess to stop generating output.
+                session.engine.interrupt()
+        # State reconcile: clears turn_in_flight and last_rendered_offset offset.
+        # Safe to call even when the session is absent — KeyError is swallowed below.
+        if sid in SESSION_REGISTRY._sessions:
+            try:
+                SESSION_REGISTRY.interrupt(sid)
+            except Exception as exc:
+                print(f"[serve] session interrupt reconcile failed for {sid}: {exc}", flush=True)
+        self._json(200, {"status": "interrupted"})
+
+    def _handle_session_branch(self, sid: str) -> None:
+        """POST /api/sessions/<sid>/branch
+
+        Branch ``sid`` into a fresh session by copying its transcript on disk:
+        mint a new session id, copy ``<sid>.jsonl`` record-by-record (rewriting
+        each record's ``sessionId`` to the new id), and return ``{"sid": <new>}``.
+        The caller opens a fresh session pane on the new sid, which resumes the
+        copied transcript on first input (the engine factory sees the file and
+        uses ``--resume``). No subprocess, poll, or force-kill is involved, so
+        the branch can neither time out nor truncate the new transcript.
+        """
+        if not self._UUID_RE.match(sid):
+            self._json(400, {"error": "sid must be a UUID"})
+            return
+        tdir = _transcripts_dir_for_cwd(ROOT)
+        if tdir is None:
+            self._json(404, {"error": "no transcripts directory for this project"})
+            return
+        src_path = tdir / f"{sid}.jsonl"
+        if not src_path.is_file():
+            self._json(404, {"error": "no transcript to branch from"})
+            return
+        new_sid = str(uuid.uuid4())
+        dst_path = tdir / f"{new_sid}.jsonl"
+        try:
+            n = _copy_transcript_with_new_sid(src_path, dst_path, new_sid)
+        except OSError as exc:
+            print(f"[serve] branch: copy {sid} -> {new_sid} failed: {exc}", flush=True)
+            self._json(500, {"error": "branch copy failed"})
+            return
+        print(f"[serve] branch: {sid} -> {new_sid} ({n} records copied)", flush=True)
+        self._json(200, {"sid": new_sid})
 
     def _compose_multimodal_blocks(self, text: str, images: list, files: list):
         """Validate + assemble a stream-json content array from a composer
@@ -9414,6 +10726,22 @@ def main() -> None:
         threading.Thread(
             target=_periodic_transcript_purge_loop,
             name="improver-transcript-purge",
+            daemon=True,
+        ).start()
+        # Background watcher: detects foreign writes and file disappearance so
+        # the session registry stays consistent without requiring HTTP requests.
+        threading.Thread(
+            target=_watcher_loop,
+            name="foreign-write-watcher",
+            daemon=True,
+        ).start()
+        # Background job reaper: reconciles dead-PID jobs and bounds the JOBS
+        # dict on a fixed cadence. Without it, reaping only happens when a
+        # browser polls /api/jobs, so an unattended server leaks finished
+        # job state and dead subprocess handles indefinitely.
+        threading.Thread(
+            target=_job_reaper_loop,
+            name="job-reaper",
             daemon=True,
         ).start()
         try:

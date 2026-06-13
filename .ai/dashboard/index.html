@@ -823,44 +823,40 @@
     </section>
 
     <section class="view" id="view-terminals" role="tabpanel" aria-labelledby="tab-terminals">
+      <!-- The Terminals tab is a launcher + status list. Interactive panes live
+           in the canvas window (app/canvas.html): pick what to launch, click
+           "New terminal", then open the row on the canvas with ⊞. The old
+           "open a pane" picker and the inline-pane controls (open-all / collapse
+           / auto-open / close-all) were removed when panes moved to the canvas. -->
       <div class="terms-toolbar">
-        <div class="field picker">
-          <label for="term-picker">Open a pane (dashboard job or IDE chat)</label>
-          <select id="term-picker"></select>
-        </div>
-        <!-- Cluster 1: pane visibility (open more / collapse / auto-show) -->
-        <button class="btn" id="term-open">Open</button>
-        <button class="btn" id="term-new" title="New terminal — pick type (AI chat / Shell) and start">New terminal</button>
-        <button class="term-icon-btn" id="term-open-all" title="Open all running panes" aria-label="Open all running">
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="4" width="9" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5" y="2" width="9" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
-        </button>
-        <button class="term-icon-btn" id="term-collapse-all" title="Collapse every open pane back to a status row" aria-label="Collapse all">
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 2 L8 5 L13 2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 14 L8 11 L13 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-        <button class="term-icon-btn" id="term-autoopen-toggle" title="Automatically open new chats as they appear" aria-label="Auto-open" aria-pressed="true">
-          <svg class="ico-eye-open" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.5 8 Q4 3.5 8 3.5 Q12 3.5 14.5 8 Q12 12.5 8 12.5 Q4 12.5 1.5 8 Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/></svg>
-          <svg class="ico-eye-off" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.5 8 Q4 3.5 8 3.5 Q12 3.5 14.5 8 Q12 12.5 8 12.5 Q4 12.5 1.5 8 Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><line x1="2.5" y1="13.5" x2="13.5" y2="2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-        </button>
-        <!-- Cluster 2: arrangement (layout selector only) -->
-        <div class="term-layout-group" role="group" aria-label="Pane layout">
-          <button class="layout-btn" data-layout="list" title="Status-row list (one column)" aria-label="List layout">
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="3"  width="12" height="2"/><rect x="2" y="7"  width="12" height="2"/><rect x="2" y="11" width="12" height="2"/></svg>
-          </button>
-          <button class="layout-btn" data-layout="split" title="Split (two columns side by side)" aria-label="Split layout">
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="3" width="5" height="10"/><rect x="9" y="3" width="5" height="10"/></svg>
-          </button>
-          <button class="layout-btn" data-layout="grid" title="Grid (auto-fit)" aria-label="Grid layout">
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><rect x="9" y="9" width="5" height="5"/></svg>
-          </button>
-        </div>
-        <!-- Cluster 3: destructive cleanup (sits at the end on purpose) -->
-        <button class="term-icon-btn danger" id="term-close-all" title="Close finished panes" aria-label="Close finished">
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 5 H12 M6 5 V3 H10 V5 M5 5 L6 13 H10 L11 5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
+        <label class="term-launch-field">
+          <span class="draft-label">Launch as</span>
+          <select id="term-launchtype">
+            <option value="ai" selected>AI chat (direct)</option>
+            <option value="shell">Terminal (shell)</option>
+          </select>
+        </label>
+        <label class="term-launch-field">
+          <span class="draft-label">Tool</span>
+          <select id="term-tool">
+            <option value="claude" selected>Claude</option>
+            <option value="codex">Codex</option>
+          </select>
+        </label>
+        <label class="term-launch-field">
+          <span class="draft-label">Model</span>
+          <select id="term-model"></select>
+        </label>
+        <label class="term-launch-field term-shell-field" hidden>
+          <span class="draft-label">Shell</span>
+          <select id="term-shell"></select>
+        </label>
+        <span class="term-launch-hint" id="term-launch-hint"></span>
+        <button class="btn" id="term-new" title="Launch the selected AI chat or terminal — then open it on the canvas with ⊞">New terminal</button>
         <span class="form-msg" id="term-msg"></span>
       </div>
-      <div class="terms-grid" id="terms-grid">
-        <div class="term-empty">No terminal panes open. Pick a job above, click <em>New terminal</em>, or start one in <em>Run</em>.</div>
+      <div class="terms-grid terms-status-list" id="terms-grid">
+        <div class="term-empty">Nothing launched yet. Click <em>New terminal</em> to launch an AI chat or a shell, then open it on the canvas with ⊞.</div>
       </div>
     </section>
 
@@ -1051,6 +1047,12 @@
   <script defer src="app/agent-orchestrations.js"></script>
   <script defer src="app/pipelines.js"></script>
   <script defer src="app/jobs.js"></script>
+  <script defer src="app/pane-helpers.js"></script>
+  <!-- pane-core.js is the ISOLATED canvas renderer (loaded by app/canvas.html,
+       NOT here): the dashboard's terminals.js uses its own pane model and does
+       not call PaneCore. canvas-bus.js, however, IS needed here — it provides
+       the cross-window bus the "send to canvas" button posts over. -->
+  <script defer src="app/canvas-bus.js"></script>
   <script defer src="app/terminals.js"></script>
   <!-- Top-center toast stack. All setMsg() calls render here so transient
        status never affects toolbar layout. aria-live makes screen readers

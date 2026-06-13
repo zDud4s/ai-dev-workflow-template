@@ -21,7 +21,7 @@
   }
 
   var THRESHOLD_KEY = "auto-select.min_samples";
-  var THRESHOLD_DEFAULT = 3;
+  var THRESHOLD_DEFAULT = 5;
 
   function clampThreshold(v) {
     var n = parseInt(v, 10);
@@ -72,11 +72,12 @@
 
   function renderGroup(group) {
     const k = group.key;
+    // Grouping key is (phase, size, risk) — budget is no longer a group axis
+    // (see auto_select_scorer.score_groups), so it is not shown in the header.
     const header =
       `<span class="as-phase">${escape(k.phase)}</span> / ` +
       `${escape(k.size || "any-size")} / ` +
-      `${escape(k.risk || "any-risk")} / ` +
-      `${escape(k.budget || "any-budget")}`;
+      `${escape(k.risk || "any-risk")}`;
     const rows = (group.candidates || [])
       .map((c, idx) => {
         const eff = c.reasoning_effort == null ? "—" : escape(c.reasoning_effort);
