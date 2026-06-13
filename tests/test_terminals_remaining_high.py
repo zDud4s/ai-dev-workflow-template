@@ -197,13 +197,23 @@ def test_postjson_errors_show_msg():
     )
 
 
-def test_term_open_optional_chain():
-    """#term-open may be absent in stripped shells; disabled writes must be guarded."""
+def test_launcher_toolbar_guards_missing_controls():
+    """#term-open was removed in the canvas convergence; the Terminals tab
+    now launches via the toolbar (#term-launchtype / #term-tool /
+    #term-model). Those lookups must be captured in locals and guarded with
+    an early return so a stripped shell (controls absent) doesn't throw on a
+    null .value / .addEventListener."""
     src = _src()
-    assert not re.search(r'\$\("#term-open"\)\.disabled\s*=', src), (
-        "terminals.js must not assign to $(\"#term-open\").disabled directly; "
-        "capture the lookup in a local and guard it before writing .disabled"
+    # The removed button must not be referenced anywhere anymore.
+    assert not re.search(r'\$\("#term-open"\)', src), (
+        "#term-open was removed in the canvas convergence — drop any "
+        "remaining reference to it in terminals.js"
     )
-    assert '$("#term-open")?.addEventListener' in src or 'const termOpenBtn = $("#term-open")' in src, (
-        "terminals.js should use optional chaining or a guarded local for #term-open"
+    body = _slice_function(src, "function wireLauncherToolbar(")
+    assert 'const launchSel = $("#term-launchtype")' in body, (
+        "wireLauncherToolbar must capture the #term-launchtype lookup in a local"
+    )
+    assert "if (!launchSel || !toolSel || !modelSel) return;" in body, (
+        "wireLauncherToolbar must early-return when its control lookups are "
+        "absent (stripped shell) before writing .value / wiring listeners"
     )

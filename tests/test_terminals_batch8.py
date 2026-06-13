@@ -89,11 +89,11 @@ def test_llm_dispatch_detector_removed_with_tracker():
 
 
 def test_composer_autosize_max_is_a_named_constant():
-    """The remaining textarea-autosize sites must reference the
-    ``COMPOSER_AUTOSIZE_MAX_PX`` module-level constant rather than
-    the literal ``220`` (which conflated UX intent with a magic
-    number wherever it appeared)."""
-    src = _src()
+    """Composer autosize uses the named ``COMPOSER_AUTOSIZE_MAX_PX``
+    constant rather than the literal ``220``. After the canvas convergence
+    the interactive composer (chat / session / transcript) lives in
+    pane-core.js, so the constant and its use-sites are asserted there."""
+    src = (TERMINALS_JS.parent / "pane-core.js").read_text(encoding="utf-8")
     # The constant must be declared.
     assert re.search(
         r"var\s+COMPOSER_AUTOSIZE_MAX_PX\s*=\s*220",
@@ -107,9 +107,9 @@ def test_composer_autosize_max_is_a_named_constant():
         "swap to ``COMPOSER_AUTOSIZE_MAX_PX`` so future UX tweaks are "
         "single-line affairs"
     )
-    # And the named-constant form must be present at least once beyond the
-    # declaration. Inline non-PTY panes were removed, so only the draft
-    # composer remains on this surface.
+    # The named-constant form must appear beyond the declaration — the
+    # chat / session / transcript composers in pane-core.js each autosize
+    # through it.
     refs = len(re.findall(r"COMPOSER_AUTOSIZE_MAX_PX", src))
     assert refs >= 2, (
         f"only {refs} references to COMPOSER_AUTOSIZE_MAX_PX — expected "
