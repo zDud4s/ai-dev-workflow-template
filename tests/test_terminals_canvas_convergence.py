@@ -253,19 +253,30 @@ def test_legacy_v1_persistence_removed():
 
 
 def test_canvas_window_reused_not_reloaded():
-    """Regression: opening the canvas a second time must NOT re-navigate the
-    named window (that reloaded canvas.html, tearing down panes and dropping the
-    in-flight `open` so the canvas could never grow past one pane). termSendToCanvas
-    routes through canvasOpenWindow, which focuses a live handle / empty-URL window
-    instead of re-passing the canvas URL."""
+    """Regression (two bugs): (1) opening the canvas a second time must NOT
+    re-navigate the named window — a LIVE _CANVAS_WIN handle is reused via
+    .focus() so adding a pane never reloads the canvas; (2) a fresh open must
+    load canvas.html by an ABSOLUTE url, never strand on about:blank (the old
+    empty-url-then-relative-navigate trick did). canvasOpenWindow owns this; the
+    callers route through it."""
     src = _src()
-    assert "function canvasOpenWindow" in src
-    assert "_CANVAS_WIN" in src
-    # The focus-existing path must use an empty URL (no navigation/reload).
-    assert 'window.open("", "dash-canvas")' in src
-    # termSendToCanvas must not bare-open the canvas URL itself anymore.
+    co = _slice_function(src, "function canvasOpenWindow(")
+    assert "_CANVAS_WIN" in co
+    # (1) Live handle reused via focus, returned without re-navigation.
+    assert "!_CANVAS_WIN.closed" in co
+    assert ".focus()" in co
+    # (2) No handle but a canvas is alive → reacquire WITHOUT navigating (empty
+    # url focuses the live window, no reload, so the in-flight `open` survives).
+    assert "isStale" in co
+    assert 'window.open("", "dash-canvas")' in co
+    # (3) Create path uses an ABSOLUTE url so it never resolves against an
+    # about:blank base (the prior about:blank bug).
+    assert 'new URL("app/canvas.html", window.location.href)' in co
+    assert 'window.open(canvasUrl, "dash-canvas")' in co
+    # termSendToCanvas must not bare-open the canvas URL itself — routes through
+    # canvasOpenWindow.
     send_body = _slice_function(src, "function termSendToCanvas")
-    assert 'window.open("app/canvas.html"' not in send_body
+    assert 'window.open(' not in send_body
     assert "canvasOpenWindow()" in send_body
 
 

@@ -154,12 +154,27 @@ def test_jsonl_line_tool_result_carries_tool_use_id(serve_module):
     assert evs[0]["is_error"] is False
 
 
-def test_jsonl_line_skips_thinking_and_empty(serve_module):
-    """Thinking blocks and blank/unknown lines emit nothing."""
-    thinking = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
-        {"type": "thinking", "thinking": "secret"},
+def test_jsonl_line_emits_thinking(serve_module):
+    """Thinking blocks surface as their own ``thinking`` event (chain-of-thought
+    is rendered collapsed in the pane). Order is preserved: a thought that
+    precedes the answer text emits before the message event."""
+    line = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "let me reason"},
+        {"type": "text", "text": "the answer"},
     ]}})
-    assert serve_module._jsonl_line_to_session_events(thinking) == []
+    evs = serve_module._jsonl_line_to_session_events(line)
+    assert [e["kind"] for e in evs] == ["thinking", "message"], evs
+    assert evs[0]["text"] == "let me reason"
+    assert evs[0]["role"] == "assistant"
+    # Blank thinking carries nothing → no event.
+    blank = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "   "},
+    ]}})
+    assert serve_module._jsonl_line_to_session_events(blank) == []
+
+
+def test_jsonl_line_skips_empty_and_unknown(serve_module):
+    """Blank and unparseable/unknown lines emit nothing."""
     assert serve_module._jsonl_line_to_session_events("") == []
     assert serve_module._jsonl_line_to_session_events("not json") == []
     assert serve_module._jsonl_line_to_session_events('{"type":"weird"}') == []

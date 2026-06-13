@@ -45,21 +45,23 @@ def test_terminals_js_has_no_inline_grid_render():
 
 
 def test_status_row_has_send_to_canvas_control():
-    """Each status row in the new list emits a send-to-canvas control plus the
-    on-canvas badge placeholder, so an operator can route the row to the canvas
-    window and see when it is mirrored there."""
+    """Each status row emits a send-to-canvas control, and the on-canvas state is
+    shown ON that control (selected look) rather than as a separate text badge."""
     src = (ROOT / ".ai/dashboard/app/terminals.js").read_text(encoding="utf-8")
 
-    # The row renderer builds rows; assert the row template wires both the
-    # send-to-canvas affordance and the on-canvas badge marker.
     assert "term-status-row" in src, (
         "terminals.js must build status rows (term-status-row)"
     )
     assert "send-to-canvas" in src, (
         "status rows must carry the .send-to-canvas control"
     )
-    assert "on-canvas-badge" in src, (
-        "status rows must carry the .on-canvas-badge marker"
+    # The standalone "on canvas" text badge was removed; the on-canvas state is
+    # toggled on the ⊞ button itself (a .on-canvas class → selected styling).
+    assert "on-canvas-badge" not in src, (
+        "the standalone on-canvas text badge must be gone"
+    )
+    assert "btn.classList.toggle(\"on-canvas\"" in src or "_markRowOnCanvas" in src, (
+        "on-canvas state must be reflected on the send-to-canvas button"
     )
 
 
@@ -106,8 +108,12 @@ def test_terminals_has_send_to_canvas_affordance():
 
     assert '"send-canvas"' in src, "missing send-canvas data-action hook"
     assert "send-to-canvas" in src, "missing .send-to-canvas affordance class"
-    assert 'window.open("app/canvas.html"' in src, (
-        "send-to-canvas must open the named canvas window app/canvas.html"
+    # The canvas window is opened (by absolute URL) into the named "dash-canvas"
+    # window via canvasOpenWindow.
+    assert '"dash-canvas"' in src, "missing named canvas window 'dash-canvas'"
+    assert "app/canvas.html" in src, "missing the canvas page url"
+    assert "canvasOpenWindow" in src, (
+        "send-to-canvas must open the canvas via canvasOpenWindow"
     )
     assert "CanvasBus" in src, "terminals.js must reference window.CanvasBus"
     # The bus client must be created via CanvasBus.create + a queue for the
