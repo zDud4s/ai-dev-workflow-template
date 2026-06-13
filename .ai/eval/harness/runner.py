@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -63,10 +64,13 @@ def run_arm_a(
     prompt = (task_dir / "task.md").read_text(encoding="utf-8")
     output_dir = Path(workdir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_seed(task, task_dir, output_dir)
 
     start = now()
     invoke_result = invoke(prompt)
-    (output_dir / task.entrypoint).write_text(invoke_result.text, encoding="utf-8")
+    if task.kind == "single":
+        solution_path = output_dir / task.entrypoint
+        _materialize_solution_file(solution_path, invoke_result.text, None)
     shutil.copyfile(task_dir / task.check, output_dir / task.check)
     completed = subprocess.run(
         [sys.executable, task.check],
@@ -74,6 +78,8 @@ def run_arm_a(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     end = now()
@@ -101,6 +107,7 @@ def run_arm_b(
     prompt = (task_dir / "task.md").read_text(encoding="utf-8")
     output_dir = Path(workdir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_seed(task, task_dir, output_dir)
 
     start = now()
     plan = phase_runner(
@@ -114,14 +121,14 @@ def run_arm_b(
         "Return only the source code.\n\n"
         f"Task:\n{prompt}\n\nPlan:\n{plan.text}",
     )
+    solution = _solution_for_review(task, output_dir, execute.text)
     review = phase_runner(
         "review",
         "Review this proposed solution for the task. "
         "This review is advisory only; the deterministic check decides success.\n\n"
-        f"Task:\n{prompt}\n\nSolution:\n{execute.text}",
+        f"Task:\n{prompt}\n\nSolution:\n{solution}",
     )
 
-    (output_dir / task.entrypoint).write_text(execute.text, encoding="utf-8")
     shutil.copyfile(task_dir / task.check, output_dir / task.check)
     completed = subprocess.run(
         [sys.executable, task.check],
@@ -129,6 +136,8 @@ def run_arm_b(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     end = now()
@@ -161,7 +170,11 @@ def run_arm_c(
     prompt = (task_dir / "task.md").read_text(encoding="utf-8")
     output_dir = Path(workdir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_seed(task, task_dir, output_dir)
     shutil.copyfile(task_dir / task.check, output_dir / task.check)
+
+    is_single = task.kind == "single"
+    solution_path = output_dir / task.entrypoint if is_single else None
 
     start = now()
     plan = phase_runner(
@@ -177,12 +190,15 @@ def run_arm_c(
     )
 
     phase_results = [plan, execute]
-    solution = execute.text
-    (output_dir / task.entrypoint).write_text(solution, encoding="utf-8")
+    if is_single:
+        solution = _materialize_solution_file(solution_path, execute.text, None)
+    else:
+        solution = execute.text
     completed = _run_check(task, output_dir)
     fixes_done = 0
 
     while completed.returncode != 0 and fixes_done < max_fixes:
+        before_solution = _solution_snapshot(solution_path) if is_single else None
         fix = phase_runner(
             "fix",
             "Fix this solution so it passes the deterministic check. "
@@ -192,8 +208,10 @@ def run_arm_c(
             f"{_completed_tail(completed)}",
         )
         phase_results.append(fix)
-        solution = fix.text
-        (output_dir / task.entrypoint).write_text(solution, encoding="utf-8")
+        if is_single:
+            solution = _materialize_solution_file(solution_path, fix.text, before_solution)
+        else:
+            solution = fix.text
         completed = _run_check(task, output_dir)
         fixes_done += 1
 
@@ -217,7 +235,12 @@ def run_arm_c(
     )
 
 
-def build_phase_command(phase: str, prompt_path: str, models_cfg: dict[str, Any]) -> list[str]:
+def build_phase_command(
+    phase: str,
+    prompt_path: str,
+    models_cfg: dict[str, Any],
+    cwd: str | Path | None = None,
+) -> list[str]:
     """Build the dispatcher argv for a phase.
 
     The prompt file is supplied by the caller on stdin; ``prompt_path`` is kept
@@ -231,7 +254,9 @@ def build_phase_command(phase: str, prompt_path: str, models_cfg: dict[str, Any]
         return [
             "claude",
             "-p",
-            "--bare",
+            # NOTE: no --bare here. --bare skips the keychain, so OAuth/claude.ai
+            # logins resolve as "Not logged in" for these plan/review calls. The
+            # eval runs read-only claude phases with normal keychain auth.
             "--exclude-dynamic-system-prompt-sections",
             PHASE_INSTRUCTION.format(phase=phase),
             "--model",
@@ -240,6 +265,7 @@ def build_phase_command(phase: str, prompt_path: str, models_cfg: dict[str, Any]
     if phase in {"execute", "fix"}:
         model = _phase_model(models_cfg, "execute")
         effort = _phase_effort(models_cfg, "execute")
+        command_cwd = Path(cwd) if cwd is not None else _repo_root()
         return [
             "codex",
             "exec",
@@ -250,12 +276,50 @@ def build_phase_command(phase: str, prompt_path: str, models_cfg: dict[str, Any]
             f"model_reasoning_effort={effort}",
             "--dangerously-bypass-approvals-and-sandbox",
             "-C",
-            str(_repo_root()),
+            str(command_cwd),
         ]
     raise ValueError(f"unsupported phase: {phase}")
 
 
-def cli_phase_runner(phase_name: str, prompt: str) -> PhaseResult:
+def resolve_launch(
+    argv: list[str],
+    os_name: str = os.name,
+    which: Callable[[str], str | None] = shutil.which,
+    exists: Callable[[str], bool] | None = None,
+) -> list[str]:
+    """Resolve a CLI argv to a CreateProcess-safe launch argv."""
+    if not argv:
+        raise ValueError("argv must not be empty")
+
+    exists = exists or os.path.exists
+    base = which(argv[0]) or argv[0]
+    lower_base = base.lower()
+
+    if os_name == "nt":
+        ps1 = base if lower_base.endswith(".ps1") else os.path.splitext(base)[0] + ".ps1"
+        if exists(ps1):
+            return [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                ps1,
+                *argv[1:],
+            ]
+        if lower_base.endswith((".cmd", ".bat")):
+            return ["cmd", "/c", base, *argv[1:]]
+
+    return [base, *argv[1:]]
+
+
+def cli_phase_runner(
+    phase_name: str,
+    prompt: str,
+    cwd: str | Path | None = None,
+    entrypoint: str | None = None,
+    project: bool = False,
+) -> PhaseResult:
     """Run one live eval phase through the configured headless dispatcher.
 
     This function writes the phase prompt to a temporary file, pipes that file to
@@ -263,19 +327,28 @@ def cli_phase_runner(phase_name: str, prompt: str) -> PhaseResult:
     is not exercised by unit tests because it may invoke LLM CLIs.
     """
     models_cfg = load_models_config(_repo_root() / ".ai" / "models.yaml")
+    if phase_name in {"execute", "fix"}:
+        if project:
+            prompt = with_project_files_instruction(prompt)
+        elif entrypoint is not None:
+            prompt = with_solution_file_instruction(prompt, entrypoint)
+
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
         handle.write(prompt)
         prompt_path = Path(handle.name)
 
     try:
-        command = build_phase_command(phase_name, str(prompt_path), models_cfg)
+        command = build_phase_command(phase_name, str(prompt_path), models_cfg, cwd=cwd)
+        launch_command = resolve_launch(command)
         with prompt_path.open("r", encoding="utf-8") as stdin:
             completed = subprocess.run(
-                command,
+                launch_command,
                 stdin=stdin,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
             )
     finally:
@@ -291,6 +364,42 @@ def cli_phase_runner(phase_name: str, prompt: str) -> PhaseResult:
         tokens_in=None,
         tokens_out=_parse_token_total(completed.stdout, completed.stderr),
     )
+
+
+def with_solution_file_instruction(prompt: str, entrypoint: str) -> str:
+    return (
+        f"{prompt}\n\n"
+        "Write the candidate solution to a file in the current directory.\n"
+        f"File path: {entrypoint}\n"
+        "The file must contain only the complete solution source code. "
+        "Do not rely on stdout as the solution; stdout may be a progress "
+        "transcript."
+    )
+
+
+def with_project_files_instruction(prompt: str) -> str:
+    return (
+        f"{prompt}\n\n"
+        "Create or modify whatever files are needed in the current directory to "
+        "satisfy the task. Any starter files already present are part of the "
+        "project; preserve their existing behavior unless the task says to change "
+        "it. Do not rely on stdout as the solution; write real files."
+    )
+
+
+def _prepare_seed(task: Task, task_dir: Path, output_dir: Path) -> None:
+    """Copy a project task's seed/ tree into the workdir before the agent runs."""
+    if task.seed is None:
+        return
+    seed_dir = task_dir / task.seed
+    for src in seed_dir.rglob("*"):
+        rel = src.relative_to(seed_dir)
+        dest = output_dir / rel
+        if src.is_dir():
+            dest.mkdir(parents=True, exist_ok=True)
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
 
 
 def load_models_config(path: str | Path) -> dict[str, Any]:
@@ -324,6 +433,44 @@ def load_models_config(path: str | Path) -> dict[str, Any]:
     return data
 
 
+def _solution_snapshot(path: Path) -> tuple[int, int] | None:
+    if not path.is_file():
+        return None
+    stat = path.stat()
+    return (stat.st_size, stat.st_mtime_ns)
+
+
+def _materialize_solution_file(
+    path: Path,
+    fallback_text: str,
+    before_solution: tuple[int, int] | None,
+) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file() and path.stat().st_size > 0:
+        after_solution = _solution_snapshot(path)
+        if before_solution is None or after_solution != before_solution:
+            return path.read_text(encoding="utf-8")
+
+    path.write_text(fallback_text, encoding="utf-8")
+    return fallback_text
+
+
+def _solution_for_review(task: Task, output_dir: Path, execute_text: str) -> str:
+    """Resolve the solution text shown to the advisory review phase.
+
+    For single-file tasks this materializes the entrypoint (file precedence over
+    transcript) and returns its content. For project tasks there is no single
+    file, so the executor's own output is passed through as advisory context.
+    """
+    if task.kind == "single":
+        return _materialize_solution_file(
+            output_dir / task.entrypoint,
+            execute_text,
+            before_solution=None,
+        )
+    return execute_text
+
+
 def _run_check(task: Task, output_dir: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, task.check],
@@ -331,6 +478,8 @@ def _run_check(task: Task, output_dir: Path) -> subprocess.CompletedProcess[str]
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 

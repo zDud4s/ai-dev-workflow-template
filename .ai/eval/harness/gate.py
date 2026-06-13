@@ -15,21 +15,18 @@ def _empty_summary() -> dict[str, Any]:
 
 def _summarize(path: Path) -> dict[str, Any]:
     by_task: dict[str, bool] = {}
-    try:
-        with path.open(encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                row = json.loads(line)
-                if row.get("partition") != "held-out":
-                    continue
-                task_id = row.get("task_id")
-                if not task_id:
-                    continue
-                by_task[str(task_id)] = bool(row.get("success"))
-    except (OSError, json.JSONDecodeError):
-        raise
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if row.get("partition") != "held-out":
+                continue
+            task_id = row.get("task_id")
+            if not task_id:
+                continue
+            by_task[str(task_id)] = bool(row.get("success"))
     passed = sum(1 for success in by_task.values() if success)
     return {"total": len(by_task), "passed": passed, "by_task": by_task}
 

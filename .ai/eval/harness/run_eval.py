@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,14 +22,18 @@ from harness.runner import (  # noqa: E402
     build_phase_command,
     cli_phase_runner,
     load_models_config,
+    resolve_launch,
     run_arm_a,
     run_arm_b,
     run_arm_c,
+    with_project_files_instruction,
+    with_solution_file_instruction,
     write_results,
 )
 
 
-RunnerFactory = Callable[[str], Invoker | PhaseRunner]
+TaskRunnerBinder = Callable[[Task, str | Path], Invoker | PhaseRunner]
+RunnerFactory = Callable[[str], Invoker | PhaseRunner | TaskRunnerBinder]
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SUITE_ROOT = REPO_ROOT / ".ai" / "eval" / "suite"
@@ -43,45 +48,56 @@ def run_suite(
     out_path: str | Path,
     workdir_root: str | Path,
     now: Callable[[], float] = time.monotonic,
+    trials: int = 1,
 ) -> list[ArmResult]:
-    """Run one arm across supplied tasks and append JSONL ArmResults."""
+    """Run one arm across supplied tasks and append JSONL ArmResults.
+
+    Each task is run ``trials`` times (default 1). Repeated trials give the
+    ablation enough samples to distinguish arms whose per-run outcome is noisy.
+    """
     if arm not in {"a", "b", "c"}:
         raise ValueError(f"unsupported arm: {arm}")
+    if trials < 1:
+        raise ValueError(f"trials must be >= 1, got {trials}")
 
     root = Path(workdir_root)
     root.mkdir(parents=True, exist_ok=True)
-    runner = make_runner(arm)
+    base_runner = make_runner(arm)
     results: list[ArmResult] = []
 
     for index, task in enumerate(tasks):
-        workdir = Path(
-            tempfile.mkdtemp(prefix=f"arm-{arm}-{task.id}-{index}-", dir=root)
-        )
-        if arm == "a":
-            result = run_arm_a(
-                task,
-                _ACTIVE_SUITE_ROOT,
-                cast(Invoker, runner),
-                workdir,
-                now=now,
+        for trial in range(trials):
+            workdir = Path(
+                tempfile.mkdtemp(
+                    prefix=f"arm-{arm}-{task.id}-{index}-t{trial}-", dir=root
+                )
             )
-        elif arm == "b":
-            result = run_arm_b(
-                task,
-                _ACTIVE_SUITE_ROOT,
-                cast(PhaseRunner, runner),
-                workdir,
-                now=now,
-            )
-        else:
-            result = run_arm_c(
-                task,
-                _ACTIVE_SUITE_ROOT,
-                cast(PhaseRunner, runner),
-                workdir,
-                now=now,
-            )
-        results.append(result)
+            runner = _bind_runner_to_task(base_runner, task, workdir)
+            if arm == "a":
+                result = run_arm_a(
+                    task,
+                    _ACTIVE_SUITE_ROOT,
+                    cast(Invoker, runner),
+                    workdir,
+                    now=now,
+                )
+            elif arm == "b":
+                result = run_arm_b(
+                    task,
+                    _ACTIVE_SUITE_ROOT,
+                    cast(PhaseRunner, runner),
+                    workdir,
+                    now=now,
+                )
+            else:
+                result = run_arm_c(
+                    task,
+                    _ACTIVE_SUITE_ROOT,
+                    cast(PhaseRunner, runner),
+                    workdir,
+                    now=now,
+                )
+            results.append(result)
 
     write_results(results, out_path)
     return results
@@ -104,6 +120,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--proposal")
     parser.add_argument("--suite-root", default=str(DEFAULT_SUITE_ROOT))
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=1,
+        help="number of times to run each task (default 1)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -119,16 +141,19 @@ def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_SUITE_ROOT
     previous_suite_root = _ACTIVE_SUITE_ROOT
     _ACTIVE_SUITE_ROOT = suite_root
+    workdir_root = Path(tempfile.mkdtemp(prefix=f"eval-arm-{args.arm}-"))
     try:
         run_suite(
             args.arm,
             tasks,
             _make_live_runner,
             resolve_results_path(REPO_ROOT, args.arm, args.proposal),
-            Path(tempfile.mkdtemp(prefix=f"eval-arm-{args.arm}-")),
+            workdir_root,
+            trials=args.trials,
         )
     finally:
         _ACTIVE_SUITE_ROOT = previous_suite_root
+        shutil.rmtree(workdir_root, ignore_errors=True)
     return 0
 
 
@@ -154,27 +179,86 @@ def _print_dry_run(arm: str, models_cfg: dict[str, object]) -> None:
         print(f"{phase}: {shlex.join(command)}")
 
 
-def _make_live_runner(arm: str) -> Invoker | PhaseRunner:
+def _make_live_runner(arm: str) -> Invoker | PhaseRunner | TaskRunnerBinder:
     if arm == "a":
-        return _live_single_call_invoker
-    return cli_phase_runner
+        return _live_single_call_invoker_for_task
+    return _live_phase_runner_for_task
 
 
-def _live_single_call_invoker(prompt: str) -> InvokeResult:
+def _bind_runner_to_task(
+    runner: Invoker | PhaseRunner | TaskRunnerBinder,
+    task: Task,
+    workdir: str | Path,
+) -> Invoker | PhaseRunner:
+    if getattr(runner, "_needs_eval_workdir", False):
+        return cast(TaskRunnerBinder, runner)(task, workdir)
+    return cast(Invoker | PhaseRunner, runner)
+
+
+def _live_phase_runner_for_task(task: Task, workdir: str | Path) -> PhaseRunner:
+    project = task.kind == "project"
+
+    def run_phase(phase_name: str, prompt: str) -> PhaseResult:
+        if phase_name in {"execute", "fix"}:
+            return cli_phase_runner(
+                phase_name,
+                prompt,
+                cwd=workdir,
+                entrypoint=task.entrypoint,
+                project=project,
+            )
+        return cli_phase_runner(phase_name, prompt)
+
+    return run_phase
+
+
+def _live_single_call_invoker_for_task(task: Task, workdir: str | Path) -> Invoker:
+    project = task.kind == "project"
+
+    def invoke(prompt: str) -> InvokeResult:
+        return _live_single_call_invoker(
+            prompt,
+            workdir=workdir,
+            entrypoint=task.entrypoint,
+            project=project,
+        )
+
+    return invoke
+
+
+def _live_single_call_invoker(
+    prompt: str,
+    workdir: str | Path | None = None,
+    entrypoint: str | None = None,
+    project: bool = False,
+) -> InvokeResult:
     models_cfg = load_models_config(MODELS_PATH)
+    if project:
+        prompt = with_project_files_instruction(prompt)
+    elif entrypoint:
+        prompt = with_solution_file_instruction(prompt, entrypoint)
+
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
         handle.write(prompt)
         prompt_path = Path(handle.name)
 
     try:
-        command = build_phase_command("execute", str(prompt_path), models_cfg)
+        command = build_phase_command(
+            "execute",
+            str(prompt_path),
+            models_cfg,
+            cwd=workdir,
+        )
+        launch_command = resolve_launch(command)
         with prompt_path.open("r", encoding="utf-8") as stdin:
             completed = subprocess.run(
-                command,
+                launch_command,
                 stdin=stdin,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
             )
     finally:
@@ -186,6 +270,10 @@ def _live_single_call_invoker(prompt: str) -> InvokeResult:
             f"{completed.stderr.strip()}"
         )
     return InvokeResult(text=completed.stdout, tokens_in=None, tokens_out=None)
+
+
+setattr(_live_phase_runner_for_task, "_needs_eval_workdir", True)
+setattr(_live_single_call_invoker_for_task, "_needs_eval_workdir", True)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised by script usage

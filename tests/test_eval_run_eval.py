@@ -23,6 +23,7 @@ from harness.runner import (  # noqa: E402
     InvokeResult,
     PhaseResult,
     build_phase_command,
+    resolve_launch,
 )
 
 
@@ -43,7 +44,7 @@ def test_build_phase_command_plan_is_claude_readonly() -> None:
         assert "--dangerously-bypass-approvals-and-sandbox" not in argv
 
 
-def test_build_phase_command_execute_is_codex_writecapable() -> None:
+def test_build_phase_command_execute_is_codex_writecapable(tmp_path: Path) -> None:
     for phase in ("execute", "fix"):
         argv = build_phase_command(phase, "prompt.md", MODELS_CFG)
 
@@ -53,6 +54,71 @@ def test_build_phase_command_execute_is_codex_writecapable() -> None:
         assert "--config" in argv
         assert argv[argv.index("--config") + 1] == "model_reasoning_effort=high"
         assert "--dangerously-bypass-approvals-and-sandbox" in argv
+        assert argv[argv.index("-C") + 1] == str(REPO_ROOT)
+
+        cwd_argv = build_phase_command(phase, "prompt.md", MODELS_CFG, cwd=tmp_path)
+        assert cwd_argv[cwd_argv.index("-C") + 1] == str(tmp_path)
+
+
+def test_resolve_launch_nt_prefers_ps1() -> None:
+    argv = ["codex", "exec", "-m", "gpt-5.5"]
+
+    resolved = resolve_launch(
+        argv,
+        os_name="nt",
+        which=lambda name: r"C:\x\codex.CMD" if name == "codex" else None,
+        exists=lambda path: path == r"C:\x\codex.ps1",
+    )
+
+    assert resolved == [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        r"C:\x\codex.ps1",
+        "exec",
+        "-m",
+        "gpt-5.5",
+    ]
+
+
+def test_resolve_launch_nt_cmd_when_no_ps1() -> None:
+    argv = ["codex", "exec", "-m", "gpt-5.5"]
+
+    resolved = resolve_launch(
+        argv,
+        os_name="nt",
+        which=lambda name: r"C:\x\codex.CMD" if name == "codex" else None,
+        exists=lambda _path: False,
+    )
+
+    assert resolved == ["cmd", "/c", r"C:\x\codex.CMD", "exec", "-m", "gpt-5.5"]
+
+
+def test_resolve_launch_posix() -> None:
+    argv = ["codex", "exec", "-m", "gpt-5.5"]
+
+    resolved = resolve_launch(
+        argv,
+        os_name="posix",
+        which=lambda name: "/usr/bin/codex" if name == "codex" else None,
+    )
+
+    assert resolved == ["/usr/bin/codex", "exec", "-m", "gpt-5.5"]
+
+
+def test_resolve_launch_unresolved() -> None:
+    argv = ["codex", "exec", "-m", "gpt-5.5"]
+
+    resolved = resolve_launch(
+        argv,
+        os_name="nt",
+        which=lambda _name: None,
+        exists=lambda _path: False,
+    )
+
+    assert resolved == ["codex", "exec", "-m", "gpt-5.5"]
 
 
 def test_run_suite_partition_selection(
@@ -77,8 +143,51 @@ def test_run_suite_partition_selection(
         tmp_path / "tuning-work",
     )
 
-    assert [result.task_id for result in held_out] == ["reverse-words"]
-    assert [result.task_id for result in tuning] == ["sum-list"]
+    assert [result.task_id for result in held_out] == [
+        "reverse-words",
+        "roman-to-int",
+        "is-balanced",
+        "int-to-roman",
+        "lru-cache",
+    ]
+    assert [result.task_id for result in tuning] == [
+        "sum-list",
+        "compare-version",
+        "flatten",
+        "json-pointer",
+        "kv-store",
+        "cli-parser",
+    ]
+
+
+def test_run_suite_repeats_trials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results_dir = _patch_results_dir(tmp_path, monkeypatch)
+    task = load_manifest(SUITE_ROOT).tuning()[0]
+
+    results = run_suite(
+        "a",
+        [task],
+        _fake_runner_factory([]),
+        results_dir / "arm-a.jsonl",
+        tmp_path / "work",
+        trials=3,
+    )
+
+    assert len(results) == 3
+    assert {result.task_id for result in results} == {task.id}
+
+    with pytest.raises(ValueError):
+        run_suite(
+            "a",
+            [task],
+            _fake_runner_factory([]),
+            results_dir / "arm-a-bad.jsonl",
+            tmp_path / "work-bad",
+            trials=0,
+        )
 
 
 def test_run_suite_writes_under_results_and_proposal_routing(
