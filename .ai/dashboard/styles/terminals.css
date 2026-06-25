@@ -1,0 +1,1159 @@
+    /* ---------------- Terminals (multi-pane HUD) ---------------- */
+    .terms-toolbar {
+      display: flex;
+      gap: var(--s-2);
+      align-items: end;
+      margin-bottom: var(--s-4);
+      flex-wrap: wrap;
+      padding: var(--s-3) var(--s-4);
+      background: var(--surf-1);
+      border: 1px solid var(--border-soft);
+    }
+    .terms-toolbar .picker {
+      flex: 1 1 280px;
+      max-width: 480px;
+    }
+    /* Launcher controls live in the toolbar now: pick what to launch, the tool
+       and the model, then "New terminal" (pinned to the right edge) launches. */
+    .terms-toolbar .term-launch-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+    .terms-toolbar .term-launch-field .draft-label {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    .terms-toolbar .term-launch-field select {
+      background: var(--surf-2);
+      color: var(--text);
+      border: 1px solid var(--border-soft);
+      padding: 6px 8px;
+      font: inherit;
+      font-size: 13px;
+    }
+    .terms-toolbar .term-launch-field select:focus {
+      outline: 1px solid var(--accent);
+      border-color: var(--accent);
+    }
+    .terms-toolbar .term-launch-hint {
+      align-self: end;
+      color: var(--text-dim);
+      font-size: 12px;
+      max-width: 280px;
+    }
+    /* "New terminal" sits at the far right of the launcher bar. */
+    .terms-toolbar #term-new {
+      margin-left: auto;
+      align-self: end;
+    }
+    /* Status-bar list layout: each pane is a row. Collapsed rows are
+       one-line status indicators; expanded rows reveal the full
+       body + composer. Replaces the old 2-col grid. */
+    .terms-grid {
+      display: flex;
+      flex-direction: column;
+      gap: var(--s-2);
+      align-items: stretch;
+    }
+    /* Float panes that want attention (waiting for input, or in the
+       dead+resumable state) to the top of the status-bar list so the
+       operator can scan from the top down. Uses flex `order` so we
+       don't have to mutate DOM order on every state change. */
+    .terms-grid > .term-pane { order: 1; }
+    .terms-grid > .term-pane.is-waiting,
+    .terms-grid > .term-pane.needs-action { order: 0; }
+    /* Layout selector (.layout-split / .layout-grid / .term-layout-group)
+       removed in Chunk 5b-1 — the Terminals tab is a status list and the
+       canvas window owns multi-pane geometry. */
+    /* ── Status rows (Chunk 5b-1) ───────────────────────────────────────
+       Each session / job is a single read-only row: status pill, activity
+       chip, tool/model, task preview, and the send-to-canvas control. */
+    .terms-status-rows { display: flex; flex-direction: column; gap: var(--s-2); }
+    .term-status-row {
+      display: flex;
+      align-items: center;
+      gap: var(--s-3);
+      padding: 8px 12px;
+      background: var(--surf-1);
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid transparent;
+      min-height: 38px;
+      box-sizing: border-box;
+    }
+    .term-status-row .status-pill { flex: 0 0 auto; }
+    .term-status-row .activity {
+      flex: 0 1 auto; min-width: 0; max-width: 22ch;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: var(--text-dim); font-size: 12px;
+    }
+    /* Live transcript activity: a running tool stands out in the accent, the
+       "thinking…" state reads as a quieter italic. */
+    .term-status-row .activity.act-tool { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .term-status-row .activity.act-thinking { font-style: italic; }
+    .term-status-row .activity.act-result,
+    .term-status-row .activity.act-text { color: var(--text-dim); font-style: italic; }
+    .term-status-row .row-tool { flex: 0 0 auto; color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .term-status-row .row-task {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+    }
+    /* Read-only metrics chips (model · duration · cost · turns · exit).
+       Sits between the task and the action buttons; margin-left:auto on
+       .row-actions keeps the buttons pinned right while these hug the task. */
+    .term-status-row .row-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s-2); }
+    .term-status-row .meta-chip {
+      font-size: 11px; color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .term-status-row .meta-chip.meta-model { text-transform: none; letter-spacing: 0; opacity: 0.85; }
+    .term-status-row .meta-chip.meta-cost { color: var(--text); }
+    .term-status-row .meta-chip.meta-exit-bad { color: var(--bad); }
+    .term-status-row .row-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s-2); margin-left: auto; }
+    .term-status-row .send-to-canvas {
+      all: unset; cursor: var(--cur-pointer);
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; color: var(--text-dim);
+      border: 1px solid var(--border-soft); background: var(--surf-1);
+      transition: color 140ms var(--easing), border-color 140ms var(--easing);
+    }
+    .term-status-row .send-to-canvas:hover { color: var(--accent); border-color: var(--accent); }
+    .term-status-row.on-canvas { border-left-color: var(--accent); }
+    /* On-canvas state lives ON the ⊞ button: it renders SELECTED — filled
+       accent + a solid accent border + a soft ring — so the row reads
+       "open on the canvas" without a separate text badge. */
+    .term-status-row .send-to-canvas.on-canvas,
+    .term-head .actions .send-to-canvas.on-canvas {
+      color: var(--on-accent);
+      background: var(--accent);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+    .term-status-row .send-to-canvas.on-canvas:hover,
+    .term-head .actions .send-to-canvas.on-canvas:hover {
+      color: var(--on-accent); background: var(--accent);
+    }
+    /* Collapsible "finished" group keeps terminal sessions out of the way. */
+    .terms-finished-group { border: 0; margin: 0; }
+    .terms-finished-group > summary {
+      cursor: var(--cur-pointer); color: var(--text-dim);
+      font-size: 12px; padding: 6px 4px; list-style: none;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .terms-finished-group > summary::-webkit-details-marker { display: none; }
+    .terms-finished-group[open] > summary { color: var(--text); }
+    .terms-finished-group .term-status-row { opacity: 0.78; }
+    /* Standalone icon buttons (open-all / collapse-all / close-finished /
+       auto-open). Same height as .btn so the whole toolbar lines up. */
+    .term-icon-btn { all: unset; cursor: var(--cur-pointer); display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 38px; color: var(--text-dim); border: 1px solid var(--border-soft); background: var(--surf-1); transition: color 140ms var(--easing), border-color 140ms var(--easing), background-color 140ms var(--easing); box-sizing: border-box; }
+    .term-icon-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--panel-inset); }
+    .term-icon-btn.active { color: var(--on-accent); background: var(--accent); border-color: transparent; }
+    .term-icon-btn svg { display: block; }
+    /* Auto-open eye toggles which SVG shows based on .active. */
+    #term-autoopen-toggle .ico-eye-off { display: none; }
+    #term-autoopen-toggle:not(.active) .ico-eye-open { display: none; }
+    #term-autoopen-toggle:not(.active) .ico-eye-off { display: block; }
+    /* Slight extra gap before the layout group and the auto-open toggle
+       so the toolbar reads as three clusters: action icons / layout /
+       behavior. The toolbar's base flex gap handles the rest. */
+    .terms-toolbar .term-layout-group { margin-left: var(--s-3); }
+    .terms-toolbar #term-close-all { margin-left: var(--s-3); }
+    .term-icon-btn.danger:hover { color: var(--bad); border-color: var(--bad); }
+    /* Danger variant gets a red focus ring instead of the global accent
+       outline so destructive actions are visually distinct under keyboard
+       focus too (matches the hover treatment). */
+    .term-icon-btn.danger:focus-visible {
+      outline-color: var(--bad);
+      box-shadow: 0 0 0 4px oklch(60% 0.150 25 / 0.25);
+    }
+    /* setMsg now routes to the global #toast-root (top-center of the
+       viewport) so the inline .form-msg spans no longer receive text and
+       cannot affect toolbar layout. The element stays in the DOM in case
+       some caller still writes to it directly — hide it explicitly. */
+    .terms-toolbar > .form-msg { display: none; }
+    /* Density modes (toggled via body class .density-compact). */
+    body.density-compact .terms-grid { gap: 4px; }
+    body.density-compact .term-pane:not(.collapsed) { min-height: 280px; max-height: 60vh; }
+    body.density-compact .term-head { padding: 4px 8px; }
+    body.density-compact .term-body { padding: 6px 10px; font-size: 12px; }
+    body.density-compact .term-body.chat { gap: 6px; }
+    body.density-compact .term-body.chat .msg { margin: 0; padding: 4px 8px; }
+    body.density-compact .term-foot { padding: 4px 6px; }
+    /* ── Canvas window (app/canvas.html) ──────────────────────────────────
+       The canvas lays panes out free-form from SplitTree.computeRects rather
+       than the dashboard's flow/grid. #canvas-root is the positioning context;
+       each .canvas-pane is absolutely placed at its computed rect, and the
+       .term-pane PaneCore mounts inside fills it. Gutters are drawn as overlays
+       on top (computeRects does NOT subtract gutter width), so panes tile edge
+       to edge here. */
+    #canvas-root {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--surf-1);
+    }
+    .canvas-pane {
+      position: absolute;
+      overflow: hidden;
+      box-sizing: border-box;
+      /* Stack the canvas head bar above the mounted .term-pane so the pane
+         body fills whatever the head leaves. */
+      display: flex;
+      flex-direction: column;
+    }
+    .canvas-pane.dragging { opacity: 0.5; }
+    .canvas-pane.focused {
+      outline: 1px solid var(--accent);
+      outline-offset: -1px;
+    }
+    /* In the canvas, the mounted pane should fill its absolute host (the
+       dashboard's min/max-height flow constraints don't apply here). It is the
+       flex remainder under the head bar. */
+    .canvas-pane > .term-pane,
+    .canvas-pane > .term-pane:not(.collapsed) {
+      width: 100%;
+      flex: 1 1 auto;
+      min-height: 0;
+      max-height: none;
+    }
+
+    /* ── Canvas pane head (drag handle + close) ───────────────────────────── */
+    .canvas-pane > .canvas-pane-head {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 22px;
+      padding: 0 6px;
+      background: var(--surf-3);
+      border-bottom: 1px solid var(--border-soft);
+      cursor: grab;
+      user-select: none;
+      font: 11px/1 var(--ff-mono);
+      color: var(--text-2);
+    }
+    .canvas-pane > .canvas-pane-head:active { cursor: grabbing; }
+    .canvas-pane-title {
+      flex: 1 1 auto;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .canvas-pane-close {
+      flex: 0 0 auto;
+      background: transparent;
+      border: 0;
+      color: inherit;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    .canvas-pane-close:hover { color: var(--bad); }
+
+    /* ── Drag-to-split drop-zone highlight (overlay, never eats the drop) ──── */
+    .canvas-dropzone {
+      position: absolute;
+      z-index: 50;
+      pointer-events: none;
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      border: 1px solid var(--accent);
+      box-sizing: border-box;
+    }
+
+    /* ── Resizable gutters (overlays centred on each split seam) ──────────── */
+    .canvas-gutter {
+      position: absolute;
+      z-index: 40;
+      background: transparent;
+      touch-action: none; /* let pointer events drive the resize, not scroll */
+    }
+    .canvas-gutter-row { cursor: col-resize; }
+    .canvas-gutter-col { cursor: row-resize; }
+    .canvas-gutter:hover {
+      background: color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+
+    .term-pane {
+      background: var(--surf-2);
+      border: 1px solid var(--border-soft);
+      border-radius: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: border-color 160ms var(--easing), box-shadow 160ms var(--easing);
+      position: relative;
+      container-type: inline-size;
+      container-name: term-pane;
+    }
+    /* Only expanded panes claim vertical space. */
+    .term-pane:not(.collapsed) {
+      min-height: 360px;
+      max-height: 70vh;
+    }
+    .term-pane.focus {
+      border-color: var(--accent);
+      box-shadow: var(--accent-glow-soft);
+    }
+    .term-pane.dead  { border-color: var(--border-soft); }
+    .term-pane.dead .term-head,
+    .term-pane.dead .term-foot { opacity: 0.75; }
+    /* Pinned/maximised pane: tall viewport (no grid math needed in flex). */
+    .term-pane.pinned:not(.collapsed) {
+      max-height: 85vh;
+      min-height: 480px;
+    }
+    /* Collapsed pane = status-bar row. Hide body/search/composer; head only. */
+    .term-pane.collapsed > .term-search,
+    .term-pane.collapsed > .term-body,
+    .term-pane.collapsed > .attach-tray,
+    .term-pane.collapsed > .term-foot {
+      display: none !important;
+    }
+    .term-pane.collapsed .term-head { cursor: var(--cur-pointer); border-bottom: 0; }
+    .term-pane.collapsed .term-head:hover { background: var(--surf-2); }
+    /* Pane in collapsed state with new activity since the operator last
+       looked. Subtle pulse on the left edge so it stands out in the list. */
+    .term-pane.collapsed.has-update {
+      border-left: 2px solid var(--accent);
+    }
+    .term-pane.collapsed.needs-action {
+      border-left: 2px solid var(--warn);
+      animation: term-needs-action 1800ms ease-in-out infinite;
+    }
+    @keyframes term-needs-action {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.55; }
+    }
+    /* Current-activity chip in the head row: "thinking…", "tool: Edit", etc. */
+    .term-head .activity {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--bg-inset);
+      color: var(--text-2);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      letter-spacing: 0.04em;
+      border: 1px dashed var(--border-soft);
+      white-space: nowrap;
+      flex: 0 0 auto;
+      justify-content: center;
+      width: 130px;
+      box-sizing: border-box;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .term-head .activity.busy { color: var(--accent); border-color: var(--accent); border-style: solid; }
+    .term-head .activity.waiting { color: var(--warn); border-color: transparent; background: var(--warn-bg); }
+    .term-head .activity.ready { color: var(--good); border-color: transparent; background: var(--ok-bg); }
+    .term-head .activity.ended { color: var(--bad); border-color: transparent; background: var(--bad-bg); }
+    /* The activity-chip hide rule lived here at <=420px AND again at <=440px
+       (further down in the container-query stack). The <=440px form is a
+       strict superset of <=420px, so the earlier rule was redundant — kept
+       only the <=440px definition to leave a single source of truth. */
+    .term-pane .pin-btn.active { color: var(--accent); }
+    /* In-pane search bar */
+    .term-search {
+      display: none;
+      gap: 6px;
+      padding: 6px 8px;
+      background: var(--surf-1);
+      border-bottom: 1px solid var(--border-soft);
+      align-items: center;
+    }
+    .term-search.open { display: flex; }
+    .term-search input {
+      flex: 1;
+      background: var(--panel-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text);
+      padding: 4px 8px;
+      font-family: var(--ff-mono);
+      font-size: 11px;
+    }
+    .term-search .matches { font-family: var(--ff-mono); font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+    .term-search button {
+      all: unset;
+      cursor: var(--cur-pointer);
+      padding: 3px 8px;
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      border: 1px solid var(--border-soft);
+    }
+    .term-search button:hover { color: var(--accent); border-color: var(--accent); }
+    .term-body mark.term-hit {
+      background: var(--warn-bg);
+      color: var(--warn);
+      padding: 0 2px;
+      border-radius: 2px;
+    }
+    .term-body mark.term-hit.current {
+      background: var(--accent);
+      color: var(--on-accent);
+    }
+    .term-head {
+      display: flex;
+      align-items: center;
+      gap: var(--s-2);
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border-soft);
+      background: var(--surf-3);
+      font-family: var(--ff-mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      color: var(--text-2);
+      min-width: 0;  /* let children shrink past content width */
+    }
+    /* Inline job id was visual noise — the same 8 chars live in the status
+       pill's tooltip and in the Run-tab job detail. Hide here to free up
+       header space; keep the node in DOM for callers that still reference it. */
+    .term-head .id { display: none; }
+    .term-head .status-pill {
+      flex: 0 0 auto;
+      cursor: help;
+    }
+    .term-head .cost-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--bg-inset);
+      color: var(--text-2);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      letter-spacing: 0.04em;
+      border: 1px solid var(--border-soft);
+      white-space: nowrap;
+      flex: 0 0 auto;
+      cursor: help;
+    }
+    .term-head .cost-pill.has-data { color: var(--accent-2); border-color: transparent; background: var(--accent-bg); }
+    .term-head .cost-pill[hidden] { display: none; }
+    .term-head .task {
+      color: var(--text-2);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1 1 80px;
+      min-width: 0;
+    }
+    .term-head .actions {
+      display: flex;
+      gap: 3px;
+      flex: 0 0 auto;
+      margin-left: auto;  /* push actions to the right edge even if task collapses */
+    }
+    .term-head .actions button {
+      all: unset;
+      cursor: var(--cur-pointer);
+      /* Touch-target floor: padding + min-height clear WCAG 2.5.8 (24x24
+         AA minimum) so destructive controls (STOP/CANCEL/CLOSE) aren't
+         mis-tappable on touch. Pre-2026-05-24: 3px 6px + 9px font =
+         64x22 px, fail AA. */
+      padding: 6px 10px;
+      border-radius: 0;
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: var(--text-2);
+      border: 1px solid var(--border-soft);
+      background: var(--surf-1);
+      transition: color 140ms var(--easing), border-color 140ms var(--easing), background-color 140ms var(--easing);
+      /* Fixed width + centered text so swapping EXPAND <-> COLLAPSE
+         (or any label change) doesn't push neighbouring buttons. Same
+         min-width applied to every action so the column lines up
+         across all pane rows. */
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 64px;
+      min-height: 30px;
+      box-sizing: border-box;
+    }
+    .term-head .actions button:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--panel-inset);
+    }
+    .term-head .actions button.danger:hover {
+      color: var(--bad);
+      border-color: var(--bad);
+      background: var(--panel-inset);
+    }
+    /* Send-to-canvas: an icon-only control (⊞) so it stays compact next to the
+       text action buttons. Narrower min-width than the labelled actions; the
+       glyph carries the meaning, the title carries the words. */
+    .term-head .actions .send-to-canvas {
+      min-width: 30px;
+      padding: 6px 8px;
+      font-size: 13px;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+    .term-head .actions .send-to-canvas:hover {
+      color: var(--accent-2);
+      border-color: var(--accent-2);
+    }
+    /* On-canvas state is shown on the ⊞ button itself (selected look — see the
+       .send-to-canvas.on-canvas rule near the status rows). No text badge. */
+    /* Narrow pane: progressively drop secondary chrome so the PRIMARY
+       actions (close + cancel + stop + expand) stay visible. In split /
+       grid layouts the pane width drops below 700px and the original
+       chrome (7 action buttons + cost pill + 8-char id) overflows the
+       pane's overflow:hidden, hiding cancel + close off the right edge
+       — exactly the destructive buttons the operator needs most.
+       Thresholds are deliberately wide because a chat pane in split
+       mode at a 1600px viewport already lands around 650px container,
+       which is too tight for all 7 action buttons. */
+    @container term-pane (max-width: 820px) {
+      /* The 8-char job id is already hidden globally at all widths (above). */
+      /* Find (search) is reachable via Ctrl+F inside the body. */
+      .term-head .actions .search-btn { display: none; }
+    }
+    @container term-pane (max-width: 720px) {
+      /* Export markdown and pin-to-fullscreen are nice-to-haves; the
+         destructive cancel + close MUST stay visible at every width. */
+      .term-head .actions .export-btn,
+      .term-head .actions .pin-btn { display: none; }
+      .term-head .cost-pill { display: none; }
+    }
+    @container term-pane (max-width: 540px) {
+      /* Drop stop too — the operator can still cancel which is enough
+         to halt the subprocess. */
+      .term-head .actions .stop-btn { display: none; }
+    }
+    @container term-pane (max-width: 440px) {
+      /* Last-ditch: drop the activity chip text label — the status pill
+         + cancel + close button still convey the essential state. */
+      .term-head .activity { display: none; }
+    }
+    .term-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--s-3) var(--s-4);
+      background: var(--void);
+      font-family: var(--ff-mono);
+      font-size: 12px;
+      line-height: 1.5;
+      color: oklch(86% 0.050 165);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .term-body .stdin-echo { color: var(--accent); }
+    .term-foot {
+      display: flex;
+      gap: var(--s-2);
+      padding: 9px 12px;
+      border-top: 1px solid var(--border-soft);
+      background: var(--surf-2);
+      /* Merged from later duplicate (was: `.term-foot { position: relative; }`)
+         to anchor `.composer-pop`'s absolute positioning. */
+      position: relative;
+    }
+    .term-foot input,
+    .term-foot textarea {
+      flex: 1;
+      background: var(--panel-inset);
+      border: 1px solid var(--border-soft);
+      border-radius: 0;
+      color: var(--text);
+      padding: 8px 12px;
+      font-family: var(--ff-mono);
+      font-size: 12px;
+    }
+    .term-foot textarea {
+      resize: none;
+      overflow-y: auto;
+      line-height: 1.45;
+      min-height: 36px;
+      max-height: 220px;
+      font-family: var(--ff-body);
+    }
+    .term-foot input:focus,
+    .term-foot textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--accent), var(--accent-glow-soft);
+      background: var(--panel-inset);
+    }
+    .term-foot input:disabled,
+    .term-foot textarea:disabled { opacity: 0.45; cursor: not-allowed; }
+    .term-foot button {
+      all: unset;
+      cursor: var(--cur-pointer);
+      padding: 8px 22px 8px 14px;
+      border-radius: 0;
+      font-family: var(--ff-mono);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      background: var(--accent);
+      color: var(--on-accent);
+      clip-path: var(--clip-btn);
+      transition: filter 140ms var(--easing);
+    }
+    .term-foot button:hover { filter: brightness(1.10); }
+    .term-foot button:disabled { opacity: 0.35; cursor: not-allowed; }
+    .term-empty {
+      grid-column: 1 / -1;
+      padding: var(--s-7) var(--s-5);
+      text-align: center;
+      color: var(--text-dim);
+      border: 1px dashed var(--border-strong);
+      border-radius: 0;
+      background: var(--surf-1);
+      font-family: var(--ff-display);
+      font-weight: 600;
+      font-size: 18px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-stretch: condensed;
+    }
+
+    /* ---------------- Draft terminal (New terminal) ----------------
+       Empty pane that lets the operator pick tool/model BEFORE the
+       first message is sent. The job is POSTed only on send — until
+       then the pane is purely local UI state. */
+    .term-pane.term-draft { border-style: dashed; border-color: var(--border-strong); }
+    .term-pane.term-draft.focus { border-color: var(--accent); border-style: solid; }
+    .term-pane.term-draft .status-pill {
+      background: var(--bg-inset);
+      color: var(--text-dim);
+      border: 1px dashed var(--border-strong);
+    }
+    .term-draft-config {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--s-3);
+      padding: var(--s-3) var(--s-4);
+      background: var(--surf-1);
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .term-draft-config .draft-field {
+      display: inline-flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 160px;
+    }
+    .term-draft-config .draft-label {
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .term-draft-config select {
+      background: var(--panel-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text);
+      padding: 4px 6px;
+      font-family: var(--ff-mono);
+      font-size: 12px;
+    }
+    .term-draft-config select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+    .term-draft-config .draft-hint {
+      flex: 1 1 200px;
+      color: var(--text-dim);
+      font-size: 12px;
+      font-style: italic;
+    }
+    .term-pane.term-draft .draft-placeholder {
+      color: var(--text-dim);
+      font-style: italic;
+      border-left: 2px solid var(--border-strong);
+    }
+
+    /* ---------------- Real terminal (PTY) panes ----------------
+       xterm.js needs a sized container so the FitAddon can compute
+       (cols, rows). The chat composer + attach tray are absent on
+       these panes — bytes go straight from xterm into the WebSocket. */
+    .term-pane.term-pty .term-pty-body {
+      flex: 1 1 auto;
+      min-height: 280px;
+      background: var(--void);
+      padding: 4px;
+      overflow: hidden;
+    }
+    .term-pane.term-pty:not(.collapsed) {
+      min-height: 360px;
+      max-height: 70vh;
+    }
+    .term-pane.term-pty.pinned:not(.collapsed) {
+      max-height: 85vh;
+      min-height: 480px;
+    }
+    /* xterm renders inside .xterm; let it claim the full body. */
+    .term-pane.term-pty .xterm {
+      height: 100%;
+      width: 100%;
+    }
+    .term-pane.term-pty .xterm .xterm-viewport { background: transparent !important; }
+    .term-pane.term-pty .term-head .pin-btn.active { color: var(--accent); }
+
+    /* ---------------- Chat-mode rendering ----------------
+       Real-chat layout: user bubbles align right, assistant bubbles align
+       left, system/result notes sit centered as meta strips. Cyber-HUD
+       aesthetic preserved via angular clip-path corners pointing inward
+       toward the originator.
+    */
+    .term-body.chat {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-family: var(--ff-body);
+      font-size: var(--fs-3);
+      line-height: 1.4;
+      color: var(--text);
+      white-space: normal;
+    }
+    .term-body.chat .msg {
+      margin: 0;
+      padding: 8px 12px;
+      border-radius: var(--r-sm);
+      border: 1px solid var(--border-soft);
+      max-width: 86%;
+      position: relative;
+    }
+    .term-body.chat .msg.assistant {
+      align-self: flex-start;
+      background: var(--bg-elev);
+      border-color: var(--border-soft);
+      /* Angular cut on the bottom-left — the bubble "points" toward the
+         assistant side, matching the bottom-right cut on user bubbles. */
+      clip-path: polygon(
+        0 0,
+        100% 0,
+        100% 100%,
+        10px 100%,
+        0 calc(100% - 10px)
+      );
+    }
+    .term-body.chat .msg.user {
+      align-self: flex-end;
+      background: var(--accent-bg);
+      border-color: oklch(38% 0.060 200);
+      color: var(--accent-hi);
+      max-width: 76%;
+      clip-path: polygon(
+        0 0,
+        100% 0,
+        100% calc(100% - 10px),
+        calc(100% - 10px) 100%,
+        0 100%
+      );
+    }
+    .term-body.chat .msg.system {
+      align-self: center;
+      max-width: 70%;
+      background: transparent;
+      border-color: transparent;
+      color: var(--text-dim);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      text-align: center;
+    }
+    .term-body.chat .msg.result {
+      align-self: center;
+      max-width: 70%;
+      background: var(--ok-bg);
+      border-color: oklch(40% 0.060 148);
+      color: var(--good);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      text-align: center;
+    }
+    .term-body.chat .msg.user .role {
+      /* The user bubble is already cyan-tinted (accent-bg) and the body
+         text is bright cyan (accent-hi), so a cyan-family label drowns
+         in its own hue. Step out of the cyan axis using a cool near-white
+         (--text-2) — same role the assistant label plays on a neutral
+         bubble: the contrasting "accent color" that pops cleanly off both
+         bg and body without competing with content. */
+      text-align: left;
+      color: var(--text-2);
+      margin-bottom: 4px;
+    }
+    /* Thinking placeholder bubble: identical shape to an assistant bubble,
+       dimmed role, and three staggered dots that pulse while we wait for
+       the first stream_event/text_delta. Replaced in-place by the real
+       assistant block as soon as content starts arriving. */
+    .term-body.chat .msg.assistant.thinking-placeholder {
+      background: var(--bg-elev);
+      border-color: var(--border-soft);
+      animation: thinking-bubble-in 220ms var(--easing);
+    }
+    .term-body.chat .msg.assistant.thinking-placeholder .role {
+      color: var(--text-dim);
+    }
+    .thinking-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 2px 2px;
+    }
+    .thinking-dots .dot {
+      width: 6px;
+      height: 6px;
+      background: var(--accent);
+      opacity: 0.3;
+      animation: thinking-pulse 1.3s var(--easing) infinite;
+    }
+    .thinking-dots .dot:nth-child(2) { animation-delay: 0.18s; }
+    .thinking-dots .dot:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes thinking-pulse {
+      0%, 80%, 100% { opacity: 0.25; transform: scale(0.7); }
+      40%          { opacity: 1;    transform: scale(1.05); }
+    }
+    @keyframes thinking-bubble-in {
+      from { opacity: 0; transform: translateY(2px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    /* Collapsed thinking block inside an assistant bubble. Default state
+       is closed — only the summary chip is visible. Click to expand. */
+    .thinking-block {
+      margin: 6px 0;
+      font-family: var(--ff-body);
+    }
+    .thinking-block summary {
+      cursor: var(--cur-pointer);
+      list-style: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text-dim);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      user-select: none;
+      transition: color 140ms var(--easing), border-color 140ms var(--easing);
+    }
+    .thinking-block summary::-webkit-details-marker { display: none; }
+    .thinking-block summary::before {
+      content: "▸";
+      display: inline-block;
+      transition: transform 140ms var(--easing);
+      font-size: 9px;
+      opacity: 0.7;
+    }
+    .thinking-block[open] summary::before { transform: rotate(90deg); }
+    .thinking-block summary:hover,
+    .thinking-block summary:focus-visible {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    .thinking-block pre {
+      margin: 6px 0 0;
+      padding: 8px 12px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text-dim);
+      font-family: var(--ff-mono);
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .term-body.chat .msg .role {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+      opacity: 0.95;
+    }
+    .term-body.chat .msg.assistant .role { color: var(--accent); }
+    /* .msg.user .role color lives in the dedicated user-role rule above
+       (sentence-case alignment + accent-soft for label/body contrast). */
+    .term-body.chat .msg .text {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    /* Assistant content is rendered HTML (via marked); collapse source
+       whitespace so the \n between </li> and <li> stops adding phantom
+       blank lines. User messages keep pre-wrap so newlines they typed
+       stay visible. */
+    .term-body.chat .msg.assistant .text { white-space: normal; }
+    .term-body.chat .msg.assistant .text :is(p, ul, ol) { margin: 3px 0; }
+    /* Streamed assistant text renders into one or more ".md" segments so tool
+       pills / thinking blocks can be appended as siblings without the markdown
+       repaint wiping them. The segment is a layout-neutral wrapper: it must add
+       no box of its own, and consecutive segments collapse seamlessly so a
+       reply split by a tool call still reads as continuous prose. */
+    .term-body.chat .msg.assistant .text > .md { display: contents; }
+    .term-body.chat .msg.assistant .text ul,
+    .term-body.chat .msg.assistant .text ol { padding-left: 22px; }
+    .term-body.chat .msg.assistant .text li { margin: 0; padding: 0; }
+    .term-body.chat .msg.assistant .text li > p { margin: 0; }
+    .term-body.chat .msg.assistant .text li + li { margin-top: 1px; }
+    .term-body.chat .msg.assistant .text h1,
+    .term-body.chat .msg.assistant .text h2,
+    .term-body.chat .msg.assistant .text h3,
+    .term-body.chat .msg.assistant .text h4 { margin: 8px 0 4px; }
+    .term-body.chat .msg.assistant .text code {
+      font-family: var(--ff-mono);
+      background: var(--bg-inset);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 0.86em;
+      color: var(--accent-hi);
+    }
+    .term-body.chat .msg.assistant .text pre {
+      background: var(--bg-inset);
+      padding: 8px 12px;
+      border-radius: var(--r-sm);
+      border: 1px solid var(--border-soft);
+      overflow-x: auto;
+      margin: 6px 0;
+    }
+    .term-body.chat .msg.assistant .text pre code {
+      background: transparent;
+      padding: 0;
+      border: 0;
+      color: var(--text);
+      font-size: 0.92em;
+    }
+    .tool-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin: 4px 6px 4px 0;
+      padding: 3px 9px;
+      border-radius: var(--r-sm);
+      background: var(--accent-bg);
+      color: var(--accent-2);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      border: 1px solid transparent;
+      cursor: var(--cur-pointer);
+      user-select: none;
+    }
+    .tool-pill::before {
+      content: "\2699";
+      opacity: 0.85;
+    }
+    .tool-pill.result { background: var(--ok-bg); color: var(--good); }
+    .tool-pill.result::before { content: "\2713"; }
+    .tool-pill.error { background: var(--bad-bg); color: var(--bad); }
+    .tool-pill.error::before { content: "\2717"; }
+    .tool-detail {
+      display: none;
+      margin: 6px 0 0 0;
+      padding: 8px 12px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-sm);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text-2);
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .tool-detail.open { display: block; }
+
+    /* Inline diff view for Edit / Write tool calls */
+    .diff-view { font-family: var(--ff-mono); font-size: var(--fs-1); }
+    .diff-header {
+      padding: 4px 8px;
+      background: var(--bg-elev-2);
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border-soft);
+      letter-spacing: 0.05em;
+      font-weight: 500;
+    }
+    .diff-line {
+      display: block;
+      padding: 1px 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border-left: 2px solid transparent;
+    }
+    .diff-line.common  { color: var(--text-dim); }
+    .diff-line.removed { background: var(--bad-bg); color: var(--bad); border-left-color: var(--bad); }
+    .diff-line.added   { background: var(--ok-bg); color: var(--good); border-left-color: var(--good); }
+    .bash-view .bash-cmd {
+      margin: 0;
+      padding: 8px 12px;
+      background: var(--bg-inset);
+      color: var(--accent-hi);
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 0;
+    }
+
+    /* Composer: attachment tray + autocomplete popup */
+    .attach-tray {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 6px 10px;
+      border-top: 1px solid var(--border-soft);
+      background: var(--bg-elev-2);
+    }
+    .attach-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: var(--r-sm);
+      background: var(--accent-bg);
+      color: var(--accent-hi);
+      font-family: var(--ff-mono);
+      font-size: 11px;
+      cursor: var(--cur-pointer);
+      border: 1px solid transparent;
+      user-select: none;
+    }
+    .attach-chip:hover { border-color: var(--bad); color: var(--bad); }
+    .term-pane.dragover { outline: 2px dashed var(--accent); outline-offset: -4px; }
+    /* `.term-foot { position: relative; }` merged into the canonical
+       `.term-foot` block above to avoid two definitions of the same selector. */
+    .composer-pop {
+      position: absolute;
+      bottom: calc(100% + 4px);
+      left: 8px;
+      right: 8px;
+      max-height: 240px;
+      overflow-y: auto;
+      background: var(--bg-elev);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-sm);
+      box-shadow: var(--shadow-md);
+      z-index: 50;
+    }
+    .composer-pop-row {
+      display: flex;
+      justify-content: space-between;
+      gap: var(--s-3);
+      padding: 6px 10px;
+      cursor: var(--cur-pointer);
+      font-size: var(--fs-2);
+    }
+    .composer-pop-row:hover, .composer-pop-row.active {
+      background: var(--bg-elev-2);
+    }
+    /* Strong accent-edge so the keyboard-selected row stands out — the
+       Enter key picks .active, but the previous styling was identical to
+       :hover and basically invisible in screenshots / busy panes. Add a
+       brighter accent-bg too so the "keyboard selection" semantic doesn't
+       overlap with the `.has-update` pane indicator which also uses an
+       inset shadow. */
+    .composer-pop-row.active {
+      box-shadow: inset 2px 0 0 0 var(--accent);
+      background: var(--accent-bg);
+    }
+    .composer-pop-row .pop-name {
+      font-family: var(--ff-mono);
+      color: var(--accent);
+    }
+    .composer-pop-row .pop-detail {
+      color: var(--text-dim);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 60%;
+    }
+
+    /* ---------------- TodoWrite inline checklist ---------------- */
+    .todo-widget {
+      margin: 8px 0;
+      padding: 10px 12px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid var(--accent-2);
+      border-radius: var(--r-sm);
+      font-family: var(--ff-body);
+      font-size: var(--fs-2);
+    }
+    .todo-widget .todo-header {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-0);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .todo-widget .todo-header::before {
+      content: "\2713";
+      color: var(--accent-2);
+    }
+    .todo-widget .todo-header .meta {
+      margin-left: auto;
+      color: var(--text-dim);
+      letter-spacing: 0.08em;
+    }
+    .todo-widget ul.todo-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .todo-widget li.todo-item {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 3px 0;
+      line-height: 1.45;
+      color: var(--text-2);
+    }
+    .todo-widget li.todo-item::before {
+      flex-shrink: 0;
+      width: 14px;
+      text-align: center;
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      /* Block strikethrough on the icon: the inherited line-through is
+         drawn by the parent; setting display:inline-block on the pseudo
+         turns it into its own decoration scope. */
+      display: inline-block;
+      text-decoration: none;
+    }
+    .todo-widget li.todo-item .todo-label {
+      flex: 1;
+      min-width: 0;
+    }
+    .todo-widget li.pending { color: var(--text-dim); }
+    .todo-widget li.pending::before { content: "\25A1"; color: var(--text-faint); }
+    .todo-widget li.in_progress {
+      color: var(--accent);
+      font-weight: 500;
+    }
+    .todo-widget li.in_progress::before { content: "\25B6"; color: var(--accent); }
+    .todo-widget li.completed { color: var(--good); }
+    .todo-widget li.completed .todo-label {
+      text-decoration: line-through;
+      text-decoration-color: var(--text-dim);
+    }
+    .todo-widget li.completed::before { content: "\2713"; color: var(--good); }
+

@@ -1,0 +1,175 @@
+    /* ============================================================
+       AI//WORKFLOW · NEO-CYBERNETIC HOLO-CONSOLE
+       Void black · electric cyan + magenta · glass panels · scanlines
+       Angular cut corners · condensed display type · cyber-HUD.
+       ============================================================ */
+    :root {
+      color-scheme: dark;
+
+      /* ---- Type ---- */
+      --ff-display: "Big Shoulders Display", "Oswald", "Impact", ui-sans-serif, sans-serif;
+      --ff-body:    "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+      --ff-mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      /* Removed dead alias `--mono` (never referenced via var(--mono)). */
+
+      --fs-0: 10px;
+      --fs-1: 11px;
+      --fs-2: 12px;
+      --fs-3: 13px;
+      --fs-4: 14px;
+      --fs-5: 16px;
+      --fs-6: 20px;
+      --fs-7: 30px;
+      --fs-8: 64px;
+
+      /* ---- Color (OKLCH, void + cyan + magenta) ---- */
+      --void:        oklch(9% 0.012 245);
+      --void-2:      oklch(12% 0.018 245);
+      --panel:       oklch(15% 0.024 245);
+      --panel-2:     oklch(18% 0.028 245);
+      --panel-3:     oklch(22% 0.032 245);
+      --panel-inset: oklch(11% 0.018 245);
+
+      /* Surface tints — solid panels at varied luminance, NOT glass */
+      --surf-1: oklch(14% 0.020 245);
+      --surf-2: oklch(17% 0.024 245);
+      --surf-3: oklch(20% 0.028 245);
+      /* Legacy aliases (kept for any inline use elsewhere).
+         --glass-2 / --glass-3 removed — no `var(--glass-2|3)` reads remain.
+         --glass-1 is still consumed by `nav button:hover` (line ~475) —
+         the older `.scroll-fade` consumer was removed but this rule
+         continues to read the alias, so keep the variable. */
+      --glass-1: var(--surf-1);
+
+      --bg:         var(--void);
+      --bg-elev:    var(--panel);
+      --bg-elev-2:  var(--panel-2);
+      --bg-inset:   var(--panel-inset);
+      --bg-tinted:  var(--panel-3);
+      --bg-2: var(--bg-elev);
+      --bg-3: var(--bg-elev-2);
+      --fg: var(--text);
+      --fg-dim: var(--text-dim);
+      /* Canonical alias for the dim-text role (declared so usages resolve
+         without falling through every var() chain). */
+      --fg-faint: var(--text-dim);
+
+      --text:       oklch(96% 0.012 230);
+      --text-2:     oklch(82% 0.020 225);
+      --text-dim:   oklch(62% 0.030 225);
+      --text-faint: oklch(48% 0.035 225);
+      --on-accent:  oklch(8% 0.012 245);
+      /* Foreground on saturated --bad fills (danger buttons, .pill.bad).
+         Near-white so the contrast against the deep red satisfies WCAG AA. */
+      --on-bad:     oklch(98% 0.005 25);
+      /* Layered drop-shadow tokens — autocomplete pop, modal pane, banner */
+      --shadow-md:  0 4px 16px rgba(0, 0, 0, 0.4);
+      --shadow-lg:  0 14px 36px rgba(0, 0, 0, 0.55);
+      --shadow-xl:  0 18px 40px rgba(0, 0, 0, 0.55);
+
+      --border:        oklch(32% 0.040 230);
+      --border-soft:   oklch(24% 0.030 235);
+      --border-strong: oklch(48% 0.060 220);
+
+      /* Instrument-panel cyan — primary signal (tamed from neon) */
+      --accent:      oklch(78% 0.110 195);
+      --accent-hi:   oklch(86% 0.115 195);
+      --accent-soft: oklch(40% 0.060 200);
+      --accent-bg:   oklch(22% 0.040 210);
+      /* Glow tokens reserved for genuine state changes only (focus, running, active) */
+      --accent-glow: 0 0 14px oklch(78% 0.110 195 / 0.40);
+      --accent-glow-soft: 0 0 9px oklch(78% 0.110 195 / 0.30);
+
+      /* Magenta — secondary tool identity (codex) */
+      --accent-2:    oklch(64% 0.180 340);
+      --magenta:     var(--accent-2);
+      --magenta-bg:  oklch(18% 0.060 340);
+
+      /* Violet — third accent: bridges cyan→magenta and adds depth in gradients */
+      --violet:      oklch(62% 0.180 295);
+      --violet-soft: oklch(48% 0.110 295);
+      --violet-bg:   oklch(22% 0.060 295);
+      --violet-glow: 0 0 10px oklch(62% 0.180 295 / 0.35);
+      /* `--teal-bg` removed (one consumer; now inlined to --accent-bg).
+         `--teal` was the previous dead alias, also removed. */
+
+      --good:        oklch(72% 0.140 148);
+      --ok:          var(--good);
+      --ok-bg:       oklch(24% 0.060 148);
+
+      --warn:        oklch(78% 0.140 75);
+      --warn-bg:     oklch(26% 0.060 75);
+
+      --bad:         oklch(66% 0.190 25);
+      --bad-bg:      oklch(24% 0.080 25);
+
+      /* ---- Space (4pt) ---- */
+      --s-1: 4px;  --s-2: 8px;  --s-3: 12px;
+      --s-4: 16px; --s-5: 24px; --s-6: 32px;
+      --s-7: 48px; --s-8: 64px; --s-9: 96px;
+
+      /* Cyber: angular cut shapes — no radius, geometry via clip-path.
+         --r-sm and --radius-md kept distinct: tests pin --radius-md as a
+         declared token (regression guard against earlier audit). Both
+         resolve to 0 today but stay separated so a future theme can give
+         "medium rounding" a non-zero value without bumping every
+         small-rounding consumer. */
+      --r-sm: 0;
+      --radius-md: 0;
+      --cut-sm: 8px;
+      --cut-md: 14px;
+
+      /* HUD angle-cut frames */
+      --clip-card: polygon(
+        0 0,
+        calc(100% - var(--cut-md)) 0,
+        100% var(--cut-md),
+        100% 100%,
+        var(--cut-sm) 100%,
+        0 calc(100% - var(--cut-sm))
+      );
+      --clip-btn: polygon(
+        0 0,
+        calc(100% - 10px) 0,
+        100% 50%,
+        calc(100% - 10px) 100%,
+        0 100%
+      );
+      --clip-tag: polygon(
+        6px 0,
+        100% 0,
+        calc(100% - 6px) 100%,
+        0 100%
+      );
+
+      --easing: cubic-bezier(0.2, 0.7, 0.2, 1);
+      /* Motion tokens — confident HUD deceleration, no bounce. */
+      --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+      --ease-out-expo:  cubic-bezier(0.16, 1, 0.3, 1);
+      --dur-instant: 100ms;
+      --dur-fast:    140ms;
+      --dur-quick:   160ms;
+      --dur-base:    240ms;
+      --dur-slow:    380ms;
+
+      /* ---- Cursors: "Targeting HUD" set ----
+         All hand-drawn SVG cursors share one language — an angular cyan
+         reticle + the 45° diamond motif (same shape as pulse-dot / .pill).
+         Pure CSS data-URIs: zero JS, zero runtime cost (consistent with the
+         dashboard's perf/reduced-motion ethos). Each carries a dark backing
+         outline (--void ≈ %2305080c) so the cyan stays legible even over
+         light accent-filled surfaces, plus a keyword fallback. Hex values
+         mirror --accent (%234fcdcd) and --accent-2 (%23d058ae): data-URIs
+         can't read var(). Hotspot is the reticle center (12 12) — the aim
+         point, intentional for a HUD.
+         --cur-default   resting reticle (corner brackets + center dot)
+         --cur-pointer   lock-on (brackets pull in + filled cyan diamond)
+         --cur-crosshair full precision cross (node-wiring in the editor)
+         --cur-grab      4-direction move chevrons, cyan (canvas pan / drag)
+         --cur-grabbing  same chevrons, magenta = "actively manipulating" */
+      --cur-default:   url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke-linecap='round'><g stroke='%2305080c' stroke-width='3.5'><path d='M3 8V3h5'/><path d='M16 3h5v5'/><path d='M21 16v5h-5'/><path d='M8 21H3v-5'/></g><g stroke='%234fcdcd' stroke-width='1.5'><path d='M3 8V3h5'/><path d='M16 3h5v5'/><path d='M21 16v5h-5'/><path d='M8 21H3v-5'/></g><circle cx='12' cy='12' r='2' fill='%2305080c'/><circle cx='12' cy='12' r='1.1' fill='%234fcdcd'/></svg>") 12 12, auto;
+      --cur-pointer:   url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke-linecap='round'><g stroke='%2305080c' stroke-width='3.5'><path d='M5 9V5h4'/><path d='M15 5h4v4'/><path d='M19 15v4h-4'/><path d='M9 19H5v-4'/></g><g stroke='%234fcdcd' stroke-width='1.5'><path d='M5 9V5h4'/><path d='M15 5h4v4'/><path d='M19 15v4h-4'/><path d='M9 19H5v-4'/></g><path d='M12 8.5L15.5 12L12 15.5L8.5 12Z' fill='%234fcdcd' stroke='%2305080c' stroke-width='1' stroke-linejoin='round'/></svg>") 12 12, pointer;
+      --cur-crosshair: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke-linecap='round'><g stroke='%2305080c' stroke-width='3'><path d='M12 2v6M12 16v6M2 12h6M16 12h6'/></g><g stroke='%234fcdcd' stroke-width='1.3'><path d='M12 2v6M12 16v6M2 12h6M16 12h6'/></g><circle cx='12' cy='12' r='1' fill='%234fcdcd'/></svg>") 12 12, crosshair;
+      --cur-grab:      url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><g fill='%234fcdcd' stroke='%2305080c' stroke-width='1' stroke-linejoin='round'><path d='M12 2l3 4H9z'/><path d='M12 22l-3-4h6z'/><path d='M2 12l4-3v6z'/><path d='M22 12l-4 3v-6z'/></g></svg>") 12 12, grab;
+      --cur-grabbing:  url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><g fill='%23d058ae' stroke='%2305080c' stroke-width='1' stroke-linejoin='round'><path d='M12 2l3 4H9z'/><path d='M12 22l-3-4h6z'/><path d='M2 12l4-3v6z'/><path d='M22 12l-4 3v-6z'/></g></svg>") 12 12, grabbing;
+    }

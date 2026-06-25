@@ -1,0 +1,27 @@
+    /* ---------------- Toolbar ---------------- */
+    .toolbar {
+      display: flex;
+      gap: var(--s-3);
+      align-items: center;
+      margin-bottom: var(--s-4);
+      padding: var(--s-3) var(--s-4);
+      background: var(--surf-1);
+      border: 1px solid var(--border-soft);
+      border-radius: 0;
+    }
+    .toolbar label {
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--text-2);
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .toolbar input[type="checkbox"] { accent-color: var(--accent); }
+    .toolbar.agents-toolbar .refresh {
+      text-transform: capitalize;
+    }
+

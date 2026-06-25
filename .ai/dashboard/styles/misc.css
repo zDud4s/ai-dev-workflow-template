@@ -1,0 +1,194 @@
+    /* ---------------- Log / Job ---------------- */
+    pre.log {
+      background: var(--void);
+      border: 1px solid var(--border-soft);
+      border-radius: 0;
+      padding: var(--s-4) var(--s-5);
+      font-family: var(--ff-mono);
+      font-size: 12px;
+      line-height: 1.55;
+      max-height: 55vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: oklch(84% 0.060 165);
+    }
+    .job-meta {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 8px var(--s-5);
+      font-size: var(--fs-2);
+      margin-bottom: var(--s-4);
+      padding: var(--s-4) var(--s-5);
+      background: var(--surf-1);
+      border: 1px solid var(--border-soft);
+      border-radius: 0;
+    }
+    .job-meta .k {
+      color: var(--accent);
+      font-family: var(--ff-mono);
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.22em;
+    }
+    .job-meta .v {
+      font-family: var(--ff-mono);
+      word-break: break-word;
+      color: var(--text-2);
+    }
+
+    /* ---------------- Scrollbars ---------------- */
+    *::-webkit-scrollbar { width: 10px; height: 10px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-thumb {
+      background: oklch(28% 0.040 240);
+      border-radius: 0;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    *::-webkit-scrollbar-thumb:hover { background: var(--accent); background-clip: padding-box; }
+
+    /* ---------------- Reduced motion ---------------- */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+
+    /* ---------------- Responsive ---------------- */
+    /* Portrait tablets (768-1100px wide, taller than wide) hit the same
+       layout failure as narrow phones: 272px sidebar reserves space for
+       a nav that should already be horizontal at the top. Trigger the
+       full collapse here, not just the inner .split / toast tweaks. */
+    @media (max-width: 920px),
+           (max-width: 1100px) and (orientation: portrait) {
+      body {
+        grid-template-columns: 1fr;
+        /* Header + nav are intrinsic, main absorbs the remainder. The
+           desktop default `grid-template-rows: auto 1fr` would put the
+           1fr on the NAV row in this 3-row template, stretching it to
+           fill the viewport and shoving main far off-screen — the gap
+           that made portrait look broken. */
+        grid-template-rows: auto auto 1fr;
+        grid-template-areas: "header" "nav" "main";
+      }
+      header {
+        grid-template-columns: 1fr auto;
+      }
+      header h1 { display: none; }
+      header .project { font-size: 22px; padding: 14px var(--s-4); }
+      header .project::before { display: none; }
+      header .header-usage { display: none; }
+      nav {
+        flex-direction: row;
+        flex-wrap: wrap;
+        /* Defensive: keep wrapped rows packed at the top regardless of
+           the grid cell's allocated height. Without this, `align-content:
+           stretch` (the default) makes each row absorb half the cell. */
+        align-content: flex-start;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+        padding: var(--s-2) var(--s-3);
+        overflow-y: visible;
+      }
+      nav::before { display: none; }
+      nav .section-label { display: none; }
+      nav button {
+        /* WCAG 2.5.5 touch target — mobile primary nav must be tappable
+           with a finger; ~33px (pre-2026-05-24) was below the 44px
+           recommendation and produced mis-taps between tabs. */
+        padding: 12px 14px;
+        min-height: 44px;
+      }
+      nav button::after { display: none; }
+      /* Terminal pane action buttons (STOP/CANCEL/CLOSE/EXPAND) — on
+         mobile, bump to the WCAG 2.5.5 recommendation of 44x44 so the
+         destructive controls aren't mis-tappable next to each other. */
+      .term-head .actions button {
+        min-height: 44px;
+        padding: 10px 12px;
+      }
+      .term-icon-btn {
+        min-width: 44px;
+        min-height: 44px;
+      }
+      nav button.active::before {
+        left: 4px;
+        width: 6px;
+      }
+      .split { grid-template-columns: 1fr; }
+      .cards { grid-template-columns: repeat(2, 1fr); }
+      .card .val.big { font-size: 40px; }
+      section.block h2 { font-size: 22px; }
+      main { padding: var(--s-5) var(--s-4) var(--s-7); }
+      /* Toast root / update banner offsets assumed the 272px desktop
+         sidebar — on mobile the sidebar is absent (nav goes to top), so
+         the `calc(50% + 136px)` push shoves both off the right edge.
+         Recenter and cap width to the viewport. */
+      #toast-root {
+        left: 50%;
+        max-width: min(560px, calc(100vw - 32px));
+      }
+      .update-banner {
+        left: 50%;
+        transform: translateX(-50%);
+        max-width: calc(100vw - 32px);
+      }
+    }
+
+    @media (max-width: 600px) {
+      .cards { grid-template-columns: 1fr; }
+      .toolbar.agents-toolbar { flex-wrap: wrap; }
+    }
+
+    /* C.P2-5: 200% zoom + 320px-equivalent viewports still need 1-column
+       layout below the sidebar-collapse breakpoint. */
+    @media (min-width: 920px) and (max-width: 1100px) {
+      .split { grid-template-columns: 1fr; }
+    }
+
+    /* ---------------- Portrait / orientation responsive ----------------
+       The portrait layout (.split → 1fr, recentred #toast-root / .update-banner)
+       is handled by the sidebar-collapse query above
+       (@media (max-width: 920px), (max-width: 1100px) and (orientation: portrait)),
+       whose portrait arm applies these exact rules with identical values. A
+       separate block here would be dead duplication / a second source of truth. */
+
+    @media (max-width: 768px) {
+      /* Terminals layout selector removed in 5b-1 — no split/grid columns to
+         collapse on mobile anymore. */
+      #view-timeline .tl-row,
+      body #view-timeline .tl-row {
+        grid-template-columns: 1fr;
+        gap: var(--s-2);
+      }
+
+      section.block .settings-grid {
+        grid-template-columns: 1fr;
+        max-width: none;
+      }
+
+      .job-meta {
+        grid-template-columns: 1fr;
+        gap: 4px var(--s-3);
+      }
+    }
+
+    @media (max-width: 640px) {
+      .skeleton-table-row { grid-template-columns: repeat(3, 1fr); }
+      .skeleton-timeline-row { grid-template-columns: 1fr; }
+    }
+
+    @media (orientation: landscape) and (max-height: 500px) {
+      .list { max-height: min(74vh, 360px); }
+      .doc { max-height: min(74vh, 360px); }
+      .yaml-tree { max-height: min(60vh, 280px); }
+      .term-pane:not(.collapsed) {
+        max-height: min(70vh, 320px);
+        min-height: 220px;
+      }
+      pre.log { max-height: min(55vh, 260px); }
+    }
+

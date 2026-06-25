@@ -1,0 +1,663 @@
+    /* ---------------- Skills view ---------------- */
+    .skills-toolbar { flex-wrap: wrap; }
+    .skills-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+    .skills-filter.active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--accent-bg);
+    }
+    #skills-search {
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      padding: 6px 10px;
+      min-width: 240px;
+      flex: 1 1 240px;
+      max-width: 360px;
+    }
+    #skills-search:focus { outline: none; border-color: var(--accent); box-shadow: var(--accent-glow-soft); }
+    /* Agents toolbar — explicit 2-row layout:
+       row 1 = filter chips (left) + suggest agents button (right anchor)
+       row 2 = search input + counter meta
+       Wraps cleanly because each group claims its width without fighting. */
+    .toolbar.agents-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--s-3) var(--s-4);
+      row-gap: var(--s-3);
+    }
+    .agents-filters {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .agents-filter {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 10px;
+      white-space: nowrap;
+    }
+    .agents-filter .count {
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+      opacity: 0.75;
+    }
+    .agents-filter.active {
+      background: var(--accent-bg);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .agents-filter.active .count {
+      color: var(--accent);
+      opacity: 1;
+    }
+    .agents-filter.disabled {
+      pointer-events: none;
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    /* Suggest agents button: anchor to far right of row 1, never wrap. */
+    .toolbar.agents-toolbar #btn-suggest-agents {
+      flex: 0 0 auto;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    /* Force search + meta to start a new row, keeping them visually paired. */
+    .toolbar.agents-toolbar #agents-search {
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      padding: 6px 12px;
+      flex: 0 1 320px;
+      min-width: 240px;
+      /* Inline margin-left:auto used to live on the preceding #agents-meta;
+         it has been moved to the .toolbar-meta-end class so we no longer
+         need an !important fight here. Explicit 0 keeps layout stable
+         against any future flex auto-margin from upstream rules. */
+      margin-left: 0;
+    }
+    .toolbar.agents-toolbar #agents-search:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: var(--accent-glow-soft);
+    }
+    .toolbar.agents-toolbar #agents-search::placeholder { color: var(--text-dim); }
+    .toolbar.agents-toolbar #agents-search::-webkit-search-cancel-button {
+      -webkit-appearance: none;
+      appearance: none;
+      display: none;
+    }
+    .toolbar.agents-toolbar #agents-meta {
+      flex: 0 0 auto;
+      /* The inline style="margin-left:auto" was removed from index.html and
+         folded into the .toolbar-meta-end utility class. The .toolbar-meta-end
+         rule still applies margin-left:auto, but here we want a row-paired
+         flow with #agents-search so we explicitly cancel it. No !important
+         needed now that the inline style is gone. */
+      margin-left: 0;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+    }
+    .toolbar.agents-toolbar #agent-suggest-msg {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+    /* Summary cards: tighter minmax so all 5 scope cards fit one row at typical
+       desktop widths (≥1200px main content). */
+    #agents-summary { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+    @media (min-width: 1500px) { #agents-summary { grid-template-columns: repeat(5, 1fr); } }
+    .agents-empty {
+      grid-column: 1 / -1;
+      margin: 0;
+      color: var(--text-dim);
+      font-size: var(--fs-3);
+    }
+    .skill-grid { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .skill-card {
+      gap: 8px;
+      min-height: 0;
+    }
+    .skill-card h3 {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-3);
+      color: var(--text);
+      letter-spacing: 0.02em;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .skill-card .desc {
+      font-size: var(--fs-2);
+      color: var(--text-2);
+      line-height: 1.45;
+    }
+    .skill-card .meta-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      color: var(--text-2);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-top: auto;
+      padding-top: 6px;
+      border-top: 1px dashed var(--border-soft);
+    }
+    .skill-card .path {
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      color: var(--text-2);
+      word-break: break-all;
+    }
+    .skill-card .metrics-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      font-family: var(--ff-mono);
+      font-size: 10px;
+    }
+    .skill-card .metrics-empty {
+      color: var(--text-dim);
+      font-style: italic;
+      letter-spacing: 0.10em;
+    }
+    .metric-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border: 1px solid var(--border-soft);
+      background: var(--bg-inset);
+      color: var(--text-2);
+      letter-spacing: 0.04em;
+    }
+    .metric-pill.ok   { color: var(--good); border-color: var(--good); }
+    .metric-pill.warn {
+      font-size: 10px;
+      color: var(--text-dim);
+      border-color: var(--border-soft);
+      background: transparent;
+    }
+    .metric-pill.bad  { color: var(--bad);  border-color: var(--bad);  }
+    .suggestion-card h3 { gap: 10px; }
+    .suggestion-card ul { color: var(--text-2); font-size: var(--fs-2); }
+    .suggestion-card ul li { margin: 2px 0; }
+    .suggestion-draft[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+    /* Skill card: clickable affordance */
+    .skill-grid .skill-card:not(.suggestion-card):not(.proposal-card) {
+      cursor: var(--cur-pointer);
+    }
+    .skill-grid .skill-card:not(.suggestion-card):not(.proposal-card):hover {
+      background: var(--surf-3);
+    }
+    .skill-grid .skill-card:not(.suggestion-card):not(.proposal-card):hover::before {
+      opacity: 1;
+    }
+
+    /* Agent card: uniform sizing with line-clamped description.
+       Full text lives in the detail modal.
+       NO `overflow: hidden` here — that would clip the HUD beacon
+       (.card::after) which sits intentionally outside the clip-path
+       edge. The clip-path on .card already constrains the visible
+       area; the .desc line-clamp handles text overflow internally. */
+    .agent-card {
+      min-height: 220px;
+      display: flex;
+      flex-direction: column;
+    }
+    .agent-card h3 {
+      flex: 0 0 auto;
+      display: -webkit-box;
+      -webkit-line-clamp: 1;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      min-width: 0;
+    }
+    .agent-card .desc {
+      flex: 1 1 auto;
+      display: -webkit-box;
+      /* stylelint-disable-next-line property-no-vendor-prefix */
+      -webkit-line-clamp: 3;
+      /* The standard `line-clamp:` prop is intentionally NOT declared:
+         it only resolves when paired with `display: -webkit-box` AND
+         every implementation requires the `-webkit-` prefix anyway. The
+         bare standard prop was previously written here as dead code
+         (audit batch 2 / status doc line 143) and has been removed so the
+         rule doesn't claim cross-browser coverage it doesn't deliver. */
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-height: 0;
+    }
+    .agent-card .metrics-row {
+      flex: 0 0 auto;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .agent-card .path {
+      flex: 0 0 auto;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+      word-break: normal;
+    }
+    .agent-card .meta-row {
+      flex: 0 0 auto;
+    }
+
+    /* ---- Catalog grid paint optimisation ----
+       Skills + Agents grids commonly hold 40-100+ cards. Each .card has a
+       clip-path, a ::before gradient border, an animated ::after beacon
+       and a fade-in animation — the browser was paint-bound on scroll,
+       filter changes, and search keystrokes.
+
+       `content-visibility: auto` makes the browser skip layout + paint for
+       cards that are offscreen, dropping the per-keystroke render cost
+       drastically on long catalogs. `contain: layout paint style` scopes
+       reflows to each card so a single card's hover/focus does not
+       invalidate the whole grid.
+
+       `contain-intrinsic-size` is a placeholder so the browser still
+       reserves vertical space for offscreen cards (otherwise the
+       scrollbar jumps as cards skip rendering). 280×220 matches the
+       agent card and is a safe lower bound for skill cards. */
+    .skill-grid .skill-card,
+    .skill-grid .agent-card {
+      content-visibility: auto;
+      contain: layout paint style;
+      contain-intrinsic-size: 280px 220px;
+    }
+
+    /* Skip the staggered card-in animation on the long catalog grids.
+       The animation uses `filter: blur(3px)` which forces a GPU pass per
+       card per frame — on a 100-card grid that's ~600 blurred passes
+       across the 460ms ramp, dominating the first-paint cost on the
+       Skills and Agents tabs. Other `.cards` containers (overview,
+       summaries, ~3-8 cards) keep the streaming-telemetry feel. */
+    .skill-grid .card,
+    #skills-summary .card,
+    #agents-summary .card {
+      animation: none;
+      opacity: 1;
+    }
+    /* Skeleton placeholders — shown before data lands so the page
+       structure is visible immediately and content swap is smooth.
+       Zero radius to match the HUD geometric language. */
+    @keyframes skeleton-shimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    .skeleton {
+      background: linear-gradient(
+        90deg,
+        var(--surf-2) 0%,
+        var(--surf-3) 50%,
+        var(--surf-2) 100%
+      );
+      background-size: 200% 100%;
+      /* 1.8s cadence is intentionally slower than the state-change
+         motion tokens — this is idle telemetry, not a transition. */
+      animation: skeleton-shimmer 1.8s var(--ease-out-quart) infinite;
+      display: block;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .skeleton { animation: none; background: var(--surf-3); }
+    }
+    .skeleton-summary-card,
+    .skeleton-agent-card,
+    .skeleton-card,
+    .skeleton-list-item,
+    .skeleton-doc-block,
+    .skeleton-table-row,
+    .skeleton-timeline-row,
+    .skeleton-as-group,
+    .skeleton-events-stats,
+    .skeleton-overview-card {
+      cursor: var(--cur-default);
+      pointer-events: none;
+    }
+    .skeleton-summary-card .skeleton-title  { width: 55%; height: 12px; }
+    .skeleton-summary-card .skeleton-big    { width: 28%; height: 26px; margin-top: var(--s-1); }
+    .skeleton-summary-card .skeleton-sub    { width: 80%; height: 10px; margin-top: var(--s-1); }
+    .skeleton-agent-card .skeleton-h,
+    .skeleton-card .skeleton-h              { width: 45%; height: 14px; }
+    .skeleton-agent-card .skeleton-desc-1,
+    .skeleton-card .skeleton-desc-1         { width: 95%; height: 10px; }
+    .skeleton-agent-card .skeleton-desc-2,
+    .skeleton-card .skeleton-desc-2         { width: 82%; height: 10px; }
+    .skeleton-agent-card .skeleton-desc-3,
+    .skeleton-card .skeleton-desc-3         { width: 60%; height: 10px; }
+    .skeleton-agent-card .skeleton-tools,
+    .skeleton-card .skeleton-tools          { width: 50%; height: 9px; }
+    .skeleton-agent-card .skeleton-path,
+    .skeleton-card .skeleton-path           { width: 75%; height: 9px; }
+    .skeleton-agent-card .skeleton-meta,
+    .skeleton-card .skeleton-meta           { width: 35%; height: 10px; margin-top: auto; }
+
+    /* Overview card variant — narrower big number + 2-line sub */
+    .skeleton-overview-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .skeleton-overview-card .skeleton-title { width: 50%; height: 12px; }
+    .skeleton-overview-card .skeleton-big   { width: 40%; height: 22px; }
+    .skeleton-overview-card .skeleton-line  { width: 80%; height: 10px; }
+
+    /* List rows — used by Plans / Specs / Packets / Jobs lists.
+       Shape echoes .list-item: a primary line + a smaller mono sub-line. */
+    .skeleton-list-item {
+      padding: 13px 16px 13px 20px;
+      border-bottom: 1px solid var(--border-soft);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .skeleton-list-item:last-child { border-bottom: 0; }
+    .skeleton-list-item .skeleton-row-h   { width: 65%; height: 12px; }
+    .skeleton-list-item .skeleton-row-sub { width: 35%; height: 9px; }
+
+    /* Doc body — used by Memory / Decisions / Plans-doc / Specs-doc /
+       Packets-doc / Jobs-doc when no real content is loaded yet.
+       Mimics a few markdown paragraphs and a heading. */
+    .skeleton-doc-block {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .skeleton-doc-block .skeleton-doc-h   { width: 40%; height: 22px; margin-bottom: var(--s-2); }
+    .skeleton-doc-block .skeleton-doc-p1  { width: 95%; height: 11px; }
+    .skeleton-doc-block .skeleton-doc-p2  { width: 88%; height: 11px; }
+    .skeleton-doc-block .skeleton-doc-p3  { width: 72%; height: 11px; }
+    .skeleton-doc-block .skeleton-doc-p4  { width: 60%; height: 11px; }
+    .skeleton-doc-block .skeleton-doc-h2  { width: 30%; height: 18px; margin-top: var(--s-3); }
+
+    /* Generic table-row skeleton — used by events / models / phases tables.
+       Sits inside a <tr> so it must be a span on td to avoid layout
+       weirdness; in practice we use a wrapper div with cells. */
+    .skeleton-table-row {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: var(--s-2);
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .skeleton-table-row .skeleton-cell { height: 10px; width: 80%; }
+    .skeleton-table-row .skeleton-cell.narrow { width: 40%; }
+    .skeleton-table-row .skeleton-cell.wide   { width: 95%; }
+
+    /* Timeline row — task label on the left + horizontal track. */
+    .skeleton-timeline-row {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: var(--s-3);
+      padding: var(--s-2) 0;
+      align-items: center;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .skeleton-timeline-row .skeleton-tl-label { width: 80%; height: 12px; }
+    .skeleton-timeline-row .skeleton-tl-meta  { width: 60%; height: 9px; margin-top: 6px; }
+    .skeleton-timeline-row .skeleton-tl-track {
+      width: 100%;
+      height: 22px;
+    }
+
+    /* Auto-select group — header line + a small table. */
+    .skeleton-as-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: var(--s-3);
+      border: 1px solid var(--border-soft);
+      margin-bottom: var(--s-3);
+    }
+    .skeleton-as-group .skeleton-as-head { width: 55%; height: 14px; }
+    .skeleton-as-group .skeleton-as-line { width: 92%; height: 10px; }
+
+    /* Events stats line — three small chips. */
+    .skeleton-events-stats {
+      display: flex;
+      gap: var(--s-3);
+      padding: var(--s-2) 0;
+    }
+    .skeleton-events-stats .skeleton-stat { width: 80px; height: 12px; }
+
+    /* Skill detail modal — meta row override.
+       The shared .proposal-modal-meta is a flex-wrap row of bare spans.
+       That works for the proposal modal's short labels but crowded the
+       skill modal where path + tool + source + telemetry all collided
+       on one wrapping line. Stack them as: [labelled chips row] / [path] /
+       [rationale], with labels as dim uppercase eyebrows so values pop. */
+    #skill-detail-meta {
+      flex-direction: column;
+      gap: var(--s-2);
+      align-items: stretch;
+    }
+    #skill-detail-meta .skill-meta-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--s-2) var(--s-3);
+      align-items: center;
+    }
+    #skill-detail-meta .skill-meta-item {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    #skill-detail-meta .skill-meta-item .k,
+    #skill-detail-meta .skill-meta-path .k {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--text-dim);
+    }
+    #skill-detail-meta .skill-meta-item .v,
+    #skill-detail-meta .skill-meta-path .v {
+      color: var(--text);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+    }
+    #skill-detail-meta .skill-meta-item.is-empty {
+      font-size: 10px;
+      color: var(--text-faint);
+      letter-spacing: 0.04em;
+    }
+    #skill-detail-meta .skill-meta-path {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding-top: var(--s-2);
+      border-top: 1px dashed var(--border-soft);
+    }
+    #skill-detail-meta .skill-meta-path .v {
+      word-break: break-all;
+      color: var(--text-2);
+    }
+    #skill-detail-meta .skill-detail-rationale {
+      color: var(--text-2);
+      font-family: var(--ff-body);
+      font-size: var(--fs-3);
+      line-height: 1.5;
+      max-width: 75ch;
+    }
+    /* Skill detail modal body */
+    .skill-detail-body {
+      flex: 1 1 auto;
+      overflow: auto;
+      padding: var(--s-3) var(--s-4) var(--s-5);
+      background: var(--bg-inset);
+    }
+    .skill-detail-section { margin-bottom: var(--s-5); }
+    .skill-detail-section h4 {
+      font-family: var(--ff-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--accent);
+      margin: 0 0 var(--s-3) 0;
+      border-bottom: 1px solid var(--border-soft);
+      padding-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .skill-detail-content {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      line-height: 1.55;
+      color: var(--text-2);
+      background: var(--bg);
+      border: 1px solid var(--border-soft);
+      padding: var(--s-3) var(--s-4);
+      word-break: break-word;
+      /* No inner max-height — .skill-detail-body owns the scroll. Nested
+         scrolls forced the user to scroll twice for long SKILL.md files. */
+      overflow: visible;
+    }
+    /* Plain-text fallback (marked/DOMPurify unavailable): preserve newlines. */
+    .skill-detail-content.is-raw { white-space: pre-wrap; }
+    .skill-detail-content h1,
+    .skill-detail-content h2,
+    .skill-detail-content h3 {
+      font-family: var(--ff-display);
+      color: var(--text);
+      letter-spacing: 0.04em;
+      margin: var(--s-4) 0 var(--s-2);
+    }
+    .skill-detail-content h1:first-child,
+    .skill-detail-content h2:first-child,
+    .skill-detail-content h3:first-child { margin-top: 0; }
+    .skill-detail-content p { margin: 0 0 var(--s-2); }
+    .skill-detail-content ul,
+    .skill-detail-content ol { margin: 0 0 var(--s-2); padding-left: 22px; }
+    .skill-detail-content li { margin: 2px 0; }
+    .skill-detail-content li > p { margin: 0; }
+    .skill-detail-content code {
+      background: var(--bg-inset);
+      padding: 1px 5px;
+      color: var(--accent);
+    }
+    .skill-detail-content pre {
+      background: var(--bg-inset);
+      padding: var(--s-3);
+      overflow-x: auto;
+      margin: 0 0 var(--s-2);
+    }
+    #agent-detail-content {
+      overflow: auto;
+      max-height: clamp(220px, calc(90vh - 530px), 500px);
+    }
+    .skill-detail-recent-row,
+    .skill-detail-history-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border-soft);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      color: var(--text-2);
+    }
+    .skill-detail-recent-row:last-child,
+    .skill-detail-history-row:last-child { border-bottom: 0; }
+    .skill-detail-recent-row .ts,
+    .skill-detail-history-row .ts {
+      color: var(--text-dim);
+      font-size: 10px;
+      min-width: 130px;
+    }
+
+    /* Proposal modal */
+    .proposal-modal {
+      position: fixed; inset: 0;
+      background: oklch(5% 0.010 245 / 0.78);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 200;
+      padding: 24px;
+      animation: modal-backdrop-in var(--dur-base) var(--ease-out-quart);
+    }
+    .proposal-modal[hidden] { display: none; }
+    .proposal-modal-pane {
+      background: var(--surf-1);
+      border: 1px solid var(--border-strong);
+      max-width: 1100px;
+      width: 100%;
+      max-height: 90vh;
+      display: flex; flex-direction: column;
+      clip-path: var(--clip-card);
+      animation: modal-pane-in var(--dur-slow) var(--ease-out-expo);
+      transform-origin: center top;
+    }
+    @keyframes modal-backdrop-in {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+    @keyframes modal-pane-in {
+      from { opacity: 0; transform: translateY(-6px) scale(0.985); }
+      to   { opacity: 1; transform: none; }
+    }
+    .proposal-modal-pane > header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: var(--s-3) var(--s-4);
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .proposal-modal-pane > header h3 {
+      font-family: var(--ff-body);
+      font-size: var(--fs-3);
+      color: var(--accent);
+      margin: 0;
+    }
+    .proposal-modal-meta {
+      padding: var(--s-3) var(--s-4);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      color: var(--text-2);
+      border-bottom: 1px solid var(--border-soft);
+      display: flex; flex-wrap: wrap; gap: 8px;
+    }
+    .proposal-modal-diff {
+      flex: 1 1 auto;
+      overflow: auto;
+      padding: var(--s-3) var(--s-4);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      line-height: 1.55;
+      background: var(--bg-inset);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .diff-add  { background: oklch(24% 0.060 148 / 0.55); color: var(--good); }
+    .diff-del  { background: oklch(24% 0.080 25 / 0.55);  color: var(--bad);  }
+    .diff-ctx  { color: var(--text-dim); }
+    .diff-hunk { color: var(--accent); margin-top: 4px; }
+    .proposal-modal-actions {
+      display: flex; gap: 12px; align-items: center;
+      padding: var(--s-3) var(--s-4);
+      border-top: 1px solid var(--border-soft);
+    }
+    .proposal-card .change-summary {
+      font-size: var(--fs-2);
+      color: var(--text);
+      font-weight: 500;
+    }
+    .proposal-card .change-summary.draft { color: var(--accent); }
+

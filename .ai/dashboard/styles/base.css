@@ -1,0 +1,58 @@
+
+    * { box-sizing: border-box; }
+    ::selection { background: var(--accent); color: var(--on-accent); text-shadow: none; }
+    /* Text insertion point speaks the cyan signal color across every field. */
+    input, textarea, select, [contenteditable] { caret-color: var(--accent); }
+
+    html, body { margin: 0; padding: 0; height: 100%; }
+    html {
+      background: var(--void);
+      background-image:
+        radial-gradient(ellipse 1100px 700px at 0% 0%, oklch(16% 0.040 220 / 0.5) 0%, transparent 65%),
+        radial-gradient(ellipse 900px 600px at 100% 100%, oklch(15% 0.045 340 / 0.32) 0%, transparent 65%),
+        var(--void);
+      background-attachment: fixed;
+    }
+    body {
+      color: var(--text);
+      font-family: var(--ff-body);
+      font-size: var(--fs-3);
+      line-height: 1.55;
+      display: grid;
+      grid-template-columns: 272px 1fr;
+      grid-template-rows: auto 1fr;
+      grid-template-areas:
+        "header header"
+        "nav    main";
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      font-feature-settings: "kern", "liga", "calt", "ss01", "ss02";
+      position: relative;
+      /* Resting HUD reticle as the baseline pointer; interactive elements
+         override via --cur-pointer etc. (see the cursor token block). */
+      cursor: var(--cur-default);
+    }
+    /* Decorative scanline only renders when the user has NOT requested reduced motion.
+       A fullscreen repeating-linear-gradient with mix-blend-mode forces a compositor
+       layer over the viewport on every scroll/repaint — burns battery on weak devices.
+       Users opting into prefers-reduced-motion get a cleaner, cheaper experience. */
+    @media (prefers-reduced-motion: no-preference) {
+      body::after {
+        /* very faint CRT scanline overlay — subtle texture, not a costume.
+           z-index 1 so toasts (#toast-root z=9999) and the update banner
+           (z=10000) reliably paint above the scanline; the overlay was
+           previously at 9999 too which left DOM-order to decide whether
+           the toast became unreadable through it. */
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 1;
+        background:
+          repeating-linear-gradient(0deg, transparent 0px, transparent 3px, rgba(0,0,0,0.08) 3px, rgba(0,0,0,0.08) 4px);
+        mix-blend-mode: multiply;
+        opacity: 0.18;
+      }
+    }
+

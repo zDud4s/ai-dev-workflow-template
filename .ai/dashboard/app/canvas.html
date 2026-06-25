@@ -4,8 +4,26 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Canvas — terminals</title>
-  <!-- canvas.html lives under app/, so the dashboard stylesheet is one level up. -->
-  <link rel="stylesheet" href="../styles.css" />
+  <!-- canvas.html lives under app/, so the dashboard styles/ dir is one level
+       up. styles.css was split into flat partials (refactor #4); load them in
+       the EXACT original cascade order to preserve appearance. -->
+  <link rel="stylesheet" href="../styles/tokens.css" />
+  <link rel="stylesheet" href="../styles/base.css" />
+  <link rel="stylesheet" href="../styles/layout.css" />
+  <link rel="stylesheet" href="../styles/components.css" />
+  <link rel="stylesheet" href="../styles/terminals.css" />
+  <link rel="stylesheet" href="../styles/toolbar.css" />
+  <link rel="stylesheet" href="../styles/skills.css" />
+  <link rel="stylesheet" href="../styles/forms.css" />
+  <link rel="stylesheet" href="../styles/settings.css" />
+  <link rel="stylesheet" href="../styles/misc.css" />
+  <link rel="stylesheet" href="../styles/timeline.css" />
+  <link rel="stylesheet" href="../styles/jobs.css" />
+  <link rel="stylesheet" href="../styles/analytics-models.css" />
+  <link rel="stylesheet" href="../styles/todos.css" />
+  <link rel="stylesheet" href="../styles/agent-orchestrations.css" />
+  <link rel="stylesheet" href="../styles/pipelines.css" />
+  <link rel="stylesheet" href="../styles/analytics.css" />
   <!-- CDN libs PaneCore's render engine depends on (same versions/integrity as
        index.html). marked + DOMPurify render assistant markdown into chat /
        session panes; xterm + addons drive kind=terminal (PTY) panes. They MUST
