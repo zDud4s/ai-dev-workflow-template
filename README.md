@@ -213,7 +213,7 @@ Propagate a changed workflow skill to an existing project with `bash /path/to/te
 │   ├── workflow/                     # workflow.md, dispatch.md, auto-models.md, agents-block.md
 │   └── dashboard/                    # local web UI (serve.py, app/, scripts/, proposals/)
 ├── .claude/skills/                   # canonical skill sources (+ agents/, settings.json)
-└── .agents/skills/                   # Codex-visible mirror, synced from .claude/skills/
+└── .agents/skills/                   # Codex-visible mirror (generated, not versioned; only the claude/ bridge is tracked)
 ```
 
 </details>

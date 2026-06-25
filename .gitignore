@@ -42,6 +42,15 @@ tests/*
 !.ai/dashboard/proposals/skills/.gitkeep
 !.ai/dashboard/proposals/skill_backups/.gitkeep
 
+# The .agents/skills/ mirror is GENERATED from .claude/skills/ by
+# .ai/scripts/sync_skills.py (and by the installers' mirror loop). It is
+# byte-identical to .claude/skills/ for the 10 shared skills, so we don't
+# version it. The one exception is the cross-tool bridge `claude/`, which has
+# NO .claude/skills/ source — it is its own source of truth, so it stays tracked.
+.agents/skills/*
+!.agents/skills/claude/
+!.agents/skills/claude/**
+
 # Pipeline definitions are personal workflows (per-developer);
 # .gitkeep preserves the directory.
 .ai/pipelines/*

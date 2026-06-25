@@ -25,9 +25,28 @@ ownership:
 boundaries:
   risky_areas: []
   do_not_touch: []
-  generated_files: []
+  generated_files:
+    # .agents/skills/<name>/ (except the bridge claude/) is regenerated from
+    # .claude/skills/ by .ai/scripts/sync_skills.py and the installers' mirror
+    # loop — not versioned. The bridge .agents/skills/claude/ has no
+    # .claude/skills/ source and stays tracked.
+    - .agents/skills
+    - .ai/dashboard/jobs
+    - .ai/ledgers/jobs.jsonl
+    - .ai/ledgers/improvements.jsonl
+    - .ai/ledgers/events.jsonl
+    - .ai/ledgers/metrics.jsonl
+    - .ai/ledgers/skill_metrics.jsonl
+    - .ai/ledgers/todos.jsonl
+    - .ai/ledgers/todos-archive.jsonl
+    - .ai/agent-runs
+    - .ai/pipelines
+    - .ai/TODO.md
+    - .ai/.todos.lock
+    - .ai/dashboard/.todos-parser.log
   migration_sensitive: []
-  security_sensitive: []
+  security_sensitive:
+    - .ai/dashboard/serve.py
 
 conventions:
   naming: []

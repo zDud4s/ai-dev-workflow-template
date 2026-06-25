@@ -1,0 +1,42 @@
+# skills.manifest — single source of truth for the workflow skill lists.
+#
+# Consumed by install.sh and update-workflow.sh (via the `read_skill_group`
+# helper in lib/workflow-lib.sh) and documented for humans here. Groups are
+# delimited by `# === <group> ===` headers; blank lines and other `#` comment
+# lines are ignored.
+#
+# Group semantics:
+#   shared       — skills whose canonical source is .claude/skills/<name>/.
+#                  Copied into .claude/skills/ (source of truth), then mirrored
+#                  to project .agents/skills/<name>/ AND global
+#                  ~/.agents/skills/<name>/ so Codex can discover them.
+#   claude-only  — skills that ship to .claude/skills/ ONLY (no Codex mirror):
+#                  `codex` is the runner (never invokes a skill to call itself);
+#                  `agent-improver` / `agent-creator` operate on .claude/agents/
+#                  and have no Codex counterpart. These carry bundled reference
+#                  files, so their explicit copy lines stay in the scripts.
+#   codex-bridge — the cross-tool dispatch skill `claude`. Its canonical source
+#                  is .agents/skills/claude/ (no .claude/skills/ counterpart —
+#                  Claude never needs a skill to invoke itself). Mirrored to the
+#                  global ~/.agents/skills/ path alongside the shared skills, but
+#                  NOT regenerated from .claude/skills/.
+
+# === shared ===
+bootstrap
+planner
+reviewer
+maintenance
+rescue
+orchestrate
+orchestrate-agents
+orchestrate-tdd
+run-pipeline
+synthesizer
+
+# === claude-only ===
+codex
+agent-improver
+agent-creator
+
+# === codex-bridge ===
+claude
