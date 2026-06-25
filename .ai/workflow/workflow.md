@@ -29,6 +29,19 @@ The shared dispatch mechanism (routing modes, prompt-passing, resume rule, confi
 
 Filled packets flow via stdin/temp files (see `dispatch.md`); never Edit/Write `.ai/packets/*.md` during a task — workflow violation.
 
+### Directory reference
+
+Sibling `.ai/` directories with overlapping names, disambiguated by actual use:
+
+| Directory | Holds | Distinct from sibling |
+|---|---|---|
+| `.ai/plans/` | Persisted execution plan (packet-level breakdown) for medium/large code tasks. | `specs/` is the design; `plans/` is the executable phase breakdown. |
+| `.ai/specs/` | Persisted spec (broader design/intent) for large tasks. | Written before/above the plan; large tasks may have both. |
+| `.ai/pipelines/` | Saved agent-pipeline YAML definitions (structure-only DAGs) authored by `orchestrate-agents`. | Definitions, not results — per-developer, gitignored. |
+| `.ai/agent-runs/` | Filled run records persisted by `run-pipeline` after executing a pipeline. | Outputs of a pipeline run, not its definition. |
+| `.ai/ledgers/` | Durable append-only JSONL: `metrics.jsonl`, `events.jsonl`, `jobs.jsonl` (snapshot index), `todos.jsonl`. | Permanent observability log; survives across jobs. |
+| `.ai/dashboard/jobs/` | Per-job runtime files `<id>.log` / `<id>.json` from the dashboard. | Transient working files (pruned after 7 days), not the durable ledger. |
+
 ## Rules
 
 1. If `project_name` in `.ai/project.yaml` is `unknown`, run bootstrap first.
