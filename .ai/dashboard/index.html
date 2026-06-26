@@ -77,6 +77,7 @@
     <button id="tab-packets" data-view="packets" role="tab" aria-controls="view-packets" aria-selected="false">Packet templates</button>
     <button id="tab-pipelines" data-view="pipelines" role="tab" aria-controls="view-pipelines" aria-selected="false">Pipelines <span class="count" id="count-pipelines">·</span></button>
     <div class="section-label" role="presentation">runtime</div>
+    <button id="tab-council" data-view="council" role="tab" aria-controls="view-council" aria-selected="false">Council <span class="count" id="count-council">·</span></button>
     <button id="tab-agent-orchestrations" data-view="agent-orchestrations" role="tab" aria-controls="view-agent-orchestrations" aria-selected="false">Agent runs <span class="count" id="count-agent-orchestrations">·</span></button>
     <button id="tab-events" data-view="events" role="tab" aria-controls="view-events" aria-selected="false">Events <span class="count" id="count-events">·</span></button>
     <button id="tab-run" data-view="run" role="tab" aria-controls="view-run" aria-selected="false">Run <span class="count" id="count-jobs">·</span></button>
@@ -686,6 +687,58 @@
 
     </section>
 
+    <section class="view" id="view-council" role="tabpanel" aria-labelledby="tab-council" hidden>
+      <section class="block council-setup">
+        <h2>Council</h2>
+        <p class="settings-hint">
+          Ask one question to several seats — each a raw model or an agent persona.
+          They answer independently, peer-review anonymously, then a chairman synthesizes.
+          Defaults come from the <code>council:</code> block in <code>.ai/models.yaml</code>;
+          edits here apply to this run only.
+        </p>
+        <div class="council-editor">
+          <div class="council-seats-head">
+            <span class="council-seats-title">Seats</span>
+            <button type="button" class="btn secondary" id="council-add-seat">+ Add seat</button>
+          </div>
+          <div id="council-seats" class="council-seats" aria-label="Council seats"></div>
+          <div class="council-chairman-row">
+            <label for="council-chairman">Chairman</label>
+            <select id="council-chairman" class="council-chairman"></select>
+          </div>
+        </div>
+        <div class="field council-question-field">
+          <label for="council-question">Question</label>
+          <textarea id="council-question" rows="3" placeholder="What should the council deliberate on?"></textarea>
+        </div>
+        <div class="form-actions">
+          <button class="btn" id="council-run">Run council</button>
+          <button class="btn secondary" id="council-cancel" hidden>Cancel</button>
+          <span class="form-msg" id="council-msg" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section class="block council-results">
+        <div class="council-stage council-stage-3">
+          <h3>Chairman synthesis</h3>
+          <div id="council-stage3" class="council-stage3"><div class="empty">No run yet.</div></div>
+        </div>
+        <div class="council-stage council-stage-1">
+          <h3>Individual responses</h3>
+          <div id="council-stage1" class="council-stage1"></div>
+        </div>
+        <div class="council-stage council-stage-2">
+          <h3>Peer review <button type="button" class="refresh" id="council-reveal" hidden>reveal identities</button></h3>
+          <div id="council-stage2" class="council-stage2"></div>
+        </div>
+      </section>
+
+      <section class="block council-history-block">
+        <h2>History <span class="count" id="count-council-history">·</span></h2>
+        <div id="council-history" class="council-history"><div class="empty">No past councils.</div></div>
+      </section>
+    </section>
+
     <section class="view" id="view-plans" role="tabpanel" aria-labelledby="tab-plans">
       <div class="split">
         <div class="list" id="plans-list" data-skeletoned="1">
@@ -1046,6 +1099,7 @@
   <script defer src="app/agents.js"></script>
   <script defer src="app/agent-orchestrations.js"></script>
   <script defer src="app/pipelines.js"></script>
+  <script defer src="app/council.js"></script>
   <script defer src="app/jobs.js"></script>
   <script defer src="app/pane-helpers.js"></script>
   <!-- pane-core.js is the ISOLATED canvas renderer (loaded by app/canvas.html,
