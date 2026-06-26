@@ -13,6 +13,7 @@ from typing import Iterator
 
 import pytest
 import serve
+import server.runtime  # BOUND_PORT + Origin allowlist now live here (follows-the-move)
 
 
 class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
@@ -42,6 +43,8 @@ def running_server(monkeypatch) -> Iterator[str]:
     port = httpd.server_address[1]
     monkeypatch.setattr(serve, "PORT", port)
     monkeypatch.setattr(serve, "BOUND_PORT", port)
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    monkeypatch.setattr(server.runtime, "BOUND_PORT", port)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:

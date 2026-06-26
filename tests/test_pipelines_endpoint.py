@@ -18,6 +18,7 @@ DASHBOARD = REPO_ROOT / ".ai" / "dashboard"
 sys.path.insert(0, str(DASHBOARD))
 
 import serve  # noqa: E402
+import server.runtime  # noqa: E402 — BOUND_PORT + Origin allowlist now live here (follows-the-move)
 
 
 def _write_pipeline(d: pathlib.Path, slug: str, yaml_body: str) -> pathlib.Path:
@@ -89,6 +90,8 @@ def _live_server(tmp_path, monkeypatch):
     port = httpd.server_address[1]
     monkeypatch.setattr(serve, "PORT", port)
     monkeypatch.setattr(serve, "BOUND_PORT", port)
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    monkeypatch.setattr(server.runtime, "BOUND_PORT", port)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:

@@ -87,12 +87,11 @@ import session_lock  # noqa: E402 — scripts/ helper
 from _improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
 PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
-# The actually-bound port. Diverges from PORT when main()'s dynamic-port
-# fallback picks a different candidate (e.g. another project already holds
-# PORT). CSRF allowlist and /api/system/info read this so a second
-# concurrent dashboard validates Origins against its real port instead of
-# the stale configured one.
-BOUND_PORT = PORT
+# The actually-bound port (BOUND_PORT) and the Origin allowlist that keys on
+# it now live in server/runtime.py (re-exported via the shim below). main()
+# publishes the real bound port through set_bound_port() once the socket is
+# open. Moved out so server/ws.py can share the allowlist without importing
+# serve.
 
 # Pre-compiled URL-routing patterns. Previously each do_GET / do_POST
 # invocation rebuilt these via inline `re.fullmatch(r"...", path)` calls.
@@ -245,6 +244,13 @@ from server.transcripts import (  # noqa: E402
     _summarise_codex_call,
     _lookup_codex_activity,
 )
+from server.runtime import (  # noqa: E402
+    BOUND_PORT,
+    set_bound_port,
+    _origin_allowed,
+    _browser_cross_origin_blocked,
+)
+import server.runtime as _runtime  # noqa: E402 — for live reads of the mutable BOUND_PORT
 
 
 WORKFLOW_TEMPLATE_URL = _validate_template_url(
@@ -896,51 +902,8 @@ class _WsClosed(Exception):
     """Raised by WebSocket recv/send when the peer has disconnected."""
 
 
-def _origin_allowed(headers) -> bool:
-    """Origin allowlist for state-changing requests. Returns True iff:
-      - the Origin header is present, AND
-      - it exactly matches a loopback dashboard origin for the bound port.
-    'null' Origin (sandboxed iframes / file://) is rejected. No trailing-
-    slash tolerance -- Origin per RFC6454 has no path. Validates against
-    BOUND_PORT (the port the server is actually listening on) rather than
-    the configured PORT, so the dynamic-port-fallback in main() doesn't
-    break CSRF for the second concurrent dashboard.
-    """
-    origin = headers.get("Origin")
-    if origin is None:
-        return False
-    allowed = {
-        f"http://127.0.0.1:{BOUND_PORT}",
-        f"http://localhost:{BOUND_PORT}",
-        f"http://[::1]:{BOUND_PORT}",
-    }
-    return origin in allowed
-
-
-def _browser_cross_origin_blocked(headers) -> bool:
-    """Return True when a long-lived GET (SSE) appears to be a cross-
-    origin browser request and should be rejected.
-
-    SSE endpoints can't go through ``_csrf_guard`` directly because we
-    also want operator ``curl`` / ``wget`` to work — those send no
-    Origin header at all. The actual threat is a cross-origin BROWSER
-    page that issues ``new EventSource(...)``/``fetch(...)`` against
-    a localhost SSE endpoint: the browser blocks reading the response,
-    but the server already allocated a thread + queue slot. Repeated
-    cross-origin requests exhaust the request-handling thread pool.
-
-    Rule: reject only when Origin is set AND not in the loopback
-    allowlist. Origin absent → not a browser context → allow.
-    """
-    origin = headers.get("Origin")
-    if origin is None:
-        return False
-    allowed = {
-        f"http://127.0.0.1:{BOUND_PORT}",
-        f"http://localhost:{BOUND_PORT}",
-        f"http://[::1]:{BOUND_PORT}",
-    }
-    return origin not in allowed
+# _origin_allowed / _browser_cross_origin_blocked (the loopback Origin
+# allowlist) moved to server/runtime.py and are re-exported via the shim above.
 
 
 class WebSocket:
@@ -6226,7 +6189,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             host, port = self.server.server_address[0], self.server.server_address[1]
         except Exception as e:
             print(f"[serve] system_info: server_address read failed: {e}", flush=True)
-            host, port = "127.0.0.1", BOUND_PORT
+            host, port = "127.0.0.1", _runtime.BOUND_PORT
         self._json(200, {
             "host": host,
             "port": port,
@@ -9086,9 +9049,9 @@ def main() -> None:
     # Publish the bound port so _origin_allowed (CSRF) and /api/system/info
     # validate against the port the server is actually listening on, not
     # the configured one. Critical when the fallback above picked a
-    # different candidate.
-    global BOUND_PORT
-    BOUND_PORT = bound
+    # different candidate. (Lives in server.runtime now — set it there so the
+    # allowlist functions, which read runtime's global, see the live value.)
+    set_bound_port(bound)
     with httpd:
         url = f"http://localhost:{bound}/.ai/dashboard/"
         if bound != PORT:
