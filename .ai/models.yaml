@@ -21,6 +21,17 @@ catalog:
     - id: gpt-5.5             # current frontier (recommended)
     - id: gpt-5.4             # flagship frontier
     - id: gpt-5.4-mini        # fast subagent
+
+council:
+  timeout_seconds: 600          # per-seat subprocess wall-clock timeout
+  chairman: { type: model, ref: claude-opus-4-8 }
+  members:
+    - { type: model, ref: claude-opus-4-8 }
+    - { type: model, ref: gpt-5.5 }
+    - { type: model, ref: claude-sonnet-4-6 }
+    # Agent seats (opt-in; require an existing .claude/agents/<ref>.md and a claude model):
+    # - { type: agent, ref: security-reviewer,    model: claude-opus-4-8 }
+    # - { type: agent, ref: marketing-strategist, model: claude-opus-4-8 }
 #
 # Optional per-phase fields:
 #   mode: inline | agent | dispatcher   # override auto-routing for that phase
