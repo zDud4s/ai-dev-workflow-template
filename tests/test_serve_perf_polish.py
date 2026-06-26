@@ -36,6 +36,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
+import server.usage as _usage  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +328,7 @@ def test_timeline_parse_iso_memoized():
 
 
 def test_codex_usage_per_file_cache():
-    src = pathlib.Path(serve.__file__).read_text(encoding="utf-8")
+    src = pathlib.Path(_usage.__file__).read_text(encoding="utf-8")
     fn_src = inspect.getsource(serve._aggregate_codex_usage)
     assert "_CODEX_FILE_AGG_CACHE" in src
     assert "_CODEX_FILE_AGG_LOCK" in src
