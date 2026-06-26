@@ -185,6 +185,10 @@ def _is_referenced(rel: str, script_text: str) -> bool:
     # styles/*.css ships via an analogous glob loop (sibling dashboard refactor).
     if rel.startswith(".ai/dashboard/styles/") and rel.endswith(".css"):
         return ".ai/dashboard/styles/" in script_text
+    # server/*.py ships via an analogous glob loop (the serve.py decomposition
+    # package — re-export modules serve.py imports at startup).
+    if rel.startswith(".ai/dashboard/server/") and rel.endswith(".py"):
+        return ".ai/dashboard/server/" in script_text
     # Shared / bridge skill SKILL.md files: driven by lib/skills.manifest loops.
     m = re.match(r"^\.(?:claude|agents)/skills/([^/]+)/SKILL\.md$", rel)
     if m and _script_sources_manifest(script_text):

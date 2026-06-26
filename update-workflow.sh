@@ -128,6 +128,18 @@ copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/purge_stale_improver_transc
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/session_registry.py" "$TARGET_DIR/.ai/dashboard/scripts/session_registry.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/session_lock.py" "$TARGET_DIR/.ai/dashboard/scripts/session_lock.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/auto_select_scorer.py" "$TARGET_DIR/.ai/dashboard/scripts/auto_select_scorer.py"
+
+# Glob every server/*.py so the serve.py decomposition package (validation,
+# storage, paths, runtime, ws, llm_output, ... — re-export modules serve.py
+# imports at startup) propagates without naming each one. serve.py does
+# `from server.X import ...` on boot; a missing module hard-crashes the
+# dashboard on launch.
+mkdir -p "$TARGET_DIR/.ai/dashboard/server"
+for py_src in "$SCRIPT_DIR/.ai/dashboard/server/"*.py; do
+  [ -f "$py_src" ] || continue
+  copy_if_different "$py_src" "$TARGET_DIR/.ai/dashboard/server/$(basename "$py_src")"
+done
+
 # Clean up old top-level locations from pre-scripts/ layouts so old + new
 # don't co-exist in upgraded projects.
 rm -f "$TARGET_DIR/.ai/dashboard/log_event.py" \
