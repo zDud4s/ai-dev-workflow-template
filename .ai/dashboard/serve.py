@@ -83,6 +83,7 @@ import todos_parser as _todos_parser  # noqa: E402 — scripts/ helper
 import auto_select_scorer  # noqa: E402 — scripts/ helper
 import session_registry  # noqa: E402 — scripts/ helper
 import session_lock  # noqa: E402 — scripts/ helper
+import council_run  # noqa: E402 — scripts/ helper (Agent Council orchestrator)
 
 from _improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
@@ -116,6 +117,10 @@ _RE_JOB_CANCEL = re.compile(r"/api/jobs/([0-9a-f-]+)/cancel")
 _RE_JOB_INPUT = re.compile(r"/api/jobs/([0-9a-f-]+)/input")
 _RE_PTY_KILL = re.compile(r"/api/ptys/([0-9a-f-]+)/kill")
 _RE_JOB_INTERRUPT = re.compile(r"/api/jobs/([0-9a-f-]+)/interrupt")
+# Council run id = YYYYMMDD-HHMMSS-<uuid4[:6]> -> digits, dashes, lowercase hex.
+_RE_COUNCIL_STREAM = re.compile(r"/api/council/runs/([0-9a-f-]+)/stream")
+_RE_COUNCIL_CANCEL = re.compile(r"/api/council/runs/([0-9a-f-]+)/cancel")
+_RE_COUNCIL_GET = re.compile(r"/api/council/runs/([0-9a-f-]+)")
 _RE_SKILL_PROPOSAL_DECIDE = re.compile(r"/api/skills/proposals/([A-Za-z0-9_\-]+)/(accept|reject)")
 _RE_SKILL_SUGGESTION_DRAFT = re.compile(r"/api/skills/suggestions/([A-Za-z0-9_\-]+)/draft")
 _RE_SKILL_IMPROVE_NOW = re.compile(r"/api/skills/([A-Za-z0-9_\-]+)/improve")
@@ -243,6 +248,13 @@ METRICS_FILE = ROOT / ".ai" / "ledgers" / "metrics.jsonl"
 # Filled agent-dispatch packets produced by the agent orchestrator.
 AGENT_RUNS_DIR = ROOT / ".ai" / "agent-runs"
 PIPELINES_DIR = ROOT / ".ai" / "pipelines"
+# Persisted Agent Council run records — one <id>.json per run. Tests override
+# this with a tmp path via monkeypatch (mirrors PIPELINES_DIR/JOBS_DIR).
+COUNCIL_RUNS_DIR = ROOT / ".ai" / "council" / "runs"
+# The standalone council orchestrator spawned as a subprocess (stdin spec ->
+# stdout JSON events), like pipeline_fanout.py.
+COUNCIL_RUN_PY = ROOT / ".ai" / "dashboard" / "scripts" / "council_run.py"
+MODELS_YAML = ROOT / ".ai" / "models.yaml"
 # Append-only ledger of per-(skill, job) invocations. The auto skill-improver
 # (Phase 2+) reads this to decide which skills need adapting. One line per
 # unique skill invoked in a job; the entry-skill of orchestrate/plan jobs is
@@ -1903,6 +1915,16 @@ JOB_KINDS = {
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 JOBS_MAX = 50  # cap memory; oldest finished entries get evicted
+
+# In-memory Agent Council run registry. Unlike JOBS, the council has NO per-run
+# .log file — each entry instead keeps an in-memory ``events`` buffer (for SSE
+# catch-up) plus JOBS-style ``subscribers`` queues for live fan-out. The reader
+# thread (one per run) appends each parsed stdout JSON line to BOTH ``events``
+# and every subscriber queue. State is lost on restart by design; the persisted
+# <id>.json record on disk survives for history.
+#   COUNCIL_RUNS[id] = {"proc", "pid", "events": [], "subscribers": [...], "status"}
+COUNCIL_RUNS: dict[str, dict] = {}
+COUNCIL_RUNS_LOCK = threading.Lock()
 
 
 # ----- PTY sessions (real shell terminals via WebSocket) ----------------
@@ -5164,6 +5186,247 @@ def _cancel_job(job_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Agent Council — config / validation / spawn / SSE / cancel
+#
+# Reuses council_run.py (the orchestrator, run as a subprocess) for the seat
+# argv builder, validation, config loader, and the stdin-spec / stdout-events
+# contract. serve.py owns only the HTTP surface + the in-memory COUNCIL_RUNS
+# registry + the reader thread that fans stdout events out to SSE subscribers.
+# ---------------------------------------------------------------------------
+
+def _council_agent_slugs() -> list[str]:
+    """Scanned ``.claude/agents/<slug>.md`` names (reuses _scan_agents_dir)."""
+    records = _scan_agents_dir(ROOT / ".claude" / "agents")
+    return [r["name"] for r in records if r.get("name")]
+
+
+def _council_config() -> dict:
+    """Payload for GET /api/council/config: default council + model catalog +
+    available agent slugs for the seat picker."""
+    return {
+        "default": council_run.load_council_config(MODELS_YAML),
+        "catalog": _read_models_catalog(MODELS_YAML),
+        "agents": _council_agent_slugs(),
+    }
+
+
+def _validate_council_request(body: dict) -> tuple[dict | None, str | None]:
+    """Validate {question, seats?, chairman?}. Returns (spec, None) on success
+    or (None, error). Falls back to the models.yaml default for omitted
+    seats/chairman. Every seat is checked against council_run.validate_seat."""
+    if not isinstance(body, dict):
+        return None, "invalid request body"
+    question = body.get("question")
+    if not isinstance(question, str) or not question.strip():
+        return None, "question is required"
+
+    default = council_run.load_council_config(MODELS_YAML)
+    seats = body.get("seats")
+    if seats is None:
+        seats = default.get("members") or []
+    chairman = body.get("chairman")
+    if chairman is None:
+        chairman = default.get("chairman") or None
+
+    if not isinstance(seats, list) or len(seats) < 1:
+        return None, "at least one council member is required"
+    if not isinstance(chairman, dict) or not chairman:
+        return None, "a chairman seat is required"
+
+    catalog = _read_models_catalog(MODELS_YAML)
+    agent_slugs = set(_council_agent_slugs())
+    for idx, seat in enumerate(list(seats) + [chairman]):
+        if not isinstance(seat, dict):
+            return None, f"seat {idx} must be an object"
+        err = council_run.validate_seat(seat, catalog, agent_slugs)
+        if err:
+            return None, f"invalid seat: {err}"
+
+    run_id = (
+        _dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    )
+    spec = {
+        "id": run_id,
+        "question": question,
+        "seats": seats,
+        "chairman": chairman,
+        "timeout_seconds": int(default.get("timeout_seconds") or 600),
+        "runs_dir": str(COUNCIL_RUNS_DIR),
+        "catalog": catalog,
+    }
+    return spec, None
+
+
+def _publish_council_event(run_id: str, event: dict | None) -> None:
+    """Append a parsed event to the run's in-memory buffer and push it to every
+    SSE subscriber queue. ``event=None`` is the stream-end sentinel (subscribers
+    only — not buffered)."""
+    with COUNCIL_RUNS_LOCK:
+        entry = COUNCIL_RUNS.get(run_id)
+        if entry is None:
+            return
+        if event is not None:
+            entry["events"].append(event)
+        subs = list(entry.get("subscribers") or [])
+    for q in subs:
+        try:
+            q.put_nowait(event)
+        except _stdqueue.Full:
+            # Slow SSE client — drop this frame rather than block the reader.
+            pass
+
+
+def _council_reader(run_id: str, proc: subprocess.Popen) -> None:
+    """Read council_run.py stdout line by line, json.loads each, fan out to the
+    events buffer + subscribers. On the terminal {"stage":"run",...} event (or
+    EOF) close subscribers and record the terminal status."""
+    terminal_status = None
+    try:
+        for line in proc.stdout:  # type: ignore[union-attr]
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            _publish_council_event(run_id, event)
+            if isinstance(event, dict) and event.get("stage") == "run":
+                terminal_status = event.get("status")
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            pass
+        with COUNCIL_RUNS_LOCK:
+            entry = COUNCIL_RUNS.get(run_id)
+            if entry is not None:
+                # Don't clobber an explicit ``cancelled`` set by the cancel route.
+                if entry.get("status") not in ("cancelled",):
+                    entry["status"] = terminal_status or "error"
+        _publish_council_event(run_id, None)  # EOF sentinel to close streams
+
+
+def _spawn_council_run(spec: dict) -> str:
+    """Launch council_run.py as a subprocess, feed the JSON spec on stdin,
+    register the run, and start the reader thread. Returns the run id."""
+    run_id = spec["id"]
+    COUNCIL_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    popen_kwargs: dict = {}
+    if os.name != "nt":
+        # New session so os.killpg in cancel reaps the seat children too.
+        popen_kwargs["start_new_session"] = True
+    proc = subprocess.Popen(
+        [sys.executable, str(COUNCIL_RUN_PY)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **popen_kwargs,
+    )
+    with COUNCIL_RUNS_LOCK:
+        COUNCIL_RUNS[run_id] = {
+            "proc": proc,
+            "pid": proc.pid,
+            "events": [],
+            "subscribers": [],
+            "status": "running",
+        }
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write(json.dumps(spec))
+        proc.stdin.close()
+    except (OSError, ValueError) as exc:
+        print(f"[serve] council spawn stdin write failed: {exc}", flush=True)
+    threading.Thread(
+        target=_council_reader, args=(run_id, proc), daemon=True
+    ).start()
+    return run_id
+
+
+def _list_council_runs() -> list[dict]:
+    """Glob COUNCIL_RUNS_DIR/*.json (excluding .gitkeep), newest-first."""
+    out: list[dict] = []
+    try:
+        files = [p for p in COUNCIL_RUNS_DIR.glob("*.json") if p.name != ".gitkeep"]
+    except OSError:
+        return out
+    for fp in files:
+        try:
+            record = json.loads(fp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict):
+            out.append(record)
+    out.sort(key=lambda r: str(r.get("id") or ""), reverse=True)
+    return out
+
+
+def _read_council_run(run_id: str) -> dict | None:
+    """Read one persisted run record, or None if missing/unreadable."""
+    path = COUNCIL_RUNS_DIR / f"{run_id}.json"
+    if not path.is_file():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _cancel_council_run(run_id: str) -> bool:
+    """Terminate the run's subprocess (and seat children) and mark cancelled.
+    Returns False if the run is unknown. Mirrors _cancel_job's kill incantation
+    but is COUNCIL-specific (does NOT touch the JOBS registry)."""
+    with COUNCIL_RUNS_LOCK:
+        entry = COUNCIL_RUNS.get(run_id)
+        if entry is None:
+            return False
+        entry["status"] = "cancelled"
+        proc = entry.get("proc")
+        pid = entry.get("pid") or (proc.pid if proc is not None else None)
+
+    if proc is not None and pid:
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    check=False, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=10,
+                )
+            else:
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                except (ProcessLookupError, OSError):
+                    proc.terminate()
+        except (ProcessLookupError, OSError) as exc:
+            print(f"[serve] council cancel kill failed pid={pid}: {exc}", flush=True)
+        except subprocess.TimeoutExpired:
+            print(f"[serve] council taskkill timed out pid={pid}", flush=True)
+    elif proc is not None:
+        # No pid (e.g. a stubbed proc in tests) — best-effort terminate().
+        try:
+            proc.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Persist the cancelled status into the on-disk record.
+    record = _read_council_run(run_id)
+    if record is not None:
+        record["status"] = "cancelled"
+        try:
+            (COUNCIL_RUNS_DIR / f"{run_id}.json").write_text(
+                json.dumps(record, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+    return True
+
+
+# ---------------------------------------------------------------------------
 # SessionRegistry + EngineProtocol adapter
 #
 # _session_engine_factory(sid, model) returns an adapter that implements
@@ -6580,6 +6843,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             slug = urllib.parse.unquote(parsed.path[len("/api/pipelines/"):])
             self._handle_pipeline_get(slug)
             return
+        if parsed.path == "/api/council/config":
+            self._handle_council_config()
+            return
+        if parsed.path == "/api/council/runs":
+            self._handle_council_runs_list()
+            return
+        m = _RE_COUNCIL_STREAM.fullmatch(parsed.path)
+        if m:
+            self._handle_council_stream(m.group(1))
+            return
+        m = _RE_COUNCIL_GET.fullmatch(parsed.path)
+        if m:
+            self._handle_council_run_get(m.group(1))
+            return
         if parsed.path == "/api/agents/content":
             self._handle_agent_content(urllib.parse.parse_qs(parsed.query))
             return
@@ -6667,6 +6944,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_phase_update(body)
         elif parsed.path == "/api/jobs":
             self._handle_jobs_create(body)
+        elif parsed.path == "/api/council/runs":
+            self._handle_council_run_create(body)
         elif parsed.path == "/api/workflow/check":
             self._handle_workflow_check()
         elif parsed.path == "/api/workflow/update":
@@ -6681,6 +6960,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             m = _RE_JOB_CANCEL.fullmatch(parsed.path)
             if m:
                 self._handle_job_cancel(m.group(1))
+                return
+            m = _RE_COUNCIL_CANCEL.fullmatch(parsed.path)
+            if m:
+                self._handle_council_run_cancel(m.group(1))
                 return
             m = _RE_JOB_INPUT.fullmatch(parsed.path)
             if m:
@@ -9806,6 +10089,107 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(200, {"ok": True})
         else:
             self._json(409, {"error": "job not running or not found"})
+
+    # ----- Agent Council endpoints --------------------------------------
+
+    def _handle_council_config(self) -> None:
+        self._json(200, _council_config())
+
+    def _handle_council_run_create(self, body: dict) -> None:
+        # CSRF already enforced by _csrf_guard() at the top of do_POST.
+        spec, err = _validate_council_request(body)
+        if err:
+            self._json(400, {"error": err})
+            return
+        run_id = _spawn_council_run(spec)
+        self._json(200, {"id": run_id})
+
+    def _handle_council_runs_list(self) -> None:
+        self._json(200, {"runs": _list_council_runs()})
+
+    def _handle_council_run_get(self, run_id: str) -> None:
+        record = _read_council_run(run_id)
+        if record is None:
+            self._json(404, {"error": "council run not found", "id": run_id})
+            return
+        self._json(200, record)
+
+    def _handle_council_run_cancel(self, run_id: str) -> None:
+        # CSRF already enforced by _csrf_guard() at the top of do_POST.
+        if _cancel_council_run(run_id):
+            self._json(200, {"ok": True})
+        else:
+            self._json(404, {"error": "council run not found", "id": run_id})
+
+    def _handle_council_stream(self, run_id: str) -> None:
+        """SSE for a council run. Catch-up replays the in-memory ``events``
+        buffer (the council has no per-run .log file), then live-streams from a
+        fresh subscriber queue. Guarded by _browser_cross_origin_blocked."""
+        if _browser_cross_origin_blocked(self.headers):
+            self._json(403, {"error": "origin not allowed"})
+            return
+        import queue as _queue
+
+        session_start = time.monotonic()
+        with COUNCIL_RUNS_LOCK:
+            entry = COUNCIL_RUNS.get(run_id)
+            if entry is None:
+                self._json(404, {"error": "council run not found", "id": run_id})
+                return
+            buffered = list(entry.get("events") or [])
+            status = entry.get("status")
+            subs = entry.setdefault("subscribers", [])
+            q: _queue.Queue = _queue.Queue(maxsize=1024)
+            subs.append(q)
+
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+
+            # 1. Catch-up: replay the buffered events captured so far.
+            for event in buffered:
+                self._write_sse_frame(json.dumps(event))
+
+            terminal_seen = any(
+                isinstance(e, dict) and e.get("stage") == "run" for e in buffered
+            )
+            if terminal_seen or status in ("done", "error", "cancelled"):
+                self._write_sse_event("end", "{}")
+                return
+
+            # 2. Live tail until the EOF sentinel arrives.
+            while True:
+                if time.monotonic() - session_start > MAX_SSE_SESSION_S:
+                    self._write_sse_event("end", '{"reason":"max_session"}')
+                    return
+                if self._sse_client_gone():
+                    return
+                try:
+                    event = q.get(timeout=15)
+                except _queue.Empty:
+                    try:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        return
+                    continue
+                if event is None:
+                    self._write_sse_event("end", "{}")
+                    return
+                if not self._write_sse_frame(json.dumps(event)):
+                    return
+        finally:
+            with COUNCIL_RUNS_LOCK:
+                entry = COUNCIL_RUNS.get(run_id)
+                if entry is not None:
+                    try:
+                        entry["subscribers"].remove(q)
+                    except (ValueError, KeyError):
+                        pass
 
     # ----- PTY endpoints (real shell sessions) --------------------------
 
