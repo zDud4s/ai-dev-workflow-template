@@ -13,6 +13,8 @@ from typing import Iterator
 
 import pytest
 
+import server.runtime as _runtime  # BOUND_PORT + Origin allowlist live here (follows-the-move)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
@@ -41,6 +43,8 @@ def running_server(tmp_path, monkeypatch, serve_module) -> Iterator[tuple[str, P
     port = httpd.server_address[1]
     monkeypatch.setattr(serve_module, "PORT", port)
     monkeypatch.setattr(serve_module, "BOUND_PORT", port)
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    monkeypatch.setattr(_runtime, "BOUND_PORT", port)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:

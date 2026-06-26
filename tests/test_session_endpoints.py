@@ -30,6 +30,7 @@ DASHBOARD_DIR = REPO_ROOT / ".ai" / "dashboard"
 if str(DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_DIR))
 import server.transcript_paths as _tp  # noqa: E402
+import server.runtime as _runtime  # noqa: E402 — BOUND_PORT + Origin allowlist live here (follows-the-move)
 
 SERVE_PATH = DASHBOARD_DIR / "serve.py"
 
@@ -67,8 +68,11 @@ def running_server(serve_module):
     port = httpd.server_address[1]
     original_port = serve_module.PORT
     original_bound = serve_module.BOUND_PORT
+    original_runtime_bound = _runtime.BOUND_PORT
     serve_module.PORT = port
     serve_module.BOUND_PORT = port
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    _runtime.BOUND_PORT = port
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -76,6 +80,7 @@ def running_server(serve_module):
     finally:
         serve_module.PORT = original_port
         serve_module.BOUND_PORT = original_bound
+        _runtime.BOUND_PORT = original_runtime_bound
         httpd.shutdown()
         httpd.server_close()
 

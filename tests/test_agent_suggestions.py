@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+import server.runtime as _runtime  # BOUND_PORT + Origin allowlist live here (follows-the-move)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
@@ -77,8 +79,11 @@ def running_server(serve_module):
     port = httpd.server_address[1]
     original_port = serve_module.PORT
     original_bound = serve_module.BOUND_PORT
+    original_runtime_bound = _runtime.BOUND_PORT
     serve_module.PORT = port
     serve_module.BOUND_PORT = port
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    _runtime.BOUND_PORT = port
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -86,6 +91,7 @@ def running_server(serve_module):
     finally:
         serve_module.PORT = original_port
         serve_module.BOUND_PORT = original_bound
+        _runtime.BOUND_PORT = original_runtime_bound
         httpd.shutdown()
         httpd.server_close()
 
