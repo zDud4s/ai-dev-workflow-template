@@ -258,6 +258,7 @@ from server.ws import (  # noqa: E402
     WebSocket,
 )
 from server.llm_output import _parse_improver_output  # noqa: E402
+from server.config import _read_yaml_field  # noqa: E402
 
 
 WORKFLOW_TEMPLATE_URL = _validate_template_url(
@@ -2990,35 +2991,7 @@ def _scan_skills_dir(skills_dir: Path) -> list[dict]:
     return out
 
 
-def _read_yaml_field(path: Path, field: str) -> dict:
-    """Minimal YAML helper to pull a top-level mapping like `session: {...}`.
-
-    Avoids a PyYAML dependency. Only handles the simple two-line shape used in
-    .ai/models.yaml. Returns an empty dict on any failure.
-    """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return {}
-    out: dict[str, str] = {}
-    in_block = False
-    for line in text.splitlines():
-        stripped = line.rstrip()
-        if not in_block:
-            if stripped.startswith(field + ":"):
-                in_block = True
-            continue
-        if not stripped:
-            break
-        if not stripped.startswith((" ", "\t")):
-            break
-        m = re.match(r"^\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(\S.*)?$", stripped)
-        if not m:
-            continue
-        val = (m.group(2) or "").strip()
-        val = val.split("#", 1)[0].strip()  # strip inline comment
-        out[m.group(1)] = val.strip('"\'')
-    return out
+# _read_yaml_field moved to server/config.py (re-exported via the shim above).
 
 
 # Hard-coded mirror of the ``catalog:`` block in .ai/models.yaml. Used ONLY
