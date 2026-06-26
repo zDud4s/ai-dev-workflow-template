@@ -26,7 +26,12 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
+DASHBOARD_DIR = REPO_ROOT / ".ai" / "dashboard"
+if str(DASHBOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(DASHBOARD_DIR))
+import server.transcript_paths as _tp  # noqa: E402
+
+SERVE_PATH = DASHBOARD_DIR / "serve.py"
 
 
 @pytest.fixture(scope="module")
@@ -118,6 +123,7 @@ def _seed_projects_root(serve_module, monkeypatch, tmp_path):
     sdir = projects / slug
     sdir.mkdir(parents=True)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     return sdir
 
 
@@ -186,6 +192,7 @@ def test_transcripts_dir_encodes_dot_segments(serve_module, monkeypatch, tmp_pat
     expected = projects / _claude_project_slug(cwd)
     expected.mkdir(parents=True)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     serve_module._TRANSCRIPTS_DIR_CACHE.clear()
 
     assert serve_module._transcripts_dir_for_cwd(cwd) == expected
@@ -196,6 +203,7 @@ def test_transcripts_dir_negative_cache_expires(serve_module, monkeypatch, tmp_p
     projects.mkdir(parents=True)
     cwd = tmp_path / "proj" / ".worktrees" / "wt"
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     serve_module._TRANSCRIPTS_DIR_CACHE.clear()
 
     assert serve_module._transcripts_dir_for_cwd(cwd) is None
@@ -253,6 +261,7 @@ def test_sessions_list_merges_ide_transcripts_and_dashboard(running_server, serv
     (projects / slug / f"{sid}.jsonl").write_text(
         '{"type":"user","message":{"role":"user","content":"oi"}}\n', encoding="utf-8")
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     status, body, _ = _http("GET", f"{running_server}/api/sessions")
     assert status == 200, body
@@ -296,6 +305,7 @@ def test_session_stream_tails_jsonl_in_mirror(running_server, serve_module, tmp_
         '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ola do IDE"}]}}\n',
         encoding="utf-8")
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     buf = _read_sse(running_server, f"/api/sessions/{sid}/stream", until=b"ola do IDE")
     assert b"text/event-stream" in buf.lower()
     assert b"ola do IDE" in buf
@@ -915,6 +925,7 @@ def test_stream_leading_frame_carries_pending(running_server, serve_module, tmp_
         encoding="utf-8",
     )
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     # Put the session in the registry with a pending turn so the leading frame
     # should report pending=True.
@@ -951,6 +962,7 @@ def test_stream_emits_warning_frame(running_server, serve_module, tmp_path, monk
         encoding="utf-8",
     )
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     # Pre-seed a warning on the session so the first poll tick drains it.
     reg = serve_module.SESSION_REGISTRY

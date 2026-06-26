@@ -38,7 +38,12 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
+DASHBOARD_DIR = REPO_ROOT / ".ai" / "dashboard"
+if str(DASHBOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(DASHBOARD_DIR))
+import server.transcript_paths as _tp  # noqa: E402
+
+SERVE_PATH = DASHBOARD_DIR / "serve.py"
 
 
 @pytest.fixture(scope="module")
@@ -575,6 +580,7 @@ def test_list_transcripts_returns_session_files_for_current_repo(running_server,
     has written for the current repo's working directory."""
     projects = _make_fake_transcripts_dir(tmp_path, serve_module.ROOT)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     status, body, _ = _http("GET", f"{running_server}/api/transcripts")
     assert status == 200, body
@@ -592,6 +598,7 @@ def test_transcript_stream_emits_existing_lines_via_sse(running_server, serve_mo
     operator immediately sees the IDE conversation."""
     projects = _make_fake_transcripts_dir(tmp_path, serve_module.ROOT)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     # Pull the session id back out of our fake file.
     sid = "12345678-1234-1234-1234-1234abcd0001"
 
@@ -627,6 +634,7 @@ def test_transcript_stream_404_for_unknown_session(running_server, serve_module,
     """Unknown session id -> 404 (don't leak filesystem state)."""
     projects = _make_fake_transcripts_dir(tmp_path, serve_module.ROOT)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     status, body, _ = _http(
         "GET",
         f"{running_server}/api/transcripts/00000000-0000-0000-0000-000000000000/stream",
@@ -1118,6 +1126,7 @@ def test_chat_job_log_path_points_at_transcript_file(tmp_path, serve_module, mon
     slug = str(serve_module.ROOT).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
     (projects / slug).mkdir(parents=True)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     job_id = str(uuid.uuid4())
     sid = "11111111-aaaa-bbbb-cccc-222222222222"
@@ -1446,6 +1455,7 @@ def test_timeline_includes_total_duration_and_tag(tmp_path, serve_module, monkey
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
     runs = serve_module._load_timeline_runs()
     assert runs[0]["total_duration_ms"] == 45_000
     assert runs[0]["tag"] == "claude/opus"
@@ -1463,6 +1473,7 @@ def test_timeline_tag_mixed_when_multiple_tools(tmp_path, serve_module, monkeypa
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
     runs = serve_module._load_timeline_runs()
     assert runs[0]["tag"] == "mixed"
 
@@ -1487,6 +1498,7 @@ def test_timeline_task_from_transcript_when_available(tmp_path, serve_module, mo
         encoding="utf-8",
     )
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     p = tmp_path / "events.jsonl"
     _write_events(p, [
@@ -1528,6 +1540,7 @@ def test_timeline_task_skips_ide_injected_user_messages(tmp_path, serve_module, 
         encoding="utf-8",
     )
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     p = tmp_path / "events.jsonl"
     _write_events(p, [
@@ -1549,6 +1562,7 @@ def test_timeline_task_none_when_transcript_missing(tmp_path, serve_module, monk
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-such-dir")
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-such-dir")
     runs = serve_module._load_timeline_runs()
     assert runs[0]["task"] is None
 

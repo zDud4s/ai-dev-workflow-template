@@ -33,6 +33,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
+import server.transcript_paths as _tp  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +162,7 @@ def test_codex_usage_cap_limits_traversal(tmp_path, monkeypatch):
         fake_files.append(p)
 
     monkeypatch.setattr(serve, "_CODEX_SESSIONS_ROOT_OVERRIDE", sessions_root)
+    monkeypatch.setattr(_tp, "_CODEX_SESSIONS_ROOT_OVERRIDE", sessions_root)
 
     # Spy on ``Path.open`` so we can count how many rollouts get read.
     real_open = pathlib.Path.open
@@ -203,6 +205,7 @@ def test_codex_usage_cap_keeps_newest_by_mtime(tmp_path, monkeypatch):
         paths.append(p)
 
     monkeypatch.setattr(serve, "_CODEX_SESSIONS_ROOT_OVERRIDE", sessions_root)
+    monkeypatch.setattr(_tp, "_CODEX_SESSIONS_ROOT_OVERRIDE", sessions_root)
 
     real_open = pathlib.Path.open
     opened_names: list[str] = []
