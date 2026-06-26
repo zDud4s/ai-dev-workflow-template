@@ -24,6 +24,13 @@ class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
 def agent_runs_dir(tmp_path, monkeypatch) -> Path:
     monkeypatch.setattr(serve, "AGENT_RUNS_DIR", tmp_path)
     monkeypatch.setattr(serve, "METRICS_FILE", tmp_path / "metrics.jsonl")
+    # _list_agent_runs / _agent_run_metrics_by_slug now live in
+    # server.agent_runs (re-exported by serve), and they read AGENT_RUNS_DIR /
+    # METRICS_FILE from that module's namespace. Patch the canonical location
+    # too so the move stays transparent to this endpoint test.
+    import server.agent_runs as _agent_runs_mod
+    monkeypatch.setattr(_agent_runs_mod, "AGENT_RUNS_DIR", tmp_path)
+    monkeypatch.setattr(_agent_runs_mod, "METRICS_FILE", tmp_path / "metrics.jsonl")
     with serve._JSONL_CACHE_LOCK:
         serve._JSONL_CACHE.clear()
     return tmp_path
