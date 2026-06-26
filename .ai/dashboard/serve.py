@@ -5294,6 +5294,8 @@ def _council_reader(run_id: str, proc: subprocess.Popen) -> None:
             if isinstance(event, dict) and event.get("stage") == "run":
                 terminal_status = event.get("status")
     except (OSError, ValueError):
+        # Stream closed / decode race while the subprocess is exiting — the
+        # finally block below still records the terminal status and closes subs.
         pass
     finally:
         try:
@@ -5421,8 +5423,8 @@ def _cancel_council_run(run_id: str) -> bool:
             (COUNCIL_RUNS_DIR / f"{run_id}.json").write_text(
                 json.dumps(record, indent=2), encoding="utf-8"
             )
-        except OSError:
-            pass
+        except OSError as exc:
+            print(f"[serve] council cancel persist failed {run_id}: {exc}", flush=True)
     return True
 
 
@@ -10189,6 +10191,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     try:
                         entry["subscribers"].remove(q)
                     except (ValueError, KeyError):
+                        # Benign: the queue was already removed (double-close).
                         pass
 
     # ----- PTY endpoints (real shell sessions) --------------------------

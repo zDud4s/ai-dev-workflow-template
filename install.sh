@@ -161,6 +161,7 @@ copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/purge_stale_improver_transc
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/session_registry.py" "$TARGET_DIR/.ai/dashboard/scripts/session_registry.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/session_lock.py" "$TARGET_DIR/.ai/dashboard/scripts/session_lock.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/auto_select_scorer.py" "$TARGET_DIR/.ai/dashboard/scripts/auto_select_scorer.py"
+copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/council_run.py" "$TARGET_DIR/.ai/dashboard/scripts/council_run.py"
 # Glob every app/*.js so new modules (settings.js, auto-select.js, future ones)
 # propagate without an explicit list to maintain. index.html references files
 # by name — if any are missing, the dashboard silently 404s and dependent
