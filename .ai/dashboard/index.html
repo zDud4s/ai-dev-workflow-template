@@ -688,55 +688,82 @@
     </section>
 
     <section class="view" id="view-council" role="tabpanel" aria-labelledby="tab-council" hidden>
-      <section class="block council-setup">
-        <h2>Council</h2>
-        <p class="settings-hint">
-          Ask one question to several seats — each a raw model or an agent persona.
-          They answer independently, peer-review anonymously, then a chairman synthesizes.
-          Defaults come from the <code>council:</code> block in <code>.ai/models.yaml</code>;
-          edits here apply to this run only.
-        </p>
-        <div class="council-editor">
-          <div class="council-seats-head">
-            <span class="council-seats-title">Seats</span>
-            <button type="button" class="btn secondary" id="council-add-seat">+ Add seat</button>
-          </div>
-          <div id="council-seats" class="council-seats" aria-label="Council seats"></div>
-          <div class="council-chairman-row">
-            <label for="council-chairman">Chairman</label>
-            <select id="council-chairman" class="council-chairman"></select>
-          </div>
-        </div>
-        <div class="field council-question-field">
-          <label for="council-question">Question</label>
-          <textarea id="council-question" rows="3" placeholder="What should the council deliberate on?"></textarea>
-        </div>
-        <div class="form-actions">
-          <button class="btn" id="council-run">Run council</button>
-          <button class="btn secondary" id="council-cancel" hidden>Cancel</button>
-          <span class="form-msg" id="council-msg" aria-live="polite"></span>
-        </div>
-      </section>
+      <div class="council">
+        <!-- Convene: roster + question -->
+        <section class="council-convene" aria-label="Convene a council">
+          <header class="council-convene-head">
+            <h2 class="council-title">Convene the council</h2>
+            <p class="council-lede">
+              One question, many minds. Seats answer alone, critique each other blind,
+              then the chair delivers a single verdict. Defaults live in
+              <code>.ai/models.yaml</code>; changes here apply to this sitting only.
+            </p>
+          </header>
 
-      <section class="block council-results">
-        <div class="council-stage council-stage-3">
-          <h3>Chairman synthesis</h3>
-          <div id="council-stage3" class="council-stage3"><div class="empty">No run yet.</div></div>
-        </div>
-        <div class="council-stage council-stage-1">
-          <h3>Individual responses</h3>
-          <div id="council-stage1" class="council-stage1"></div>
-        </div>
-        <div class="council-stage council-stage-2">
-          <h3>Peer review <button type="button" class="refresh" id="council-reveal" hidden>reveal identities</button></h3>
-          <div id="council-stage2" class="council-stage2"></div>
-        </div>
-      </section>
+          <div class="council-roster">
+            <div class="council-roster-head">
+              <span class="council-roster-label">Roster</span>
+              <span class="council-roster-hint" id="council-roster-hint"></span>
+            </div>
+            <div id="council-seats" class="council-seats" role="list" aria-label="Council seats"></div>
+          </div>
 
-      <section class="block council-history-block">
-        <h2>History <span class="count" id="count-council-history">·</span></h2>
-        <div id="council-history" class="council-history"><div class="empty">No past councils.</div></div>
-      </section>
+          <div class="council-ask">
+            <label class="council-ask-label" for="council-question">The question before the council</label>
+            <textarea id="council-question" class="council-question" rows="2"
+                      placeholder="e.g. Which caching strategy fits a read-heavy public API?"></textarea>
+            <div class="council-ask-actions">
+              <button class="btn council-go" id="council-run" type="button">Convene</button>
+              <button class="btn secondary council-stop" id="council-cancel" type="button" hidden>Stop</button>
+              <span class="council-status" id="council-msg" role="status" aria-live="polite"></span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Floor: verdict (III) on top, then table (I) and critique (II) -->
+        <section class="council-floor" id="council-floor" aria-label="Deliberation">
+          <article class="council-verdict" aria-labelledby="council-chair-title">
+            <div class="council-verdict-rail">
+              <span class="council-stage-mark" aria-hidden="true">III</span>
+              <span class="council-verdict-kicker">Verdict</span>
+            </div>
+            <div class="council-verdict-body">
+              <h3 class="council-verdict-title" id="council-chair-title">The chair's synthesis</h3>
+              <div id="council-stage3" class="council-stage3 council-prose">
+                <p class="council-idle">No council has convened yet — set the roster and ask.</p>
+              </div>
+            </div>
+          </article>
+
+          <section class="council-act" aria-labelledby="council-act1-title">
+            <header class="council-act-head">
+              <span class="council-stage-mark" aria-hidden="true">I</span>
+              <h3 class="council-act-title" id="council-act1-title">Around the table</h3>
+              <span class="council-act-sub">each seat answers in isolation</span>
+            </header>
+            <div id="council-stage1" class="council-stage1" role="list"></div>
+          </section>
+
+          <section class="council-act" aria-labelledby="council-act2-title">
+            <header class="council-act-head">
+              <span class="council-stage-mark" aria-hidden="true">II</span>
+              <h3 class="council-act-title" id="council-act2-title">Blind critique</h3>
+              <span class="council-act-sub">seats rank each other, names hidden</span>
+              <button type="button" class="council-reveal" id="council-reveal" hidden aria-pressed="false">Reveal names</button>
+            </header>
+            <div id="council-stage2" class="council-stage2"></div>
+          </section>
+        </section>
+
+        <!-- Archive -->
+        <section class="council-archive" aria-label="Past councils">
+          <header class="council-archive-head">
+            <h3 class="council-archive-title">Archive</h3>
+            <span class="count" id="count-council-history">·</span>
+          </header>
+          <div id="council-history" class="council-history" role="list"></div>
+        </section>
+      </div>
     </section>
 
     <section class="view" id="view-plans" role="tabpanel" aria-labelledby="tab-plans">

@@ -6280,85 +6280,393 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
 }
 
 /* ============================================================
-   Council — seat editor, 3-stage results, history
-   All colors pull from theme tokens (no hardcoded hex).
+   Council — convene a roster, run the 3-stage deliberation,
+   read the chair's verdict. Tool identity drives colour:
+   cyan = claude, magenta = codex, violet = agent persona.
+   Glow is reserved for live (streaming) state only. Tokens
+   only — no hardcoded hex.
    ============================================================ */
-.council-editor {
+.council {
+  --seat-id: var(--border-strong);   /* per-seat identity hue, set below */
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.75rem;
-  background: var(--bg-elev);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--cut-sm);
+  gap: 2rem;
+  container-type: inline-size;
 }
-.council-seats-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+/* `.btn` sets display, which beats the UA [hidden] rule — restore it so the
+   Stop / Reveal controls actually hide when toggled. */
+.council [hidden] { display: none; }
+
+/* ---- Convene ---------------------------------------------- */
+.council-convene { display: flex; flex-direction: column; gap: 1.25rem; }
+.council-convene-head { display: flex; flex-direction: column; gap: 0.35rem; }
+.council-title {
+  font-family: var(--ff-display);
+  font-weight: 800;
+  font-size: var(--fs-7);
+  letter-spacing: 0.01em;
+  line-height: 1;
+  margin: 0;
 }
-.council-seats-title { font-family: var(--ff-display); letter-spacing: 0.08em; }
+.council-lede {
+  margin: 0;
+  max-width: 68ch;
+  color: var(--text-dim);
+  font-size: var(--fs-3);
+  line-height: 1.55;
+}
+.council-lede code { color: var(--text-2); font-family: var(--ff-mono); font-size: 0.92em; }
+
+.council-roster { display: flex; flex-direction: column; gap: 0.6rem; }
+.council-roster-head { display: flex; align-items: baseline; gap: 0.6rem; }
+.council-roster-label {
+  font-family: var(--ff-display);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-size: var(--fs-1);
+  color: var(--text-2);
+}
+.council-roster-hint { color: var(--text-faint); font-size: var(--fs-1); }
+
 .council-seats {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.55rem;
 }
+
+/* A seat tile. Identity is carried by a leading dot (not a border
+   stripe) plus a subtle tint of the seat's hue into the surface. */
 .council-seat {
+  --seat-id: var(--border-strong);
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.3rem 0.55rem;
-  background: var(--bg-tinted);
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  background: var(--surf-2);
   border: 1px solid var(--border);
   border-radius: var(--cut-sm);
   font-family: var(--ff-mono);
-  font-size: 0.85em;
+  font-size: var(--fs-2);
+  color: var(--text-2);
+  transition: border-color var(--dur-fast) var(--ease-out-quart),
+              transform var(--dur-fast) var(--ease-out-quart),
+              background var(--dur-fast) var(--ease-out-quart);
 }
-.council-seat.is-chairman { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft); }
-.council-seat-kind { color: var(--accent-2); text-transform: uppercase; font-size: 0.8em; }
-.council-seat-remove { color: var(--bad); cursor: var(--cur-pointer); border: 0; background: transparent; }
+.council-seat[data-tool="claude"] { --seat-id: var(--accent); }
+.council-seat[data-tool="codex"]  { --seat-id: var(--accent-2); }
+.council-seat[data-kind="agent"]  { --seat-id: var(--violet); }
+.council-seat:hover { transform: translateY(-1px); border-color: color-mix(in oklch, var(--seat-id) 50%, var(--border)); }
+.council-seat-dot {
+  width: 0.5rem; height: 0.5rem; flex: none;
+  border-radius: 50%;
+  background: var(--seat-id);
+}
+.council-seat-ref { color: var(--text); }
+.council-seat select.council-seat-field {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  font: inherit;
+  padding: 0 0.1rem;
+  cursor: var(--cur-pointer);
+}
+.council-seat select.council-seat-field:focus-visible {
+  outline: 1px solid var(--seat-id);
+  outline-offset: 2px;
+}
+.council-seat-model { color: var(--text-faint); font-size: 0.92em; }
+.council-seat-btn {
+  display: inline-grid; place-items: center;
+  width: 1.15rem; height: 1.15rem;
+  border: 0; background: transparent;
+  color: var(--text-faint);
+  cursor: var(--cur-pointer);
+  border-radius: var(--cut-sm);
+  transition: color var(--dur-fast) var(--ease-out-quart), background var(--dur-fast) var(--ease-out-quart);
+}
+.council-seat-btn:hover { color: var(--text); background: var(--surf-3); }
+.council-seat-chair:hover { color: var(--accent); }
+.council-seat-remove:hover { color: var(--bad); }
+/* The chair seat: a full ring in its own hue + a standing marker. */
+.council-seat.is-chair {
+  background: color-mix(in oklch, var(--seat-id) 12%, var(--surf-2));
+  border-color: var(--seat-id);
+  box-shadow: 0 0 0 1px var(--seat-id);
+}
+.council-seat.is-chair .council-seat-chair { color: var(--seat-id); }
+.council-seat-gavel {
+  font-size: 0.8em;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--seat-id);
+}
+/* Add-seat tile — dashed, quiet until hovered. */
+.council-seat-add {
+  background: transparent;
+  border-style: dashed;
+  color: var(--text-dim);
+  cursor: var(--cur-pointer);
+}
+.council-seat-add:hover { color: var(--accent); border-color: var(--accent-soft); transform: translateY(-1px); }
 
-.council-question-field { margin-top: 0.75rem; }
+.council-ask { display: flex; flex-direction: column; gap: 0.6rem; }
+.council-ask-label {
+  font-family: var(--ff-display);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-size: var(--fs-3);
+  color: var(--text-2);
+}
+.council-question {
+  width: 100%;
+  resize: vertical;
+  background: var(--panel-inset);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--cut-sm);
+  color: var(--text);
+  font-family: var(--ff-body);
+  font-size: var(--fs-4);
+  line-height: 1.5;
+  padding: 0.7rem 0.8rem;
+  transition: border-color var(--dur-fast) var(--ease-out-quart), box-shadow var(--dur-fast) var(--ease-out-quart);
+}
+.council-question:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--accent-glow-soft);
+}
+.council-ask-actions { display: flex; align-items: center; gap: 0.7rem; }
+.council-go { font-family: var(--ff-display); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.council-status { color: var(--text-dim); font-size: var(--fs-2); font-family: var(--ff-mono); }
 
-.council-results { display: flex; flex-direction: column; gap: 1rem; }
-.council-stage h3 { font-family: var(--ff-display); letter-spacing: 0.06em; }
-.council-stage-3 .council-stage3 {
-  padding: 0.85rem;
-  background: var(--accent-bg);
-  border: 1px solid var(--accent);
+/* ---- Floor (results) -------------------------------------- */
+.council-floor { display: flex; flex-direction: column; gap: 1.75rem; }
+.council-stage-mark {
+  font-family: var(--ff-display);
+  font-weight: 900;
+  font-style: italic;
+  line-height: 0.8;
+  color: var(--text-faint);
+}
+
+/* Verdict — the hero. Rail carries stage III + kicker; body the prose. */
+.council-verdict {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1.25rem;
+  padding: 1.25rem 1.4rem;
+  background: color-mix(in oklch, var(--accent-bg) 60%, var(--panel));
+  border: 1px solid var(--accent-soft);
   border-radius: var(--cut-md);
 }
+.council-verdict-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding-right: 1.25rem;
+  border-right: 1px solid var(--border-soft);
+}
+.council-verdict-rail .council-stage-mark { font-size: var(--fs-7); color: var(--accent-soft); }
+.council-verdict-kicker {
+  font-family: var(--ff-display);
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  font-size: var(--fs-0);
+  color: var(--accent);
+}
+.council-verdict.is-live { border-color: var(--accent); box-shadow: var(--accent-glow-soft); }
+.council-verdict.is-live .council-stage-mark { color: var(--accent); animation: council-pulse 1.6s var(--ease-out-quart) infinite; }
+.council-verdict.is-error { border-color: var(--bad); }
+.council-verdict-body { min-width: 0; }
+.council-verdict-title {
+  font-family: var(--ff-display);
+  font-weight: 800;
+  font-size: var(--fs-6);
+  letter-spacing: 0.01em;
+  margin: 0 0 0.5rem;
+}
+.council-idle { color: var(--text-faint); font-style: italic; margin: 0; }
+
+/* Acts (stage 1 + 2) */
+.council-act { display: flex; flex-direction: column; gap: 0.85rem; }
+.council-act-head { display: flex; align-items: baseline; gap: 0.65rem; flex-wrap: wrap; }
+.council-act-head .council-stage-mark { font-size: var(--fs-6); }
+.council-act-title {
+  font-family: var(--ff-display);
+  font-weight: 700;
+  font-size: var(--fs-5);
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+.council-act-sub { color: var(--text-faint); font-size: var(--fs-2); }
+.council-reveal {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--cut-sm);
+  color: var(--text-dim);
+  font-family: var(--ff-mono);
+  font-size: var(--fs-1);
+  padding: 0.2rem 0.55rem;
+  cursor: var(--cur-pointer);
+  transition: color var(--dur-fast) var(--ease-out-quart), border-color var(--dur-fast) var(--ease-out-quart);
+}
+.council-reveal:hover { color: var(--accent); border-color: var(--accent-soft); }
+
+/* Stage 1 — responses grid */
 .council-stage1 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: 0.9rem;
 }
 .council-seat-col {
-  padding: 0.7rem;
-  background: var(--bg-elev-2);
+  --seat-id: var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.85rem 0.9rem;
+  background: var(--surf-1);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--cut-sm);
+  animation: council-rise var(--dur-base) var(--ease-out-quart) both;
+}
+.council-seat-col[data-tool="claude"] { --seat-id: var(--accent); }
+.council-seat-col[data-tool="codex"]  { --seat-id: var(--accent-2); }
+.council-seat-col[data-kind="agent"]  { --seat-id: var(--violet); }
+.council-seat-col.is-live { border-color: color-mix(in oklch, var(--seat-id) 55%, var(--border)); }
+.council-seat-col.is-error { border-color: color-mix(in oklch, var(--bad) 55%, var(--border)); }
+.council-seat-col-head { display: flex; align-items: center; gap: 0.5rem; }
+.council-seat-col-name { font-family: var(--ff-mono); font-size: var(--fs-2); color: var(--text); }
+.council-seat-col-status {
+  margin-left: auto;
+  font-family: var(--ff-mono);
+  font-size: var(--fs-0);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-faint);
+}
+.council-seat-col.is-live .council-seat-col-status { color: var(--accent); }
+.council-seat-col.is-live .council-seat-dot { box-shadow: var(--accent-glow); animation: council-pulse 1.4s var(--ease-out-quart) infinite; }
+.council-seat-col.is-done .council-seat-col-status { color: var(--good); }
+.council-seat-col.is-error .council-seat-col-status { color: var(--bad); }
+
+/* Stage 2 — leaderboard */
+.council-stage2 { display: flex; flex-direction: column; gap: 0.45rem; }
+.council-rank {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr auto;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.55rem 0.7rem;
+  background: var(--surf-1);
   border: 1px solid var(--border-soft);
   border-radius: var(--cut-sm);
 }
-.council-seat-col.is-error { border-color: var(--bad); }
-.council-seat-col-head { display: flex; justify-content: space-between; font-family: var(--ff-mono); font-size: 0.8em; color: var(--accent-2); }
-.council-stage2 .council-leaderboard {
-  width: 100%;
-  border-collapse: collapse;
+.council-rank.is-top { background: color-mix(in oklch, var(--accent-bg) 45%, var(--surf-1)); border-color: var(--accent-soft); }
+.council-rank-num {
+  font-family: var(--ff-display);
+  font-weight: 900;
+  font-size: var(--fs-6);
+  line-height: 1;
+  color: var(--text-faint);
+  text-align: center;
 }
-.council-leaderboard th,
-.council-leaderboard td {
-  text-align: left;
-  padding: 0.35rem 0.5rem;
-  border-bottom: 1px solid var(--border-soft);
+.council-rank.is-top .council-rank-num { color: var(--accent); }
+.council-rank-main { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+.council-rank-name { font-family: var(--ff-mono); font-size: var(--fs-2); color: var(--text); }
+.council-rank-bar {
+  height: 0.3rem;
+  border-radius: 999px;
+  background: var(--panel-inset);
+  overflow: hidden;
+}
+.council-rank-bar-fill {
+  display: block;
+  height: 100%;
+  width: var(--bar, 0%);
+  border-radius: inherit;
+  background: var(--accent);   /* neutral while blind */
+  transition: width var(--dur-slow) var(--ease-out-expo);
+}
+/* Tool identity on the bar appears only once names are revealed. */
+.council-rank[data-tool="codex"] .council-rank-bar-fill { background: var(--accent-2); }
+.council-rank[data-kind="agent"] .council-rank-bar-fill { background: var(--violet); }
+.council-rank-meta { font-family: var(--ff-mono); font-size: var(--fs-1); color: var(--text-dim); text-align: right; white-space: nowrap; }
+.council-rank-meta b { color: var(--text); font-weight: 600; }
+
+/* Prose (model output) inside verdict + response cards */
+.council-prose { font-size: var(--fs-3); line-height: 1.6; color: var(--text-2); }
+.council-prose > :first-child { margin-top: 0; }
+.council-prose > :last-child { margin-bottom: 0; }
+.council-prose p { margin: 0 0 0.6em; }
+.council-prose code { font-family: var(--ff-mono); font-size: 0.9em; color: var(--text); }
+.council-prose pre {
+  background: var(--panel-inset);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--cut-sm);
+  padding: 0.7rem 0.8rem;
+  overflow: auto;
+}
+
+/* ---- Archive ---------------------------------------------- */
+.council-archive { display: flex; flex-direction: column; gap: 0.6rem; }
+.council-archive-head { display: flex; align-items: baseline; gap: 0.5rem; }
+.council-archive-title {
+  font-family: var(--ff-display);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-size: var(--fs-1);
+  color: var(--text-2);
+  margin: 0;
 }
 .council-history { display: flex; flex-direction: column; gap: 0.4rem; }
 .council-history-item {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
-  padding: 0.5rem 0.65rem;
-  background: var(--bg-elev);
+  gap: 1rem;
+  padding: 0.55rem 0.7rem;
+  background: var(--surf-1);
   border: 1px solid var(--border-soft);
   border-radius: var(--cut-sm);
   cursor: var(--cur-pointer);
+  transition: border-color var(--dur-fast) var(--ease-out-quart), background var(--dur-fast) var(--ease-out-quart);
 }
-.council-history-item:hover { border-color: var(--accent); }
+.council-history-item:hover { border-color: var(--accent-soft); background: var(--surf-2); }
+.council-history-q { color: var(--text-2); font-size: var(--fs-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.council-history-meta { color: var(--text-faint); font-family: var(--ff-mono); font-size: var(--fs-1); white-space: nowrap; }
+.council-history-meta[data-status="done"] { color: var(--good); }
+.council-history-meta[data-status="error"] { color: var(--bad); }
+.council-history-meta[data-status="cancelled"] { color: var(--warn); }
+.council-history .empty, .council-stage2 .empty { color: var(--text-faint); font-size: var(--fs-2); padding: 0.5rem 0; }
+
+@keyframes council-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes council-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Narrow panes: stack the verdict rail above the prose. */
+@container (max-width: 34rem) {
+  .council-verdict { grid-template-columns: 1fr; gap: 0.8rem; }
+  .council-verdict-rail {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.6rem;
+    padding-right: 0;
+    padding-bottom: 0.6rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .council-verdict-rail .council-stage-mark { font-size: var(--fs-6); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .council-seat-col { animation: none; }
+  .council-verdict.is-live .council-stage-mark,
+  .council-seat-col.is-live .council-seat-dot { animation: none; }
+  .council-seat:hover, .council-seat-add:hover { transform: none; }
+}
