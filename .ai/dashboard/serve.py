@@ -126,7 +126,6 @@ _RE_AGENT_PROPOSAL_DECIDE = re.compile(r"/api/agents/proposals/([A-Za-z0-9_\-]+)
 # We only need the PID to know who's alive — match the second CSV field
 # without splitting the whole row.
 _RE_TASKLIST_PID = re.compile(r'"[^"]*","(\d+)"')
-ROOT = Path(__file__).resolve().parents[2]  # repo root
 _SERVER_STARTED_AT = time.time()
 # Validation / path helpers (URL allowlist, safe-which, trusted-dir, ISO ts,
 # path normalisation) now live in server/validation.py; re-exported here so
@@ -150,51 +149,31 @@ from server.storage import (  # noqa: E402
     _bound_path_cache,
     _load_jsonl_cached,
 )
+from server.paths import (  # noqa: E402
+    ROOT,
+    WORKFLOW_VERSION_FILE,
+    JOBS_DIR,
+    JOBS_PERSIST_FILE,
+    EVENTS_FILE,
+    METRICS_FILE,
+    AGENT_RUNS_DIR,
+    PIPELINES_DIR,
+    SKILL_METRICS_FILE,
+    TODOS_FILE,
+    SKILL_PROPOSALS_DIR,
+    SKILL_BACKUPS_DIR,
+    IMPROVEMENTS_LEDGER,
+    AGENT_PROPOSALS_DIR,
+)
 
 
 WORKFLOW_TEMPLATE_URL = _validate_template_url(
     os.environ.get("AI_WORKFLOW_TEMPLATE_URL", _DEFAULT_WORKFLOW_TEMPLATE_URL)
 )
 
-# One-line file with the upstream sha that produced the currently-installed
-# workflow files. Written by /api/workflow/update after a successful run; read
-# by /api/workflow/check to compute "ahead/behind in commits". Absent on
-# projects that haven't been updated through the dashboard yet.
-WORKFLOW_VERSION_FILE = ROOT / ".ai" / "workflow" / ".version"
-JOBS_DIR = ROOT / ".ai" / "dashboard" / "jobs"
-# Append-only ledger of job snapshots — every status transition adds one
-# JSON line so the dashboard can rebuild the JOBS dict after a server
-# restart. Last snapshot per ``id`` wins. Tests override this with a tmp
-# path via monkeypatch.
-JOBS_PERSIST_FILE = ROOT / ".ai" / "ledgers" / "jobs.jsonl"
-# Append-only telemetry stream written by .ai/dashboard/scripts/log_event.py
-# (a PostToolUse hook). The /api/timeline endpoint aggregates phase_dispatch
-# events from this file. Tests override it via monkeypatch.
-EVENTS_FILE = ROOT / ".ai" / "ledgers" / "events.jsonl"
-# Append-only metrics stream written by the orchestrate skill, one line per
-# dispatched phase. Powers the /api/auto-select ranking. See the orchestrate
-# skill "## Metrics logging" section for the schema.
-METRICS_FILE = ROOT / ".ai" / "ledgers" / "metrics.jsonl"
-# Filled agent-dispatch packets produced by the agent orchestrator.
-AGENT_RUNS_DIR = ROOT / ".ai" / "agent-runs"
-PIPELINES_DIR = ROOT / ".ai" / "pipelines"
-# Append-only ledger of per-(skill, job) invocations. The auto skill-improver
-# (Phase 2+) reads this to decide which skills need adapting. One line per
-# unique skill invoked in a job; the entry-skill of orchestrate/plan jobs is
-# always credited even when the log isn't stream-json.
-SKILL_METRICS_FILE = ROOT / ".ai" / "ledgers" / "skill_metrics.jsonl"
-# Todos ledger. `scripts/todos_parser.py` owns the canonical read path for the
-# Todos tab; the analytics aggregation reads the same file by this constant so
-# all six analytics ledgers are uniform and monkeypatchable by name in tests.
-TODOS_FILE = ROOT / ".ai" / "ledgers" / "todos.jsonl"
-# Auto-improver storage. Proposals are dropped here as JSON + .old.md + .new.md
-# triples so the dashboard can render a diff and the user can Accept / Reject.
-# Backups of overwritten SKILL.md content go to SKILL_BACKUPS_DIR; every
-# decision (auto-apply, manual-apply, reject, skip) is appended to the
-# ledger for forensic readability.
-SKILL_PROPOSALS_DIR  = ROOT / ".ai" / "dashboard" / "proposals" / "skills"
-SKILL_BACKUPS_DIR    = ROOT / ".ai" / "dashboard" / "proposals" / "skill_backups"
-IMPROVEMENTS_LEDGER  = ROOT / ".ai" / "ledgers" / "improvements.jsonl"
+# Path constants (ROOT, ledger files, proposal dirs) now live in
+# server/paths.py; re-exported above so `serve.METRICS_FILE` and the tests
+# that monkeypatch these by name keep working.
 _JOBS_PERSIST_LOCK = threading.Lock()
 _IMPROVEMENTS_LEDGER_LOCK = threading.Lock()
 _IMPROVER_TRACKED_SIDS: set[str] = set()
@@ -249,11 +228,6 @@ _SUGGESTION_SEMAPHORE = threading.Semaphore(2)
 # a trivial DoS vector. 60s is well above any healthy LLM response time
 # yet bounded so a misbehaving CLI can't park the dashboard.
 _SUGGESTION_HTTP_TIMEOUT_MAX = 60
-# Agent suggestions storage. Mirrors the skill-proposal layout but for the
-# agent-improver "Suggest-new-agents" mode: one .json payload + one .body.md
-# per proposal. Accept writes a real file at .claude/agents/<slug>.md;
-# reject just marks status="rejected" and leaves the proposal on disk.
-AGENT_PROPOSALS_DIR  = ROOT / ".ai" / "dashboard" / "proposals" / "agents"
 # Defaults used when models.yaml has no `improver:` block. The improver
 # only edits skills under PROJECT (.claude/skills/) — global skills are
 # never modified.
