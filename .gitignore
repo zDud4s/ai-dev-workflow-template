@@ -29,6 +29,7 @@ tests/*
 .ai/specs/*
 .ai/ledgers/*
 .ai/agent-runs/*
+.ai/council/runs/*
 .ai/dashboard/jobs/*
 .ai/dashboard/proposals/agents/*
 .ai/dashboard/proposals/skills/*
