@@ -126,3 +126,20 @@ def _parse_iso_ts(s):
 
 def _normalise_path_for_match(s: str) -> str:
     return (s or "").lower().replace("\\", "/").rstrip("/")
+
+
+def _iso_to_epoch(s: str) -> float:
+    """Lossy ISO-8601 -> epoch seconds; returns 0 on parse failure."""
+    if not s:
+        return 0.0
+    try:
+        return _dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def _skill_name_canonical(raw: str) -> str:
+    """Strip plugin namespace prefix from a skill id (``a:b:c`` -> ``c``)."""
+    if not raw:
+        return ""
+    return raw.rsplit(":", 1)[-1].strip()

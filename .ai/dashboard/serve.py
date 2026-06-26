@@ -133,9 +133,11 @@ from server.validation import (  # noqa: E402
     _ALLOWED_TEMPLATE_HOSTS,
     _DEFAULT_WORKFLOW_TEMPLATE_URL,
     _is_under_trusted_dir,
+    _iso_to_epoch,
     _normalise_path_for_match,
     _parse_iso_ts,
     _safe_which,
+    _skill_name_canonical,
     _validate_template_url,
 )
 from server.storage import (  # noqa: E402
@@ -2155,14 +2157,7 @@ def _tokenize_task(s: str) -> set[str]:
     return {t for t in cleaned.split() if len(t) >= 3 and t not in _STOPWORDS}
 
 
-def _iso_to_epoch(s: str) -> float:
-    """Lossy ISO-8601 -> epoch seconds; returns 0 on parse failure."""
-    if not s:
-        return 0.0
-    try:
-        return _dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
-    except (ValueError, AttributeError):
-        return 0.0
+# _iso_to_epoch moved to server/validation.py (re-exported via the shim above).
 
 
 def _load_unique_jobs(max_age_days: int = 30) -> list[dict]:
@@ -2312,11 +2307,7 @@ def _detect_skill_suggestions(threshold: float = 0.5, min_cluster: int = 3,
     return clusters
 
 
-def _skill_name_canonical(raw: str) -> str:
-    """Strip plugin namespace prefix from a skill id (``a:b:c`` -> ``c``)."""
-    if not raw:
-        return ""
-    return raw.rsplit(":", 1)[-1].strip()
+# _skill_name_canonical moved to server/validation.py (re-exported via the shim above).
 
 
 def _extract_skills_from_stream_json(path: Path) -> dict[str, int]:
