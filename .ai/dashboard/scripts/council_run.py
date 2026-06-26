@@ -12,6 +12,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -144,25 +145,50 @@ def _text_or_empty(value: Any) -> str:
     return str(value)
 
 
+def _resolve_argv(argv: list[str]) -> list[str]:
+    """Resolve argv[0] to a concrete executable path.
+
+    On Windows the ``claude`` / ``codex`` CLIs are npm shims (``claude.cmd`` /
+    ``codex.cmd``), so a bare ``subprocess.run(["claude", ...])`` raises
+    ``[WinError 2]``. ``shutil.which`` resolves the shim via PATHEXT (mirrors
+    serve.py's ``_safe_which(tool) or tool`` spawn pattern). Falls back to the
+    original name when nothing is found (POSIX, or already an absolute path)."""
+    if not argv:
+        return argv
+    resolved = shutil.which(argv[0])
+    if not resolved:
+        return argv
+    return [resolved, *argv[1:]]
+
+
 def default_runner(argv: list[str], stdin: str | None, timeout: int) -> dict[str, Any]:
     """Run one council subprocess and return a normalized result dict."""
     started = time.perf_counter()
+    # CREATE_NO_WINDOW keeps the .cmd shim from flashing a console on Windows.
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = subprocess.run(
-            argv,
+            _resolve_argv(argv),
             input=stdin,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            creationflags=creationflags,
         )
+        # On a non-zero exit the model said nothing useful — surface the stderr
+        # tail as the error so the dashboard can show *why* a seat failed.
+        err = None
+        if completed.returncode != 0:
+            tail = (completed.stderr or completed.stdout or "").strip()
+            err = (tail[-500:] or f"exited {completed.returncode}")
         return {
             "status": "ok" if completed.returncode == 0 else "error",
             "exit_code": completed.returncode,
             "stdout": completed.stdout,
             "stderr": completed.stderr,
-            "error": None,
+            "error": err,
             "ms": int((time.perf_counter() - started) * 1000),
         }
     except subprocess.TimeoutExpired as exc:
@@ -195,6 +221,31 @@ def _emit(emit: Emitter, event: dict[str, Any]) -> None:
     emit(event)
 
 
+def _extract_codex_text(stdout: str) -> str:
+    """Reduce a ``codex exec --json`` event stream to the final assistant text.
+
+    Each stdout line is a JSON event; assistant turns ride in
+    ``{"type":"item.completed","item":{"type":"agent_message","text": ...}}``.
+    Codex often emits a short *preamble* agent_message ("let me check…") before
+    its tool calls and the real answer, so we keep the **last** agent_message —
+    the final synthesis. Falls back to the raw stdout if none is present (so
+    nothing is silently dropped on a codex output-format change)."""
+    last: str | None = None
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "item.completed":
+            item = ev.get("item") or {}
+            if item.get("type") == "agent_message" and item.get("text"):
+                last = str(item["text"])
+    return last.strip() if last else (stdout or "").strip()
+
+
 def _run_seat(
     seat_idx: int,
     seat: dict[str, Any],
@@ -205,7 +256,7 @@ def _run_seat(
 ) -> tuple[int, dict[str, Any]]:
     argv, stdin = build_seat_argv(seat, prompt, catalog)
     try:
-        return seat_idx, runner(argv, stdin, timeout)
+        result = runner(argv, stdin, timeout)
     except Exception as exc:
         return seat_idx, {
             "status": "error",
@@ -214,6 +265,11 @@ def _run_seat(
             "error": str(exc),
             "ms": 0,
         }
+    # Codex speaks a JSON event stream — distil it to the final message so peer
+    # review, the chair, and the UI see prose, not protocol noise.
+    if result.get("status") == "ok" and argv and argv[0] == "codex":
+        result = dict(result, stdout=_extract_codex_text(result.get("stdout", "")))
+    return seat_idx, result
 
 
 def _run_parallel(

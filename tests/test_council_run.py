@@ -232,3 +232,40 @@ def test_example_agents_are_well_formed():
         assert data["tools"]
         assert data["model"] == "claude-opus-4-8"
         assert body
+
+
+# --- Windows shim resolution + codex output distillation -------------------
+
+def test_resolve_argv_falls_back_for_unknown_tool():
+    # Nothing on PATH by that name -> argv returned unchanged (POSIX / abs path).
+    assert cr._resolve_argv(["no-such-tool-xyz-123", "a", "b"]) == ["no-such-tool-xyz-123", "a", "b"]
+    assert cr._resolve_argv([]) == []
+
+
+def test_extract_codex_text_keeps_last_agent_message():
+    # Codex emits a preamble agent_message, then tool calls, then the final
+    # answer — we keep the last one (the synthesis), dropping preamble noise.
+    stream = (
+        '{"type":"thread.started","thread_id":"x"}\n'
+        '{"type":"turn.started"}\n'
+        '{"type":"item.completed","item":{"type":"agent_message","text":"let me check the rules"}}\n'
+        '{"type":"item.completed","item":{"type":"web_search","query":"gdpr 72h"}}\n'
+        '{"type":"item.completed","item":{"type":"agent_message","text":"the final answer"}}\n'
+        '{"type":"turn.completed"}\n'
+    )
+    assert cr._extract_codex_text(stream) == "the final answer"
+
+
+def test_extract_codex_text_falls_back_to_raw():
+    # No agent_message event -> keep the raw text rather than dropping content.
+    assert cr._extract_codex_text("plain non-json output") == "plain non-json output"
+
+
+def test_run_seat_distills_codex_stdout():
+    seat = {"type": "model", "ref": "gpt-5.5"}
+    codex_stream = '{"type":"item.completed","item":{"type":"agent_message","text":"distilled"}}'
+    def runner(argv, stdin, timeout):
+        assert argv[0] == "codex"
+        return {"status": "ok", "stdout": codex_stream, "ms": 1}
+    _idx, result = cr._run_seat(0, seat, "q", CATALOG, 30, runner)
+    assert result["stdout"] == "distilled"   # not the raw JSON event line
