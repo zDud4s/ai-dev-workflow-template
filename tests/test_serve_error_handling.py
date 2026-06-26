@@ -290,10 +290,11 @@ def test_serve_source_no_unguarded_utf8_reads_on_known_jsonl_paths():
     """
     src = (pathlib.Path(serve.__file__)).read_text(encoding="utf-8")
 
-    # 1. _load_jsonl_cached helper preserves the safety invariant.
-    helper_idx = src.find("def _load_jsonl_cached(")
-    assert helper_idx != -1, "expected _load_jsonl_cached helper to exist"
-    helper_window = src[helper_idx : helper_idx + 2500]
+    # 1. _load_jsonl_cached helper preserves the safety invariant. It now lives
+    #    in server/storage.py (re-exported by serve); inspect.getsource follows
+    #    the re-export, so this stays robust regardless of which file holds it.
+    import inspect
+    helper_window = inspect.getsource(serve._load_jsonl_cached)
     assert 'errors="replace"' in helper_window, \
         "_load_jsonl_cached must read with errors=\"replace\""
 

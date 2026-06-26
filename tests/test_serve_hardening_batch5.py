@@ -122,10 +122,10 @@ def test_jobs_persist_file_reads_through_cache_with_errors_replace():
     """JOBS_PERSIST_FILE is JSONL — every reader must go through
     ``_load_jsonl_cached`` which uses ``errors='replace'`` and an
     mtime-invalidated cache."""
-    # 1. The cache opens with errors="replace".
-    assert 'errors="replace"' in SRC.split("def _load_jsonl_cached(", 1)[1].split(
-        "\ndef ", 1
-    )[0]
+    # 1. The cache reader opens with errors="replace". The helper now lives in
+    #    server/storage.py (re-exported by serve); inspect.getsource follows it.
+    import inspect
+    assert 'errors="replace"' in inspect.getsource(_load_serve()._load_jsonl_cached)
     # 2. Every JOBS_PERSIST_FILE *read* site uses _load_jsonl_cached, not
     #    a raw read_text(). (Persistence writes go through .open("a").)
     for line in SRC.splitlines():
