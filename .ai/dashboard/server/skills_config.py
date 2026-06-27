@@ -15,6 +15,16 @@ from pathlib import Path
 
 from server.paths import ROOT
 
+# Cached responses for /api/skills/all and /api/agents/all. Both endpoints walk
+# 3-4 disk locations and the dashboard fires them in parallel at boot — combined
+# ~500-1000ms of FS work on cold cache. A 15s TTL absorbs the boot storm +
+# tab-switch refresh without making manual edits invisible for long. Lives here
+# (next to the scanners) so the skills handler mixin can share these by reference
+# without a circular dep on serve; serve.py re-exports them via the shim.
+_SKILLS_ALL_CACHE: dict = {"at": 0.0, "data": None}
+_AGENTS_ALL_CACHE: dict = {"at": 0.0, "data": None}
+_CATALOG_TTL_SECONDS = 15.0
+
 
 def _scan_agents_dir(agents_dir: Path, *, recursive: bool = False) -> list[dict]:
     """Return one record per ``<agents_dir>/<name>.md`` (or recursively,
