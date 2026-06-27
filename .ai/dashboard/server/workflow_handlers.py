@@ -7,6 +7,13 @@ it so routing and ``serve.Handler._handle_workflow_update`` resolve via MRO. The
 server-runtime config these consult (PORT, WORKFLOW_TEMPLATE_URL, the workflow
 update lock, server start time) lives in server/runtime.py; other helpers come
 from their owning ``server.*`` modules (importing from serve would be circular).
+
+/api/workflow/{check,update} clone the template upstream into a temporary
+directory on every call and run update-workflow.sh from there. This is
+deliberately different from the old /api/git/* endpoints (which did a plain
+``git pull`` on the host project repo): in a project that just *consumes* the
+workflow, the host repo's history has nothing to do with workflow updates, so a
+pull there was either a no-op or — worse — pulled unrelated project commits.
 """
 from __future__ import annotations
 

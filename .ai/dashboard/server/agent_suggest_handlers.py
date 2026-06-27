@@ -6,6 +6,17 @@ Extracted from serve.py as the ``AgentSuggestRoutes`` mixin; Handler inherits it
 so routing and ``serve.Handler._handle_agent_suggest`` resolve via MRO. Helpers
 each method closes over are imported from their owning ``server.*`` modules
 (importing them from serve would be circular).
+
+The skills auto-improver runs on telemetry: every job emits per-skill success
+rows, and clusters of repeated tasks become "draft a SKILL.md" proposals. Agents
+don't have that signal — no agent_metrics.jsonl, no per-agent success rate.
+Instead this flow asks an LLM to look at three cheap signals (git log + recent
+job task descriptions + existing agent catalog) and propose new agents on
+demand. One-shot, never automatic. It reuses the improver config block from
+.ai/models.yaml (tool, model, timeout) and persists each suggestion as a
+{pid}.json + {pid}.body.md pair under AGENT_PROPOSALS_DIR; Accept writes the
+actual agent file at .claude/agents/<slug>.md (refusing to overwrite), Reject
+just marks status="rejected".
 """
 from __future__ import annotations
 

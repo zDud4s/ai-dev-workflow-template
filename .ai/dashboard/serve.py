@@ -83,16 +83,6 @@ import session_lock  # noqa: E402 — scripts/ helper
 
 from _improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
-# PORT (configured listen port), _SERVER_STARTED_AT, WORKFLOW_TEMPLATE_URL and
-# _WORKFLOW_UPDATE_LOCK moved to server/runtime.py so the workflow/system/settings
-# handler mixin can import them without a circular dependency on serve; all are
-# re-exported via the runtime shim below.
-# The actually-bound port (BOUND_PORT) and the Origin allowlist that keys on
-# it now live in server/runtime.py (re-exported via the shim below). main()
-# publishes the real bound port through set_bound_port() once the socket is
-# open. Moved out so server/ws.py can share the allowlist without importing
-# serve.
-
 # Pre-compiled URL-routing patterns. Previously each do_GET / do_POST
 # invocation rebuilt these via inline `re.fullmatch(r"...", path)` calls.
 # Dashboard boot fires ~7 GETs in parallel and the user can spam-click
@@ -120,12 +110,9 @@ _RE_SKILL_SUGGESTION_DRAFT = re.compile(r"/api/skills/suggestions/([A-Za-z0-9_\-
 _RE_SKILL_IMPROVE_NOW = re.compile(r"/api/skills/([A-Za-z0-9_\-]+)/improve")
 _RE_AGENT_PROPOSAL_DECIDE = re.compile(r"/api/agents/proposals/([A-Za-z0-9_\-]+)/(accept|reject)")
 
-# _RE_TASKLIST_PID (the Windows tasklist-CSV PID matcher) moved to
-# server/jobs_reaper.py with the rest of the PID-liveness layer.
-# _SERVER_STARTED_AT moved to server/runtime.py (re-exported via the shim below).
-# Validation / path helpers (URL allowlist, safe-which, trusted-dir, ISO ts,
-# path normalisation) now live in server/validation.py; re-exported here so
-# `serve._x` and `from serve import _x` keep resolving unchanged.
+# The blocks below re-export names from the server/* package so that ``serve._x``
+# and ``from serve import _x`` keep resolving for callers and the tests that
+# monkeypatch them by name; the implementations live in the server/* modules.
 _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
@@ -450,164 +437,10 @@ from server.workflow_handlers import WorkflowSettingsRoutes  # noqa: E402 — Ha
 from server.dispatch_handlers import DispatchPhaseRoutes  # noqa: E402 — Handler mixin
 
 
-# WORKFLOW_TEMPLATE_URL moved to server/runtime.py (re-exported via the shim above).
-
-# Path constants (ROOT, ledger files, proposal dirs) now live in
-# server/paths.py; re-exported above so `serve.METRICS_FILE` and the tests
-# that monkeypatch these by name keep working.
-# _IMPROVEMENTS_LEDGER_LOCK moved to server/improver_io.py (re-exported via shim).
-# Improver subsystem state (_IMPROVER_TRACKED_SIDS(+_LOCK),
-# _IMPROVER_SHUTDOWN_HANDLERS_INSTALLED, _SKILL_METRICS_LOCK) moved to
-# server/improver.py (re-exported via shim).
-# _WORKFLOW_UPDATE_LOCK (serialises /api/workflow/update) moved to
-# server/runtime.py and is re-exported via the runtime shim above.
-# _GIT_LSFILES_* cache state moved to server/git_utils.py (re-exported via shim).
-# _TRANSCRIPT_{PREVIEW,MODEL,ACTIVITY}_{CACHE,LOCK} (the /api/sessions status-list
-# caches shared by the session + transcript list handlers) moved to
-# server/transcripts.py and are re-exported via the transcripts shim above.
-# Transcript location state moved to server.transcript_paths; re-exported above.
-# _SUGGESTION_SEMAPHORE + _SUGGESTION_HTTP_TIMEOUT_MAX (the shared concurrency +
-# wall-clock caps for /api/suggestions/<id>/draft and /api/agents/suggest) moved
-# to server/http_base.py so the proposals + agent-suggest handler mixins share
-# them by reference; re-exported via the http_base shim above.
-# Defaults used when models.yaml has no `improver:` block. The improver
-# only edits skills under PROJECT (.claude/skills/) — global skills are
-# never modified.
-# _IMPROVER_DEFAULTS moved to server/improver.py (re-exported via shim).
-
-# HTTP-layer caps (MAX_JSON_BODY, MAX_PIPELINE_PUT_BYTES, MAX_SSE_SESSION_S,
-# MAX_TRANSCRIPT_CATCHUP_BYTES, SKIP_DIRS) moved to server/http_base.py so the
-# per-domain handler mixins can import them without a circular dependency on
-# serve. Re-exported via the http_base shim above.
-# MAX_WS_PAYLOAD (the inbound WebSocket frame cap) moved to server/ws.py with
-# the rest of the WS framing; re-exported via the ws shim above.
-
-# _jsonl_line_to_session_events moved to server/session_events.py (re-exported via shim).
-
-# _JOB_RUNTIME_FIELDS + _TERMINAL_JOB_STATUSES moved to server/jobs_state.py
-# (re-exported via the shim above) with the rest of the shared job registry.
-
-
-# _list_pipelines moved to server/pipelines.py (re-exported via shim).
-
-
-
-# _git_lsfiles_cached + _git_lsfiles_put (+ _GIT_LSFILES_* state) moved to
-# server/git_utils.py and are re-exported via the shim above.
-
-
-
-# _write_text_lf (LF-pinned text writer) moved to server/storage.py and is
-# re-exported via the storage shim above; many handlers across domains use it.
-
-
-# Job persistence + cost extraction (_persist_job, _update_job_cost,
-# _prune_old_logs, _extract_cost_from_log, _load_persisted_jobs + their state
-# _JOBS_PERSIST_LOCK / _DEFAULT_JOBS_PERSIST_FILE / _COST_EXTRACT_*) moved to
-# server/jobs_persistence.py and are re-exported via the shim above.
-
-# Transcript location helpers/state moved to server.transcript_paths; re-exported above.
-
-
-# Token usage aggregation moved to server.usage; re-exported above.
-
-# _SKILLS_ALL_CACHE / _AGENTS_ALL_CACHE / _CATALOG_TTL_SECONDS (the /api/skills/all
-# + /api/agents/all response caches) moved to server/skills_config.py so the skills
-# handler mixin can share them by reference; re-exported via the shim above.
-
-# JOB_KINDS + the in-memory job registry (JOBS / JOBS_LOCK / JOBS_MAX) moved to
-# server/jobs_state.py and are re-exported via the shim above. Imported by
-# reference so serve.py and the jobs package mutate one shared dict.
-
-
-# ----- PTY sessions (real shell terminals via WebSocket) ----------------
-#
-# Separate from JOBS because the lifecycle, transport, and rendering are
-# completely different: PTY sessions move raw bytes over WS rather than
-# stream-json events over SSE. Each entry mirrors the JOBS shape just
-# enough for the dashboard UI to list / open / close them.
-# The PTY registry state (PTYS / PTYS_LOCK / PTYS_MAX / PTY_RING_BYTES) now
-# lives in server/pty.py and is re-exported above.
-#
-# Job-stream SSE backpressure counters (_DROP_THRESHOLD / _DROP_COUNTS /
-# _DROP_COUNTS_LOCK) moved to server/jobs.py alongside _publish_chunk and are
-# re-exported via the jobs shim above (the job-stream SSE handler reads them).
-
-# The RFC6455 WebSocket framing (WS_GUID, MAX_WS_PAYLOAD, _ws_accept_key,
-# _WsClosed, class WebSocket) moved to server/ws.py and is re-exported via the
-# ws shim above. The loopback Origin allowlist it enforces during the handshake
-# (_origin_allowed / _browser_cross_origin_blocked) lives in server/runtime.py.
-
-
-# Auto-improver runtime (config, _project_skill_index, run/sweep/loops,
-# signal handlers, transcript-purge, skill-suggestions, and
-# _record_skill_metrics / _extract_skills_from_stream_json) moved to
-# server/improver.py and are re-exported via the improver shim above.
-
-
-
 # Install the metrics hook on server.jobs: its job runner calls this when a job
 # finishes so skill-usage metrics get recorded, without jobs.py importing serve
 # (which would be circular — serve imports jobs above via the shim).
 _jobs.record_skill_metrics_hook = _record_skill_metrics
-
-
-# Analytics page aggregation (_ANALYTICS_RANGES, _analytics_range_bounds,
-# _analytics_parse_ts, _analytics_in_range, _aggregate_analytics) moved to
-# server/analytics.py and are re-exported via the analytics shim above.
-
-
-
-# PHASE_TO_SKILL + the per-skill telemetry rollup (_phase_metric_rows,
-# _aggregate_skill_metrics) moved to server/metrics.py and are re-exported
-# via the metrics shim above.
-
-
-# _scan_agents_dir + _scan_skills_dir (skill/agent definition-tree scanners)
-# moved to server/skills_config.py and are re-exported via the shim above.
-
-# _read_yaml_field moved to server/config.py (re-exported via the shim above).
-
-
-# Hard-coded mirror of the ``catalog:`` block in .ai/models.yaml. Used ONLY
-# as a last resort when the file is missing/unreadable or PyYAML is absent —
-# _MODELS_CATALOG_FALLBACK + _read_models_catalog moved to server/models_catalog.py
-# (re-exported via the shim above).
-
-
-
-# ---------------------------------------------------------------------------
-# Job lifecycle, streaming (SSE), stdin/cancel, and the session-resume engine
-# (_spawn_job, _build_chat_argv / _build_codex_chat_argv / _chat_user_message,
-# _start_subprocess_job, _publish_chunk, _send_chat_blocks, _send_to_stdin,
-# _interrupt_chat_turn, _cancel_job, _ResumeEngineAdapter, _session_engine_factory,
-# SESSION_REGISTRY / SESSION_LOCK, ForeignWriteWatcher / _watcher_loop, the
-# _maybe_capture_forked_sid / _maybe_mark_session_turn_done baton callbacks,
-# _copy_transcript_with_new_sid, _tail_chat_catchup + the _DROP_* / _VALID_* /
-# _CHAT_CATCHUP_* constants) moved to server/jobs.py and are re-exported via the
-# jobs shim above. serve installs _record_skill_metrics as the runner's metrics
-# hook (see _jobs.record_skill_metrics_hook, set right after that function).
-# ---------------------------------------------------------------------------
-
-
-# Transcript reading/live-activity helpers and Codex rollout state moved to server.transcripts.
-
-# _load_auto_select_ranking + _load_timeline_runs moved to server/analytics.py (re-exported via shim).
-
-
-
-# ---------- Agent suggestions (helpers) ----------------------------------
-#
-# These power /api/agents/suggest. The skills equivalent (_detect_skill_
-# suggestions + _handle_suggestion_draft) feeds on telemetry; agents have no
-# per-agent telemetry, so we lean on three cheap signals instead — git log,
-# recent jobs, and the editable agent catalog (so the LLM doesn't propose
-# duplicates).
-
-# Agent-suggestion pipeline (_load_editable_agent_names, _recent_job_tasks,
-# _git_log_excerpt, _build_agent_suggester_prompt, _parse_agent_suggestions_output,
-# _persist_agent_proposal) moved to server/agent_suggest.py, re-exported via shim.
-
 
 
 class Handler(DispatchPhaseRoutes, WorkflowSettingsRoutes, FileRoutes, AgentSuggestRoutes, ProposalRoutes, SkillRoutes, PtyRoutes, TranscriptRoutes, SessionRoutes, JobRoutes, ProjectStateRoutes, AnalyticsRoutes, PipelineRoutes, http.server.SimpleHTTPRequestHandler):
@@ -1015,100 +848,6 @@ class Handler(DispatchPhaseRoutes, WorkflowSettingsRoutes, FileRoutes, AgentSugg
     def log_message(self, fmt: str, *args) -> None:  # quieter logs
         sys.stderr.write(f"[dashboard] {fmt % args}\n")
 
-    # ----- GET handlers -----
-    # Project-state endpoints (TODO ledger _todos_latest/_todos_banner/_clean_todo_tags,
-    # _handle_todos_list / _handle_list / _handle_todo_create / _handle_todo_status /
-    # _handle_todos_scan; _handle_memory / _handle_decisions; _handle_events_list /
-    # _handle_events_clear) moved to server/project_handlers.py (ProjectStateRoutes
-    # mixin); Handler inherits them.
-
-    # ----- jobs -----
-    # Job lifecycle + streaming endpoints (_job_summary, _handle_jobs_create,
-    # _handle_jobs_list, _handle_job_get, _handle_job_interrupt, _handle_job_cancel,
-    # _compose_multimodal_blocks, _handle_job_input, _handle_job_stream) moved to
-    # server/jobs_handlers.py (JobRoutes mixin); Handler inherits them. The 3
-    # shared SSE helpers (_write_sse_frame/_write_sse_event/_sse_client_gone) stay
-    # on Handler and are reached via self.
-
-    # IDE transcript endpoints (_handle_transcripts_list, _handle_transcript_stream)
-    # moved to server/transcripts_handlers.py (TranscriptRoutes mixin); Handler
-    # inherits them. Shared SSE writers stay on Handler (used via self).
-
-    # Analytics-family GET endpoints (_handle_usage_total, _handle_timeline,
-    # _handle_analytics, _handle_auto_select) moved to server/analytics_handlers.py
-    # (AnalyticsRoutes mixin); Handler inherits them.
-
-    # Pipeline + agent-orchestration endpoints (_pipelines_origin_guard,
-    # _agent_orchestrations_origin_guard, _handle_pipelines_list / _handle_pipeline_*,
-    # _handle_agent_orchestrations_list / _handle_agent_orchestration_get) moved to
-    # server/pipelines_handlers.py (PipelineRoutes mixin); Handler inherits them.
-
-    # ----- settings (workflow update) helpers -----
-    #
-    # /api/workflow/{check,update} clone the template upstream into a temporary
-    # directory on every call and run update-workflow.sh from there. This is
-    # deliberately different from the old /api/git/* endpoints (which did a
-    # plain `git pull` on the host project repo): in a project that just
-    # *consumes* the workflow, the host repo's history has nothing to do with
-    # workflow updates, so a pull there was either a no-op or — worse — pulled
-    # unrelated project commits.
-
-    # Server self-management endpoints (_run_subprocess, _find_bash,
-    # _is_template_repo, _clone_template, _read_workflow_version,
-    # _handle_workflow_check, _handle_workflow_update, _handle_system_info,
-    # _handle_settings_get, _handle_improver_update, _handle_auto_select_update)
-    # plus the settings-validation class attrs moved to server/workflow_handlers.py
-    # (WorkflowSettingsRoutes mixin); Handler inherits them.
-
-    # ----- composer helpers (skills, files) -----
-
-    # Skills + agents catalog/content/metrics endpoints (_handle_skills_list,
-    # _handle_skills_all, _handle_agent_content, _handle_agents_all,
-    # _handle_skills_suggestions, _handle_skill_content, _handle_skill_improvements,
-    # _handle_skills_metrics) moved to server/skills_handlers.py (SkillRoutes mixin);
-    # Handler inherits them.
-
-    # Skill-improvement proposal endpoints (_handle_proposals_list,
-    # _handle_proposal_get, _handle_proposal_decision, _handle_skill_improve_now,
-    # _handle_suggestion_draft) moved to server/proposals_handlers.py
-    # (ProposalRoutes mixin); Handler inherits them.
-
-    # ----- Agent suggestions (agent-improver "Suggest-new-agents" mode) -----
-    #
-    # The skills auto-improver runs on telemetry: every job emits per-skill
-    # success rows, and clusters of repeated tasks become "draft a SKILL.md"
-    # proposals. Agents don't have that signal — no agent_metrics.jsonl, no
-    # per-agent success rate. Instead this flow asks an LLM to look at three
-    # cheap signals (git log + recent job task descriptions + existing agent
-    # catalog) and propose new agents on demand. One-shot, never automatic.
-    #
-    # Reuses the improver config block from .ai/models.yaml (tool, model,
-    # timeout). Persists each suggestion as a {pid}.json + {pid}.body.md pair
-    # under AGENT_PROPOSALS_DIR. Accept writes the actual agent file at
-    # .claude/agents/<slug>.md (refusing to overwrite). Reject just marks
-    # status="rejected".
-
-    # Agent suggestion + proposal endpoints (_handle_agent_suggest,
-    # _handle_agent_proposals_list, _handle_agent_proposal_get,
-    # _handle_agent_proposal_decision) moved to server/agent_suggest_handlers.py
-    # (AgentSuggestRoutes mixin); Handler inherits them.
-
-    # Repo file-browser endpoints (_handle_files_list, _is_blocked_path,
-    # _handle_file_read) moved to server/files_handlers.py (FileRoutes mixin);
-    # Handler inherits them. The _BLOCKED_* class attrs stay on Handler.
-
-    # Session status/SSE/control endpoints (_handle_session_stream,
-    # _handle_sessions_list, _handle_session_input, _handle_session_release,
-    # _handle_session_interrupt, _handle_session_branch) moved to
-    # server/sessions_handlers.py (SessionRoutes mixin); Handler inherits them.
-    # The _UUID_RE class attr + shared SSE writers stay on Handler (used via self).
-
-    # ----- PTY endpoints (real shell sessions) --------------------------
-
-    # PTY (real shell) WebSocket endpoints (_handle_ptys_list, _handle_pty_get,
-    # _handle_pty_create, _handle_pty_kill, _handle_pty_ws) moved to
-    # server/pty_handlers.py (PtyRoutes mixin); Handler inherits them.
-
     # UUID pattern used to validate session ids on the /api/sessions/* endpoints.
     _UUID_RE = re.compile(
         r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -1178,10 +917,6 @@ class Handler(DispatchPhaseRoutes, WorkflowSettingsRoutes, FileRoutes, AgentSugg
         except (OSError, ValueError):
             return True
 
-    # models.yaml dispatch-mode + per-phase write endpoints (_handle_dispatch_mode,
-    # _handle_phase_update) moved to server/dispatch_handlers.py
-    # (DispatchPhaseRoutes mixin); Handler inherits them.
-
     # ----- phase config edit -----
     _PHASES = {"session", "plan", "execute", "review", "rescue", "maintenance", "bootstrap"}
     _TOOLS = {"claude", "codex"}
@@ -1190,9 +925,6 @@ class Handler(DispatchPhaseRoutes, WorkflowSettingsRoutes, FileRoutes, AgentSugg
     # `model_reasoning_effort` accepts {low, medium, high, xhigh}. We accept
     # the union here and let the dispatcher omit/translate per tool.
     _REASONING = {"xhigh", "high", "medium", "low", "max"}
-
-
-# _patch_or_create_block + _patch_phase_block moved to server/models_catalog.py (re-exported via shim).
 
 
 class _ThreadedServer(socketserver.ThreadingTCPServer):
