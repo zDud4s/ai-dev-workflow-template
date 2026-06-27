@@ -448,7 +448,8 @@ def test_git_log_excerpt_has_timeout():
     """``_git_log_excerpt`` is the suggester's ``git log`` shell-out — it
     must keep its 10s timeout so a hung git can't pin the suggester
     thread indefinitely. Regression guard, not a new fix."""
-    body = SRC.split("def _git_log_excerpt(", 1)[1].split("\ndef ", 1)[0]
+    import inspect
+    body = inspect.getsource(serve._git_log_excerpt)  # moved to server.agent_suggest; follows the shim
     assert re.search(r"timeout\s*=\s*10", body), (
         "_git_log_excerpt lost its timeout=10 guard"
     )

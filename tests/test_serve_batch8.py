@@ -47,6 +47,7 @@ SRC = SERVE_PATH.read_text(encoding="utf-8")
 
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
+import server.agent_suggest as _ags  # noqa: E402 — _persist_agent_proposal reads AGENT_PROPOSALS_DIR here (follows-the-move)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +101,7 @@ def test_persist_agent_proposal_logs_runtime(tmp_path, monkeypatch, capsys):
     fake_parent = tmp_path / "not-a-dir"
     fake_parent.write_text("conflict", encoding="utf-8")  # file blocks mkdir
     monkeypatch.setattr(serve, "AGENT_PROPOSALS_DIR", fake_parent / "kids")
+    monkeypatch.setattr(_ags, "AGENT_PROPOSALS_DIR", fake_parent / "kids")  # follows-the-move
 
     suggestion = {
         "slug": "test-agent",

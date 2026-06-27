@@ -112,9 +112,8 @@ def test_taskkill_captures_and_logs_stderr():
 def test_git_log_excerpt_has_timeout():
     """``_git_log_excerpt`` shells out to ``git log`` — a hung git process
     must not pin the suggester thread."""
-    idx = SRC.find("def _git_log_excerpt(")
-    assert idx >= 0
-    body = SRC[idx : idx + 1500]
+    # _git_log_excerpt moved to server/agent_suggest.py; getsource follows the shim.
+    body = inspect.getsource(_load_serve()._git_log_excerpt)
     assert "timeout=" in body
     # And it must catch TimeoutExpired so the hang doesn't bubble up.
     assert "subprocess.TimeoutExpired" in body
