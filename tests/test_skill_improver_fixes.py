@@ -290,20 +290,20 @@ def test_sweep_visits_oldest_skills_first_and_respects_batch_cap(serve_module, t
         "beta": skills_root / "beta" / "SKILL.md",
         "gamma": skills_root / "gamma" / "SKILL.md",
     }
-    monkeypatch.setattr(serve_module, "_project_skill_index", lambda: proj)
+    _patch_attr(monkeypatch, serve_module, "_project_skill_index", lambda: proj)
 
     # Stagger last-run timestamps so we know the expected ordering.
     # alpha = oldest (1000), beta = middle (2000), gamma = newest (3000).
     timestamps = {"alpha": 1000.0, "beta": 2000.0, "gamma": 3000.0}
-    monkeypatch.setattr(
-        serve_module, "_last_improver_run_ts",
+    _patch_attr(
+        monkeypatch, serve_module, "_last_improver_run_ts",
         lambda sid: timestamps.get(sid, 0.0),
     )
     # Throttle disabled so every skill is candidate.
     # Time = 10000 puts all three well past the throttle window.
     monkeypatch.setattr(serve_module.time, "time", lambda: 10000.0)
     # Improver tool is present.
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
 
     audited_calls = []
 
@@ -311,7 +311,7 @@ def test_sweep_visits_oldest_skills_first_and_respects_batch_cap(serve_module, t
         audited_calls.append((skill_id, kwargs.get("manual", False)))
         return {"status": "no_change", "reason": "fake"}
 
-    monkeypatch.setattr(serve_module, "_run_improver_for_skill", fake_run)
+    _patch_attr(monkeypatch, serve_module, "_run_improver_for_skill", fake_run)
 
     cfg = {"enabled": True, "tool": "claude", "model": "x",
            "min_interval_seconds": 100, "sweep_batch_max": 2}
@@ -337,19 +337,19 @@ def test_sweep_respects_throttle(serve_module, tmp_path, monkeypatch):
     (skills_root / "alpha").mkdir(parents=True)
     (skills_root / "alpha" / "SKILL.md").write_text("# body\n", encoding="utf-8")
     _patch_root(monkeypatch, serve_module, tmp_path)
-    monkeypatch.setattr(
-        serve_module, "_project_skill_index",
+    _patch_attr(
+        monkeypatch, serve_module, "_project_skill_index",
         lambda: {"alpha": skills_root / "alpha" / "SKILL.md"},
     )
     # alpha was audited 30s ago. With min_interval_seconds=300 it must
     # be skipped.
-    monkeypatch.setattr(serve_module, "_last_improver_run_ts", lambda _sid: 9970.0)
+    _patch_attr(monkeypatch, serve_module, "_last_improver_run_ts", lambda _sid: 9970.0)
     monkeypatch.setattr(serve_module.time, "time", lambda: 10000.0)
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
 
     called = []
-    monkeypatch.setattr(
-        serve_module, "_run_improver_for_skill",
+    _patch_attr(
+        monkeypatch, serve_module, "_run_improver_for_skill",
         lambda *a, **k: called.append(a) or {"status": "no_change"},
     )
     cfg = {"enabled": True, "tool": "claude", "model": "x",
@@ -402,13 +402,13 @@ def test_manual_improve_404_when_skill_not_project_scope(serve_module, tmp_path,
     """Calling the handler with a skill that isn't in the project index
     must return 404 — plugin / user-scope skills are read-only and the
     endpoint refuses to touch them."""
-    monkeypatch.setattr(serve_module, "_project_skill_index", lambda: {})
+    _patch_attr(monkeypatch, serve_module, "_project_skill_index", lambda: {})
 
     # Stub out _safe_which so the disabled-tool branch doesn't shadow.
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
     # Force enabled=True regardless of the conftest env var.
-    monkeypatch.setattr(
-        serve_module, "_load_improver_config",
+    _patch_attr(
+        monkeypatch, serve_module, "_load_improver_config",
         lambda: {"enabled": True, "tool": "claude", "model": "x",
                  "timeout_seconds": 60},
     )
@@ -483,14 +483,14 @@ def test_post_improve_returns_inline_status(
     (skills_root / "SKILL.md").write_text(
         "---\nname: fake-skill\n---\n# body\n", encoding="utf-8")
     _patch_root(monkeypatch, serve_module, tmp_path)
-    monkeypatch.setattr(
-        serve_module, "_project_skill_index",
+    _patch_attr(
+        monkeypatch, serve_module, "_project_skill_index",
         lambda: {"fake-skill": skills_root / "SKILL.md"},
     )
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
     # Bypass the conftest env-var disable so the handler proceeds.
-    monkeypatch.setattr(
-        serve_module, "_load_improver_config",
+    _patch_attr(
+        monkeypatch, serve_module, "_load_improver_config",
         lambda: {
             "enabled": True, "tool": "claude", "model": "x",
             "timeout_seconds": 60, "small_change_max_lines": 6,
@@ -526,10 +526,10 @@ def test_post_improve_unknown_skill_404(
     serve_module, running_server, tmp_path, monkeypatch,
 ):
     """Manual improve for a skill that isn't in the project index → 404."""
-    monkeypatch.setattr(serve_module, "_project_skill_index", lambda: {})
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
-    monkeypatch.setattr(
-        serve_module, "_load_improver_config",
+    _patch_attr(monkeypatch, serve_module, "_project_skill_index", lambda: {})
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(
+        monkeypatch, serve_module, "_load_improver_config",
         lambda: {"enabled": True, "tool": "claude", "model": "x",
                  "timeout_seconds": 60},
     )
@@ -558,16 +558,16 @@ def test_post_improve_generates_proposal_when_diff_non_empty(
         monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
-    monkeypatch.setattr(
-        serve_module, "_project_skill_index",
+    _patch_attr(
+        monkeypatch, serve_module, "_project_skill_index",
         lambda: {"fake-skill": skill_md},
     )
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
     # Manual triggers MUST never auto-apply regardless of small_change_max_lines
     # (the operator clicked Improve so they want to review). Set the threshold
     # high to confirm we don't accidentally rely on it.
-    monkeypatch.setattr(
-        serve_module, "_load_improver_config",
+    _patch_attr(
+        monkeypatch, serve_module, "_load_improver_config",
         lambda: {
             "enabled": True, "tool": "claude", "model": "x",
             "timeout_seconds": 60, "small_change_max_lines": 999,
@@ -627,9 +627,9 @@ def test_manual_never_auto_applies_even_for_small_diff(
         monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
-    monkeypatch.setattr(
-        serve_module, "_aggregate_skill_metrics",
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(
+        monkeypatch, serve_module, "_aggregate_skill_metrics",
         lambda: {"fake-skill": {"recent": []}},
     )
     # Tiny threshold that the diff WOULD satisfy if manual respected it.
@@ -699,9 +699,9 @@ def test_auto_path_still_auto_applies_for_small_diff(
         monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
-    monkeypatch.setattr(
-        serve_module, "_aggregate_skill_metrics",
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(
+        monkeypatch, serve_module, "_aggregate_skill_metrics",
         lambda: {"fake-skill": {"recent": []}},
     )
     cfg = {
@@ -1086,9 +1086,9 @@ def test_run_improver_for_skill_manual_records_source_manual(
     ``source=auto`` filter would hide manual outcomes."""
     skill = tmp_path / "SKILL.md"
     skill.write_text("# body\n", encoding="utf-8")
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
-    monkeypatch.setattr(
-        serve_module, "_aggregate_skill_metrics",
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(
+        monkeypatch, serve_module, "_aggregate_skill_metrics",
         lambda: {"fake-skill": {"recent": []}},
     )
     captured = {}
@@ -1097,7 +1097,7 @@ def test_run_improver_for_skill_manual_records_source_manual(
         captured["source"] = source
         captured["status"] = status
 
-    monkeypatch.setattr(serve_module, "_audit_improvement", fake_audit)
+    _patch_attr(monkeypatch, serve_module, "_audit_improvement", fake_audit)
 
     class _FakeProc:
         returncode = 0
@@ -1130,7 +1130,7 @@ def test_tracked_sids_purged_on_atexit(serve_module, monkeypatch):
         serve_module._IMPROVER_TRACKED_SIDS.clear()
         serve_module._IMPROVER_TRACKED_SIDS.add("fake-sid")
 
-    monkeypatch.setattr(serve_module, "_purge_claude_transcript", lambda sid: calls.append(sid) or True)
+    _patch_attr(monkeypatch, serve_module, "_purge_claude_transcript", lambda sid: calls.append(sid) or True)
     serve_module._purge_all_tracked_improver_sids()
 
     assert calls == ["fake-sid"]
@@ -1151,8 +1151,8 @@ def test_tracked_sids_purged_on_sigterm(serve_module, monkeypatch):
     monkeypatch.setattr(serve_module.atexit, "register", lambda _fn: None)
     monkeypatch.setattr(serve_module.signal, "getsignal", lambda _sig: previous_handler)
     monkeypatch.setattr(serve_module.signal, "signal", lambda sig, handler: captured.setdefault(sig, handler))
-    monkeypatch.setattr(serve_module, "_purge_claude_transcript", lambda sid: calls.append(sid) or True)
-    monkeypatch.setattr(serve_module, "_IMPROVER_SHUTDOWN_HANDLERS_INSTALLED", False)
+    _patch_attr(monkeypatch, serve_module, "_purge_claude_transcript", lambda sid: calls.append(sid) or True)
+    _patch_attr(monkeypatch, serve_module, "_IMPROVER_SHUTDOWN_HANDLERS_INSTALLED", False)
 
     with serve_module._IMPROVER_TRACKED_SIDS_LOCK:
         serve_module._IMPROVER_TRACKED_SIDS.clear()
@@ -1172,7 +1172,7 @@ def test_shutdown_signal_chains_default_ignored_and_callable(serve_module, monke
     signum = signal.SIGTERM if hasattr(signal, "SIGTERM") else signal.SIGINT
     events = []
 
-    monkeypatch.setattr(serve_module, "_purge_all_tracked_improver_sids", lambda: events.append(("purge",)))
+    _patch_attr(monkeypatch, serve_module, "_purge_all_tracked_improver_sids", lambda: events.append(("purge",)))
     monkeypatch.setattr(
         serve_module.signal,
         "signal",
@@ -1220,7 +1220,7 @@ def test_purge_retry_on_permission_error(serve_module, tmp_path, monkeypatch, ca
             raise PermissionError("locked")
         real_unlink(path)
 
-    monkeypatch.setattr(serve_module, "_transcripts_dir_for_cwd", lambda _root: tmp_path)
+    _patch_attr(monkeypatch, serve_module, "_transcripts_dir_for_cwd", lambda _root: tmp_path)
     monkeypatch.setattr(serve_module.os, "unlink", flaky_unlink)
 
     started = time.monotonic()

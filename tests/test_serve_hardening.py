@@ -5,6 +5,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / ".ai" / "dashboard
 import serve  # the module under test
 import server.jobs_persistence as _jp  # _persist_job + JOBS_PERSIST_FILE live here (follows-the-move)
 import server.improver_io as _io  # _audit_improvement/_apply_improvement read consts here (follows-the-move)
+import server.improver as _im  # _record_skill_metrics reads SKILL_METRICS_FILE/JOBS/_post_job_skill_actions here (follows-the-move)
 
 
 def _bare_handler():
@@ -162,8 +163,11 @@ def test_skill_metrics_lock_serializes_writes(tmp_path, monkeypatch):
         for i in range(20)
     }
     monkeypatch.setattr(serve, "SKILL_METRICS_FILE", metrics_path)
+    monkeypatch.setattr(_im, "SKILL_METRICS_FILE", metrics_path)  # follows-the-move
     monkeypatch.setattr(serve, "JOBS", jobs)
+    monkeypatch.setattr(_im, "JOBS", jobs)  # follows-the-move (rebind, not in-place)
     monkeypatch.setattr(serve, "_post_job_skill_actions", lambda job_id, skill_ids: None)
+    monkeypatch.setattr(_im, "_post_job_skill_actions", lambda job_id, skill_ids: None)  # follows-the-move
 
     threads = [
         threading.Thread(target=serve._record_skill_metrics, args=(job_id,))
