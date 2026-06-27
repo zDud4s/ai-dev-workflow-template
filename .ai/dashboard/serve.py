@@ -414,6 +414,7 @@ from server.http_base import (  # noqa: E402
     SKIP_DIRS,
 )
 from server.pipelines_handlers import PipelineRoutes  # noqa: E402 — Handler mixin
+from server.analytics_handlers import AnalyticsRoutes  # noqa: E402 — Handler mixin
 
 
 WORKFLOW_TEMPLATE_URL = _validate_template_url(
@@ -614,7 +615,7 @@ _jobs.record_skill_metrics_hook = _record_skill_metrics
 
 
 
-class Handler(PipelineRoutes, http.server.SimpleHTTPRequestHandler):
+class Handler(AnalyticsRoutes, PipelineRoutes, http.server.SimpleHTTPRequestHandler):
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
         ".md": "text/plain; charset=utf-8",
@@ -1497,48 +1498,14 @@ class Handler(PipelineRoutes, http.server.SimpleHTTPRequestHandler):
             })
         self._json(200, {"transcripts": items, "dir": str(tdir)})
 
-    def _handle_usage_total(self) -> None:
-        """Aggregate token usage across every Claude transcript for this
-        repo. Powers the overview's "Tokens used" card."""
-        self._json(200, _aggregate_project_token_usage())
-
-    def _handle_timeline(self) -> None:
-        """Pipeline Gantt data — phase_dispatch events from .ai/ledgers/events.jsonl
-        grouped per session_id. Powers the Timeline view."""
-        self._json(200, {"runs": _load_timeline_runs()})
-
-    def _handle_analytics(self, parsed) -> None:
-        """Chart-ready aggregation of the six ledgers for the Analytics tab.
-        Query param ``range`` is one of 7d/30d/90d/all (defaults to 30d)."""
-        qs = urllib.parse.parse_qs(parsed.query)
-        range_key = (qs.get("range", ["30d"])[0] or "30d")
-        now = _dt.datetime.now(_dt.timezone.utc)
-        try:
-            payload = _aggregate_analytics(now, range_key)
-        except Exception as exc:  # never 500 the whole dashboard
-            # Log server-side; return a generic message so an unexpected error
-            # (e.g. an OSError carrying a filesystem path) can't leak internals
-            # to the client — matching _read_json_body's convention.
-            print(f"[serve] analytics aggregation failed: {exc}", flush=True)
-            self._json(500, {"error": "analytics aggregation failed"})
-            return
-        self._json(200, payload)
+    # Analytics-family GET endpoints (_handle_usage_total, _handle_timeline,
+    # _handle_analytics, _handle_auto_select) moved to server/analytics_handlers.py
+    # (AnalyticsRoutes mixin); Handler inherits them.
 
     # Pipeline + agent-orchestration endpoints (_pipelines_origin_guard,
     # _agent_orchestrations_origin_guard, _handle_pipelines_list / _handle_pipeline_*,
     # _handle_agent_orchestrations_list / _handle_agent_orchestration_get) moved to
     # server/pipelines_handlers.py (PipelineRoutes mixin); Handler inherits them.
-
-    def _handle_auto_select(self, parsed) -> None:
-        """Auto-select scorer ranking — aggregated from .ai/ledgers/metrics.jsonl.
-        Powers the Auto-select view. Accepts `?min_samples=N` (clamp 1..50,
-        default 5); invalid values fall back to the default."""
-        raw = urllib.parse.parse_qs(parsed.query or "").get("min_samples", [None])[0]
-        try:
-            min_samples = max(1, min(50, int(raw)))
-        except (TypeError, ValueError):
-            min_samples = 5
-        self._json(200, _load_auto_select_ranking(min_samples=min_samples))
 
     # ----- settings (workflow update) helpers -----
     #
