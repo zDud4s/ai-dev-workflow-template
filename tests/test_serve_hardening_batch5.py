@@ -73,10 +73,9 @@ def test_reaper_poll_failure_logs():
 def test_pty_ws_write_resize_close_log_on_failure():
     """The PTY WebSocket handler used to have three bare ``except Exception``
     blocks. After batch 5 they are scoped + logged."""
-    # The handler is `_handle_pty_ws` — locate its body.
-    idx = SRC.find("def _handle_pty_ws(")
-    assert idx >= 0
-    body = SRC[idx : idx + 8000]
+    # The handler is `_handle_pty_ws` — moved to server/pty_handlers.py, so
+    # getsource off the Handler follows it.
+    body = inspect.getsource(_load_serve().Handler._handle_pty_ws)
     # No `except Exception:` inside the handler.
     # (We allow the surrounding `_pty_spawn` block in `_handle_pty_create`
     # which already exists outside this handler.)
@@ -85,8 +84,8 @@ def test_pty_ws_write_resize_close_log_on_failure():
         f"_handle_pty_ws still has bare `except Exception:`: {bare_exc}"
     )
     # And it logs pty_ws failures.
-    assert "[serve] pty_ws write" in SRC
-    assert "[serve] pty_ws resize" in SRC
+    assert "[serve] pty_ws write" in body
+    assert "[serve] pty_ws resize" in body
 
 
 # -------- 2. taskkill stderr is captured & logged on non-zero exit --------
