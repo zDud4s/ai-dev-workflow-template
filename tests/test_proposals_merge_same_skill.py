@@ -28,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
 import server.improver_io as _io  # noqa: E402 — _write_proposal/_supersede_prior_pending read consts here (follows-the-move)
+import server.proposals_handlers as _ph  # noqa: E402 — _handle_proposals_list reads SKILL_PROPOSALS_DIR here (follows-the-move)
 
 
 @pytest.fixture
@@ -39,6 +40,8 @@ def tmp_proposals(tmp_path, monkeypatch):
     monkeypatch.setattr(serve, "ROOT", tmp_path)
     monkeypatch.setattr(_io, "SKILL_PROPOSALS_DIR", proposals_dir)  # follows-the-move
     monkeypatch.setattr(_io, "ROOT", tmp_path)  # follows-the-move
+    monkeypatch.setattr(_ph, "SKILL_PROPOSALS_DIR", proposals_dir)  # _handle_proposals_list reads it here
+    monkeypatch.setattr(_ph, "ROOT", tmp_path)
     return proposals_dir
 
 

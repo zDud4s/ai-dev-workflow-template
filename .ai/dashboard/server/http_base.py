@@ -7,6 +7,22 @@ shim, so ``serve.MAX_JSON_BODY`` etc. keep resolving for existing callers/tests.
 """
 from __future__ import annotations
 
+import threading
+
+# Caps concurrent /api/suggestions/<id>/draft + /api/agents/suggest requests.
+# Both endpoints spawn long-running `claude -p` / `codex` subprocesses
+# (timeout_seconds, default 120s) on the request thread; without a cap a
+# handful of concurrent clients can exhaust the server thread pool. Shared
+# between both endpoints because they consume the same LLM CLI binary.
+_SUGGESTION_SEMAPHORE = threading.Semaphore(2)
+# Hard cap on the request-thread wall-clock for /api/suggestions/<id>/draft
+# and /api/agents/suggest. ``cfg["timeout_seconds"]`` can be set as high as
+# 3600s (see _IMPROVER_TIMEOUT_BOUNDS); even with the semaphore cap above,
+# a 1-hour subprocess pinning a request thread + browser tab connection is
+# a trivial DoS vector. 60s is well above any healthy LLM response time
+# yet bounded so a misbehaving CLI can't park the dashboard.
+_SUGGESTION_HTTP_TIMEOUT_MAX = 60
+
 # Maximum size of a JSON request body. Anything larger gets a 413 before we
 # even allocate a buffer — a single multi-MB POST against an endpoint that
 # expects ``{"mode": "..."}`` is a trivial DoS otherwise. 1 MiB is well above

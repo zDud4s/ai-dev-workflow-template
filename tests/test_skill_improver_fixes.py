@@ -86,7 +86,10 @@ def _function_source(name: str) -> str:
     prefer ``inspect.getsource`` of the live attribute (which resolves to the
     defining module) and fall back to scanning ``SRC`` for anything still
     defined inline in serve.py."""
-    obj = getattr(_serve_for_source(), name, None)
+    _serve = _serve_for_source()
+    # Module-level function or a Handler method (handlers were split into
+    # server/*_handlers.py mixins; getsource follows them off Handler).
+    obj = getattr(_serve, name, None) or getattr(_serve.Handler, name, None)
     if obj is not None:
         try:
             return inspect.getsource(obj)

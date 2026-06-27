@@ -304,7 +304,7 @@ def test_suggestion_draft_caps_subprocess_timeout():
     """Source-level guard: ``_handle_suggestion_draft`` must compute
     ``http_timeout`` as ``min(cfg.get("timeout_seconds"), _SUGGESTION_HTTP_TIMEOUT_MAX)``
     and pass that — not the raw config — to ``subprocess.run``."""
-    body = SRC.split("def _handle_suggestion_draft(", 1)[1].split("\n    def ", 1)[0]
+    body = inspect.getsource(serve.Handler._handle_suggestion_draft)
     assert "_SUGGESTION_HTTP_TIMEOUT_MAX" in body, (
         "_handle_suggestion_draft does not cap its timeout"
     )
@@ -316,7 +316,7 @@ def test_suggestion_draft_caps_subprocess_timeout():
 def test_agent_suggest_caps_subprocess_timeout():
     """Same guard for ``_handle_agent_suggest`` — it shares the same CLI
     binary and was the second DoS path."""
-    body = SRC.split("def _handle_agent_suggest(", 1)[1].split("\n    def ", 1)[0]
+    body = inspect.getsource(serve.Handler._handle_agent_suggest)
     assert "_SUGGESTION_HTTP_TIMEOUT_MAX" in body
     assert "timeout=http_timeout" in body
 
