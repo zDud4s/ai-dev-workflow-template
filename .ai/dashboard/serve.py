@@ -391,6 +391,21 @@ from server.analytics import (  # noqa: E402
     _load_auto_select_ranking,
     _load_timeline_runs,
 )
+from server.models_catalog import (  # noqa: E402
+    _MODELS_CATALOG_FALLBACK,
+    _patch_or_create_block,
+    _patch_phase_block,
+    _read_models_catalog,
+)
+from server.pipelines import _list_pipelines  # noqa: E402
+from server.session_events import _jsonl_line_to_session_events  # noqa: E402
+from server.git_utils import (  # noqa: E402
+    _GIT_LSFILES_CACHE,
+    _GIT_LSFILES_LOCK,
+    _GIT_LSFILES_TTL_S,
+    _git_lsfiles_cached,
+    _git_lsfiles_put,
+)
 
 
 WORKFLOW_TEMPLATE_URL = _validate_template_url(
@@ -409,9 +424,7 @@ WORKFLOW_TEMPLATE_URL = _validate_template_url(
 # writes corrupt the workflow core). Non-blocking acquire — second caller gets
 # 409.
 _WORKFLOW_UPDATE_LOCK = threading.Lock()
-_GIT_LSFILES_CACHE: dict[str, tuple[float, int, list[str]]] = {}
-_GIT_LSFILES_LOCK = threading.Lock()
-_GIT_LSFILES_TTL_S = 10.0
+# _GIT_LSFILES_* cache state moved to server/git_utils.py (re-exported via shim).
 _TRANSCRIPT_PREVIEW_CACHE: dict[str, tuple[int, str | None, str | None]] = {}
 _TRANSCRIPT_PREVIEW_LOCK = threading.Lock()
 # mtime-keyed cache of the per-session model for the status list:
@@ -478,134 +491,8 @@ MAX_SSE_SESSION_S = 1800  # 30 minutes
 MAX_TRANSCRIPT_CATCHUP_BYTES = 4 * 1024 * 1024  # 4 MiB
 
 
-def _jsonl_line_to_session_events(line: str) -> "list[dict]":
-    """Normalize one JSONL line from a Claude transcript into SessionEvent dicts.
+# _jsonl_line_to_session_events moved to server/session_events.py (re-exported via shim).
 
-    Returns a list (possibly empty) of events WITHOUT a ``seq`` field — the
-    caller assigns ``seq`` per emitted event, since one transcript line can
-    expand into several events (an assistant turn carries text + one or more
-    tool_use blocks; a user turn carries tool_result blocks). Emitting one
-    event per block — rather than collapsing the whole line into a single
-    event — is what lets the canvas render a tool_use pill with its real name
-    and input, and attach each tool_result to the pill it belongs to.
-
-    SessionEvent schema (seq added by caller):
-      message:     {"kind":"message","role":str,"text":str,"partial":False,"state":None}
-      tool_use:    {"kind":"tool_use","role":str,"id":str,"name":str,"input":dict,"text":str}
-      tool_result: {"kind":"tool_result","role":str,"tool_use_id":str,"is_error":bool,"content":str,"text":str}
-      thinking:    {"kind":"thinking","role":str,"text":str,"partial":False,"state":None}
-      system:      {"kind":"system","role":"system","text":str,"partial":False,"state":None}
-    """
-    line = line.strip()
-    if not line:
-        return []
-    try:
-        obj = json.loads(line)
-    except (json.JSONDecodeError, ValueError):
-        return []
-    if not isinstance(obj, dict):
-        return []
-
-    msg_type = obj.get("type")
-    message = obj.get("message") or {}
-    role = message.get("role") or obj.get("role")
-
-    # user / assistant message lines
-    if msg_type in ("user", "assistant"):
-        content = message.get("content")
-        if isinstance(content, str):
-            text = content.strip()
-            if not text:
-                return []
-            return [{
-                "kind": "message", "role": role or msg_type, "text": content,
-                "partial": False, "state": None,
-            }]
-        if not isinstance(content, list):
-            return []
-        # One event per block, in transcript order: text -> message, tool_use ->
-        # tool_use (with id/name/input so the pill renders), tool_result ->
-        # tool_result (with tool_use_id so it binds to the pill).
-        events: "list[dict]" = []
-        text_buf: "list[str]" = []
-
-        def _flush_text():
-            joined = "".join(text_buf)
-            text_buf.clear()
-            if joined.strip():
-                events.append({
-                    "kind": "message", "role": role or msg_type, "text": joined,
-                    "partial": False, "state": None,
-                })
-
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            btype = block.get("type")
-            if btype == "text":
-                text_buf.append(block.get("text") or "")
-            elif btype == "thinking":
-                # Chain-of-thought. Flush any buffered text first so the
-                # thought lands in transcript order (thinking precedes the
-                # answer), then emit it as its own event. The client renders
-                # it as a collapsed <details> inside the assistant bubble, so
-                # long monologues don't drown the answer but stay inspectable.
-                _flush_text()
-                thought = block.get("thinking")
-                if isinstance(thought, str) and thought.strip():
-                    events.append({
-                        "kind": "thinking", "role": role or msg_type,
-                        "text": thought, "partial": False, "state": None,
-                    })
-            elif btype == "tool_use":
-                _flush_text()
-                name = block.get("name") or "tool"
-                tinput = block.get("input")
-                if not isinstance(tinput, dict):
-                    tinput = {}
-                events.append({
-                    "kind": "tool_use", "role": role,
-                    "id": block.get("id") or "", "name": name, "input": tinput,
-                    "text": name, "partial": False, "state": None,
-                })
-            elif btype == "tool_result":
-                _flush_text()
-                result_content = block.get("content")
-                result_text = ""
-                if isinstance(result_content, str):
-                    result_text = result_content
-                elif isinstance(result_content, list):
-                    result_text = " ".join(
-                        b.get("text") or "" for b in result_content
-                        if isinstance(b, dict) and b.get("type") == "text"
-                    )
-                events.append({
-                    "kind": "tool_result", "role": role,
-                    "tool_use_id": block.get("tool_use_id") or "",
-                    "is_error": bool(block.get("is_error")),
-                    "content": result_text, "text": result_text,
-                    "partial": False, "state": None,
-                })
-        _flush_text()
-        return events
-
-    # system / init lines
-    if msg_type in ("system", "init"):
-        content = obj.get("content") or message.get("content") or ""
-        if isinstance(content, list):
-            content = " ".join(
-                b.get("text") or "" for b in content
-                if isinstance(b, dict) and b.get("type") == "text"
-            )
-        if not isinstance(content, str) or not content.strip():
-            return []
-        return [{
-            "kind": "system", "role": "system", "text": content,
-            "partial": False, "state": None,
-        }]
-
-    # Unknown or empty type — skip
-    return []
 
 
 # Directories the fallback ``ROOT.rglob("*")`` walk in ``_handle_files_list``
@@ -622,66 +509,13 @@ SKIP_DIRS = frozenset({
 # (re-exported via the shim above) with the rest of the shared job registry.
 
 
-def _list_pipelines() -> list[dict]:
-    """List pipeline files for the dashboard. Excludes .gitkeep. Newest mtime first."""
-    import yaml  # local import — PyYAML is only needed by this helper
-    if not PIPELINES_DIR.is_dir():
-        return []
-    rows: list[dict] = []
-    for p in PIPELINES_DIR.glob("*.yaml"):
-        try:
-            text = p.read_text(encoding="utf-8")
-            parsed = yaml.safe_load(text) or {}
-        except (OSError, yaml.YAMLError):
-            continue
-        nodes = parsed.get("nodes") or []
-        sink_kinds = ("synthesize", "collect", "passthrough")
-        sink_kind = next(
-            (n.get("kind") for n in nodes
-             if isinstance(n, dict) and n.get("kind") in sink_kinds),
-            "",
-        )
-        agent_count = sum(
-            1 for n in nodes if isinstance(n, dict) and n.get("agent")
-        )
-        try:
-            rel_path = str(p.relative_to(ROOT)).replace("\\", "/")
-        except ValueError:
-            rel_path = str(p).replace("\\", "/")
-        rows.append({
-            "slug": p.stem,
-            "path": rel_path,
-            "description": parsed.get("description") or "",
-            "node_count": agent_count,
-            "output_mode": sink_kind,
-            "mtime": p.stat().st_mtime,
-        })
-    rows.sort(key=lambda r: r["mtime"], reverse=True)
-    return rows
+# _list_pipelines moved to server/pipelines.py (re-exported via shim).
 
 
-def _git_lsfiles_cached(cwd: Path) -> list[str] | None:
-    try:
-        st = (cwd / ".git" / "index").stat()
-    except OSError:
-        return None
-    with _GIT_LSFILES_LOCK:
-        entry = _GIT_LSFILES_CACHE.get(str(cwd))
-        if entry is None:
-            return None
-        cached_at, index_mtime_ns, lines = entry
-        if (time.monotonic() - cached_at) < _GIT_LSFILES_TTL_S and index_mtime_ns == st.st_mtime_ns:
-            return lines
-    return None
 
+# _git_lsfiles_cached + _git_lsfiles_put (+ _GIT_LSFILES_* state) moved to
+# server/git_utils.py and are re-exported via the shim above.
 
-def _git_lsfiles_put(cwd: Path, lines: list[str]) -> None:
-    try:
-        st = (cwd / ".git" / "index").stat()
-    except OSError:
-        return
-    with _GIT_LSFILES_LOCK:
-        _GIT_LSFILES_CACHE[str(cwd)] = (time.monotonic(), st.st_mtime_ns, list(lines))
 
 
 def _write_text_lf(path: Path, text: str) -> None:
@@ -772,51 +606,9 @@ _jobs.record_skill_metrics_hook = _record_skill_metrics
 
 # Hard-coded mirror of the ``catalog:`` block in .ai/models.yaml. Used ONLY
 # as a last resort when the file is missing/unreadable or PyYAML is absent —
-# the live source of truth is always the YAML. Keep the shape identical to
-# what _read_models_catalog returns: {tool: [model_id, ...]}, newest-first.
-_MODELS_CATALOG_FALLBACK: dict[str, list[str]] = {
-    "claude": ["claude-opus-4-8", "claude-fable-5", "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
-    "codex":  ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
-}
+# _MODELS_CATALOG_FALLBACK + _read_models_catalog moved to server/models_catalog.py
+# (re-exported via the shim above).
 
-
-def _read_models_catalog(path: Path | None = None) -> dict[str, list[str]]:
-    """Read the ``catalog:`` block from .ai/models.yaml — the single source of
-    truth for which models exist per tool.
-
-    Returns ``{tool: [model_id, ...]}`` newest-first. Each catalog entry is a
-    mapping ``{id: ..., ...}``; only the ``id`` is surfaced here (notes/labels
-    stay in the YAML as inline comments). Falls back to
-    ``_MODELS_CATALOG_FALLBACK`` on any failure (missing file, no PyYAML, no
-    ``catalog`` block, malformed shape) so model pickers never render empty.
-    """
-    if path is None:
-        path = ROOT / ".ai" / "models.yaml"
-    try:
-        import yaml  # local import — PyYAML only needed by this helper
-        parsed = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
-        catalog = parsed.get("catalog")
-        if not isinstance(catalog, dict):
-            return {k: list(v) for k, v in _MODELS_CATALOG_FALLBACK.items()}
-        out: dict[str, list[str]] = {}
-        for tool, entries in catalog.items():
-            if not isinstance(entries, list):
-                continue
-            ids: list[str] = []
-            for entry in entries:
-                if isinstance(entry, dict):
-                    mid = entry.get("id")
-                elif isinstance(entry, str):
-                    mid = entry
-                else:
-                    mid = None
-                if isinstance(mid, str) and mid.strip():
-                    ids.append(mid.strip())
-            if ids:
-                out[str(tool)] = ids
-        return out or {k: list(v) for k, v in _MODELS_CATALOG_FALLBACK.items()}
-    except Exception:  # noqa: BLE001 — a bad config must never break model pickers
-        return {k: list(v) for k, v in _MODELS_CATALOG_FALLBACK.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -4947,94 +4739,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json(200, {"ok": True, "phase": phase, "updated": updates})
 
 
-def _patch_or_create_block(text: str, name: str, updates: dict[str, str | None],
-                           creator_template: str = "") -> str:
-    """Same as _patch_phase_block but appends a fresh block if the header is missing.
-
-    creator_template is the initial YAML to insert (e.g. ``improver:\\n  enabled: true\\n``).
-    """
-    try:
-        return _patch_phase_block(text, name, updates)
-    except ValueError:
-        if not creator_template:
-            creator_template = f"{name}:\n"
-        seed = text.rstrip("\n") + "\n\n" + creator_template
-        if not seed.endswith("\n"):
-            seed += "\n"
-        return _patch_phase_block(seed, name, updates)
-
-
-def _patch_phase_block(text: str, phase: str, updates: dict[str, str | None]) -> str:
-    """Update fields under a top-level YAML mapping like ``plan:\\n  tool: ...``.
-
-    For each key in updates:
-      - value is a string -> replace existing `  <key>: <old>` line, or insert
-        as the first child line after the header
-      - value is None     -> remove the `  <key>: ...` line if present
-    """
-    lines = text.splitlines(keepends=False)
-    n = len(lines)
-    header_idx = None
-    for i, ln in enumerate(lines):
-        if re.match(rf"^{re.escape(phase)}\s*:\s*(#.*)?$", ln):
-            header_idx = i
-            break
-    if header_idx is None:
-        raise ValueError(f"phase block `{phase}:` not found in models.yaml")
-    # Find end of this block (next non-indented, non-blank line)
-    end_idx = n
-    for j in range(header_idx + 1, n):
-        ln = lines[j]
-        if ln.strip() == "":
-            continue
-        if not ln.startswith((" ", "\t")):
-            end_idx = j
-            break
-    block = lines[header_idx + 1 : end_idx]
-    # Track existing keys
-    key_re = re.compile(r"^(\s+)([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\S.*)?$")
-    indent = "  "
-    for ln in block:
-        m = key_re.match(ln)
-        if m:
-            indent = m.group(1)
-            break
-
-    def render(key: str, val: str) -> str:
-        return f"{indent}{key}: {val}"
-
-    new_block: list[str] = list(block)
-    for key, val in updates.items():
-        existing_idx = None
-        for k, ln in enumerate(new_block):
-            m = key_re.match(ln)
-            if m and m.group(2) == key:
-                existing_idx = k
-                break
-        if val is None:
-            if existing_idx is not None:
-                new_block.pop(existing_idx)
-            continue
-        if existing_idx is not None:
-            # Preserve inline comment if any
-            ln = new_block[existing_idx]
-            m = re.match(r"^(\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*)\S+(\s*(?:#.*)?)$", ln)
-            if m:
-                new_block[existing_idx] = f"{m.group(1)}{val}{m.group(2)}"
-            else:
-                new_block[existing_idx] = render(key, val)
-        else:
-            # Insert as the last non-empty child line
-            insert_at = len(new_block)
-            while insert_at > 0 and new_block[insert_at - 1].strip() == "":
-                insert_at -= 1
-            new_block.insert(insert_at, render(key, val))
-
-    new_lines = lines[: header_idx + 1] + new_block + lines[end_idx:]
-    out = "\n".join(new_lines)
-    if text.endswith("\n") and not out.endswith("\n"):
-        out += "\n"
-    return out
+# _patch_or_create_block + _patch_phase_block moved to server/models_catalog.py (re-exported via shim).
 
 
 class _ThreadedServer(socketserver.ThreadingTCPServer):

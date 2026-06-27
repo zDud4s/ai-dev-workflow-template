@@ -19,6 +19,7 @@ sys.path.insert(0, str(DASHBOARD))
 
 import serve  # noqa: E402
 import server.runtime  # noqa: E402 — BOUND_PORT + Origin allowlist now live here (follows-the-move)
+import server.pipelines as _pl  # _list_pipelines reads PIPELINES_DIR here (follows-the-move)
 
 
 def _write_pipeline(d: pathlib.Path, slug: str, yaml_body: str) -> pathlib.Path:
@@ -49,11 +50,13 @@ nodes:
 
 def test_list_pipelines_empty(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(serve, "PIPELINES_DIR", tmp_path)
+    monkeypatch.setattr(_pl, "PIPELINES_DIR", tmp_path)  # follows-the-move
     assert serve._list_pipelines() == []
 
 
 def test_list_pipelines_one_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(serve, "PIPELINES_DIR", tmp_path)
+    monkeypatch.setattr(_pl, "PIPELINES_DIR", tmp_path)  # follows-the-move
     _write_pipeline(tmp_path, "demo", VALID_YAML)
     rows = serve._list_pipelines()
     assert len(rows) == 1
@@ -66,6 +69,7 @@ def test_list_pipelines_one_file(tmp_path, monkeypatch) -> None:
 
 def test_list_pipelines_excludes_gitkeep(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(serve, "PIPELINES_DIR", tmp_path)
+    monkeypatch.setattr(_pl, "PIPELINES_DIR", tmp_path)  # follows-the-move
     (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
     _write_pipeline(tmp_path, "demo", VALID_YAML)
     rows = serve._list_pipelines()
@@ -86,6 +90,7 @@ def _live_server(tmp_path, monkeypatch):
     at the supplied tmp_path. Mirror test_agent_orchestrations_endpoint's pattern.
     """
     monkeypatch.setattr(serve, "PIPELINES_DIR", tmp_path)
+    monkeypatch.setattr(_pl, "PIPELINES_DIR", tmp_path)  # follows-the-move
     httpd = socketserver.TCPServer(("127.0.0.1", 0), serve.Handler)
     port = httpd.server_address[1]
     monkeypatch.setattr(serve, "PORT", port)
