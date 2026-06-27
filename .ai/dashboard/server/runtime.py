@@ -16,12 +16,37 @@ dynamic-port fallback in ``main()`` picks another candidate).
 from __future__ import annotations
 
 import os
+import threading
+import time
+
+from server.validation import _DEFAULT_WORKFLOW_TEMPLATE_URL, _validate_template_url
 
 # Initialised to the configured port (mirrors serve.PORT's default). main()
 # overwrites it with the real bound port via set_bound_port() once the socket
 # is open, so the allowlist below validates against the port the server is
 # actually listening on rather than the configured one.
 BOUND_PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
+
+# The configured listen port (env default). Static — main() never rebinds it;
+# it republishes the *actually-bound* port via set_bound_port() (BOUND_PORT
+# above). The /api/system/info handler surfaces this as ``configured_port``.
+PORT = int(os.environ.get("DASHBOARD_PORT", "8765"))
+
+# Wall-clock at server import, for the /api/system/info uptime field.
+_SERVER_STARTED_AT = time.time()
+
+# Upstream workflow template URL (env-overridable), validated at import. Used by
+# /api/workflow/{check,update}. Lives here (not serve.py) so the workflow-update
+# handler mixin can import it without a circular dependency on serve.
+WORKFLOW_TEMPLATE_URL = _validate_template_url(
+    os.environ.get("AI_WORKFLOW_TEMPLATE_URL", _DEFAULT_WORKFLOW_TEMPLATE_URL)
+)
+
+# Serialises /api/workflow/update so two concurrent clients can't both spawn
+# update-workflow.sh against the same tree at the same time (interleaved file
+# writes corrupt the workflow core). Non-blocking acquire — second caller gets
+# 409.
+_WORKFLOW_UPDATE_LOCK = threading.Lock()
 
 
 def set_bound_port(port: int) -> None:

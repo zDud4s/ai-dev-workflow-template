@@ -436,7 +436,7 @@ def test_run_subprocess_uses_list_args_no_shell_true():
     """``_run_subprocess`` must take ``list[str]`` and never set
     ``shell=True``. Windows path quoting is the OS's job — string-mode
     invocation re-introduces the quoting hazard the args list avoids."""
-    body = SRC.split("def _run_subprocess(", 1)[1].split("\n    def ", 1)[0]
+    body = inspect.getsource(serve.Handler._run_subprocess)
     assert "args: list[str]" in body
     assert "shell=True" not in body
 
