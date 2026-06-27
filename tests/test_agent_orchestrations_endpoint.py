@@ -32,6 +32,11 @@ def agent_runs_dir(tmp_path, monkeypatch) -> Path:
     import server.agent_runs as _agent_runs_mod
     monkeypatch.setattr(_agent_runs_mod, "AGENT_RUNS_DIR", tmp_path)
     monkeypatch.setattr(_agent_runs_mod, "METRICS_FILE", tmp_path / "metrics.jsonl")
+    # _handle_agent_orchestration_get moved to server.pipelines_handlers and
+    # reads AGENT_RUNS_DIR from that module's namespace for its trusted-dir
+    # check, so patch it there too (follows-the-move).
+    import server.pipelines_handlers as _plh
+    monkeypatch.setattr(_plh, "AGENT_RUNS_DIR", tmp_path)
     with serve._JSONL_CACHE_LOCK:
         serve._JSONL_CACHE.clear()
     return tmp_path

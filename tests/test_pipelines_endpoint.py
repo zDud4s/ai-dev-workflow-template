@@ -20,6 +20,7 @@ sys.path.insert(0, str(DASHBOARD))
 import serve  # noqa: E402
 import server.runtime  # noqa: E402 — BOUND_PORT + Origin allowlist now live here (follows-the-move)
 import server.pipelines as _pl  # _list_pipelines reads PIPELINES_DIR here (follows-the-move)
+import server.pipelines_handlers as _plh  # noqa: E402 — pipeline GET/PUT/DELETE handlers read PIPELINES_DIR here
 
 
 def _write_pipeline(d: pathlib.Path, slug: str, yaml_body: str) -> pathlib.Path:
@@ -91,6 +92,7 @@ def _live_server(tmp_path, monkeypatch):
     """
     monkeypatch.setattr(serve, "PIPELINES_DIR", tmp_path)
     monkeypatch.setattr(_pl, "PIPELINES_DIR", tmp_path)  # follows-the-move
+    monkeypatch.setattr(_plh, "PIPELINES_DIR", tmp_path)  # GET/PUT/DELETE handlers read it here
     httpd = socketserver.TCPServer(("127.0.0.1", 0), serve.Handler)
     port = httpd.server_address[1]
     monkeypatch.setattr(serve, "PORT", port)
