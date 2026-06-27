@@ -13,6 +13,7 @@ They never actually start a subprocess, kill a server, or mutate git.
 
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import pathlib
@@ -167,14 +168,12 @@ def test_suggestion_semaphore_returns_429_on_saturation() -> None:
             sem.release()
 
 
-_SERVE_SOURCE = pathlib.Path(__file__).resolve().parents[1] / ".ai" / "dashboard" / "serve.py"
-
-
 def _serve_function_source(name: str) -> str:
-    text = _SERVE_SOURCE.read_text(encoding="utf-8")
-    match = re.search(rf"^def {name}\b.*?(?=^def |\Z)", text, re.DOTALL | re.MULTILINE)
-    assert match, f"{name} not found in serve.py"
-    return match.group(0)
+    # Follow the re-export: serve.<name> may now live in a server/* module
+    # (e.g. _persist_job moved to server.jobs_persistence). inspect.getsource
+    # reads from the function's defining module, so the file-lock structure
+    # check works regardless of which module physically owns the function.
+    return inspect.getsource(getattr(serve, name))
 
 
 def _assert_file_lock_block(function_name: str, lock_name: str, file_name: str) -> None:

@@ -43,6 +43,7 @@ if str(DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_DIR))
 import server.transcript_paths as _tp  # noqa: E402
 import server.runtime as _runtime  # noqa: E402 — BOUND_PORT + Origin allowlist live here (follows-the-move)
+import server.jobs_persistence as _jp  # noqa: E402 — _persist_job/_load_persisted_jobs + JOBS_PERSIST_FILE live here
 
 SERVE_PATH = DASHBOARD_DIR / "serve.py"
 
@@ -897,6 +898,7 @@ def test_persist_job_appends_snapshot_to_jsonl_file(tmp_path, serve_module, monk
     and don't survive a restart anyway."""
     p = tmp_path / "jobs.jsonl"
     monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", p)  # follows-the-move
     job_id = str(uuid.uuid4())
     with serve_module.JOBS_LOCK:
         serve_module.JOBS[job_id] = {
@@ -924,6 +926,7 @@ def test_persist_job_appends_one_line_per_call(tmp_path, serve_module, monkeypat
     keeps the LAST snapshot per job_id."""
     p = tmp_path / "jobs.jsonl"
     monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", p)  # follows-the-move
     job_id = str(uuid.uuid4())
     with serve_module.JOBS_LOCK:
         serve_module.JOBS[job_id] = {"id": job_id, "kind": "chat", "task": "x", "status": "queued", "created_at": "t"}
@@ -953,6 +956,7 @@ def test_load_persisted_jobs_rebuilds_JOBS_dict_with_last_snapshot(tmp_path, ser
         json.dumps({"id": "a2", "kind": "chat", "status": "running", "task": "fresh", "created_at": "2026-01-02"}),
     ]) + "\n", encoding="utf-8")
     monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", p)  # follows-the-move
 
     with serve_module.JOBS_LOCK:
         # Clear any leakage from other tests.
@@ -973,6 +977,7 @@ def test_load_persisted_jobs_is_idempotent_when_file_missing(tmp_path, serve_mod
     """Missing file -> no-op, no crash. (Fresh repo, first run.)"""
     p = tmp_path / "does-not-exist.jsonl"
     monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", p)  # follows-the-move
     with serve_module.JOBS_LOCK:
         before = dict(serve_module.JOBS)
     serve_module._load_persisted_jobs()  # must not raise
@@ -1023,6 +1028,7 @@ def test_persist_job_writes_when_monkeypatched_to_tmp(tmp_path, serve_module, mo
     under pytest."""
     p = tmp_path / "jobs.jsonl"
     monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", p)  # follows-the-move
     job_id = str(uuid.uuid4())
     with serve_module.JOBS_LOCK:
         serve_module.JOBS[job_id] = {

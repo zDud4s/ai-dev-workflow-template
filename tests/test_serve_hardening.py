@@ -3,6 +3,7 @@ import sys, pathlib, json, threading, os
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / ".ai" / "dashboard"))
 import serve  # the module under test
+import server.jobs_persistence as _jp  # _persist_job + JOBS_PERSIST_FILE live here (follows-the-move)
 
 
 def _bare_handler():
@@ -100,6 +101,11 @@ def test_jobs_persist_lock_serializes_writes(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(serve, "JOBS_PERSIST_FILE", persist_path)
     monkeypatch.setattr(serve, "JOBS", jobs)
+    # _persist_job moved to server.jobs_persistence; it reads JOBS_PERSIST_FILE
+    # and JOBS from that module's namespace (the `from ... import` bindings),
+    # so a serve-only rebind no longer reaches it.
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", persist_path)
+    monkeypatch.setattr(_jp, "JOBS", jobs)
 
     threads = [
         threading.Thread(target=serve._persist_job, args=(job_id,))
