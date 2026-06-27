@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 import server.runtime as _runtime  # BOUND_PORT + Origin allowlist live here (follows-the-move)
+import server.agent_suggest as _ags  # AGENT_PROPOSALS_DIR/ROOT/JOBS_DIR readers live here (follows-the-move)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -52,6 +53,7 @@ def isolated_proposals_dir(tmp_path, monkeypatch, serve_module):
     """
     d = tmp_path / "agent_proposals"
     monkeypatch.setattr(serve_module, "AGENT_PROPOSALS_DIR", d)
+    monkeypatch.setattr(_ags, "AGENT_PROPOSALS_DIR", d)  # follows-the-move
     return d
 
 
@@ -65,6 +67,7 @@ def isolated_agents_dir(tmp_path, monkeypatch, serve_module):
     fixture (its module-level default reads ROOT at import time, so a
     bare ROOT swap leaves it pointing at the real repo)."""
     monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    monkeypatch.setattr(_ags, "ROOT", tmp_path)  # follows-the-move
     return tmp_path / ".claude" / "agents"
 
 
@@ -204,6 +207,7 @@ def test_load_editable_agent_names_smoke(serve_module, tmp_path, monkeypatch):
     (proj_dir / "Bar.md").write_text("---\nname: Bar\n---\n", encoding="utf-8")
     (user_dir / "baz.md").write_text("---\nname: baz\n---\n", encoding="utf-8")
     monkeypatch.setattr(serve_module, "ROOT", tmp_path / "repo")
+    monkeypatch.setattr(_ags, "ROOT", tmp_path / "repo")  # follows-the-move
     monkeypatch.setattr(serve_module.Path, "home", lambda: tmp_path / "user_home")
     names = serve_module._load_editable_agent_names()
     assert names == {"foo", "bar", "baz"}
