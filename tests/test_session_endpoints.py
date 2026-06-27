@@ -31,6 +31,7 @@ if str(DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_DIR))
 import server.transcript_paths as _tp  # noqa: E402
 import server.runtime as _runtime  # noqa: E402 — BOUND_PORT + Origin allowlist live here (follows-the-move)
+import server.jobs as _jobs  # noqa: E402 — the job runner / session engine (reads JOBS_DIR) lives here (follows-the-move)
 
 SERVE_PATH = DASHBOARD_DIR / "serve.py"
 
@@ -50,6 +51,7 @@ def serve_module():
 def _isolate_jobs_dir(tmp_path, monkeypatch, serve_module):
     """Redirect ``serve_module.JOBS_DIR`` to a per-test tmp directory."""
     monkeypatch.setattr(serve_module, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(_jobs, "JOBS_DIR", tmp_path / "jobs")  # follows-the-move: runner/factory read jobs.JOBS_DIR
 
 
 @pytest.fixture(autouse=True)
@@ -1009,10 +1011,12 @@ def test_stream_emits_warning_frame(running_server, serve_module, tmp_path, monk
 def test_resume_adapter_submit_reports_send_failure(serve_module, monkeypatch):
     """_ResumeEngineAdapter.submit must return False when the stdin write fails
     and True when it succeeds, so the registry can fail safe instead of wedging."""
-    monkeypatch.setattr(serve_module, "_send_to_stdin", lambda j, t: (False, "job not running"))
+    # _ResumeEngineAdapter moved to server/jobs.py, so submit() resolves
+    # _send_to_stdin in jobs.py's namespace — patch there (follows-the-move).
+    monkeypatch.setattr(_jobs, "_send_to_stdin", lambda j, t: (False, "job not running"))
     assert serve_module._ResumeEngineAdapter("job-dead").submit({"text": "hi"}) is False
 
-    monkeypatch.setattr(serve_module, "_send_to_stdin", lambda j, t: (True, ""))
+    monkeypatch.setattr(_jobs, "_send_to_stdin", lambda j, t: (True, ""))
     assert serve_module._ResumeEngineAdapter("job-live").submit({"text": "hi"}) is True
 
 

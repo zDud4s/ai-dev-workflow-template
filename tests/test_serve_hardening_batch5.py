@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import io
 import re
 from pathlib import Path
@@ -47,7 +48,8 @@ def test_publish_chunk_no_silent_broad_except():
     """``_publish_chunk`` used to swallow every exception with ``pass``.
     After batch 5 it must either scope to ``_stdqueue.Full`` or log the
     error so a runaway subscriber pattern is visible."""
-    src = SRC.split("def _publish_chunk(", 1)[1].split("\ndef ", 1)[0]
+    # _publish_chunk moved to server/jobs.py; getsource follows the shim.
+    src = inspect.getsource(_load_serve()._publish_chunk)
     # No `except Exception:` followed only by `pass`.
     assert not re.search(
         r"except\s+Exception[^:]*:\s*(?:#[^\n]*\n)?\s*pass\b", src
@@ -61,8 +63,11 @@ def test_reaper_poll_failure_logs():
     """The dead-PID reaper used to swallow ``proc.poll()`` failures
     silently. It must now log the OSError so operators can diagnose
     a stuck job that never gets reaped."""
-    # Find the chunk between `proc.poll()` and `_persist_job(jid)`.
-    assert "[serve] reaper poll() failed" in SRC
+    # The reaper (_reconcile_running_pids) moved to server/jobs_reaper.py;
+    # getsource follows the shim to the new module.
+    assert "[serve] reaper poll() failed" in inspect.getsource(
+        _load_serve()._reconcile_running_pids
+    )
 
 
 def test_pty_ws_write_resize_close_log_on_failure():
@@ -91,10 +96,9 @@ def test_taskkill_captures_and_logs_stderr():
     A failure (process gone, ACL) returned silently before — now it must
     log ``rc`` + the stderr tail so operators can tell a stuck cancel
     apart from a clean one."""
-    # The call site lives near `_cancel_job` / the run-tab cancel handler.
-    idx = SRC.find('"taskkill", "/F", "/T", "/PID"')
-    assert idx >= 0
-    block = SRC[max(0, idx - 200) : idx + 1200]
+    # _cancel_job moved to server/jobs.py; getsource follows the shim.
+    block = inspect.getsource(_load_serve()._cancel_job)
+    assert '"taskkill", "/F", "/T", "/PID"' in block
     assert "capture_output=True" in block
     # Logging on rc != 0.
     assert "[serve] taskkill rc=" in block
