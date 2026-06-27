@@ -377,7 +377,14 @@ def test_broad_except_count_decreasing():
     was 43 (23 single-line + 20 two-line); this batch reduced it by
     at least 4 sites (the PTY/SSE event-loop sites are intentionally
     left alone, see SKILL handoff)."""
+    # The dashboard server was decomposed: most handlers/helpers moved from
+    # serve.py into the server/ package. Count silent-excepts across the whole
+    # server surface (serve.py + server/*.py) so this guard tracks the relocated
+    # error-handling rather than only what remains inline in serve.py.
+    dash_dir = pathlib.Path(serve.__file__).resolve().parent
     src = pathlib.Path(serve.__file__).read_text(encoding="utf-8")
+    for mod in sorted((dash_dir / "server").glob("*.py")):
+        src += "\n" + mod.read_text(encoding="utf-8")
     current = _count_silent_excepts(src)
     # Hard ceiling — 39 leaves one fix worth of slack but proves
     # batch 4 actually shipped. If a future batch lowers this further,

@@ -165,10 +165,9 @@ def test_transcript_stream_has_max_session_cap():
     """``_handle_transcript_stream`` previously only bailed on idle ticks.
     Batch 5 adds a hard ``MAX_SSE_SESSION_S`` wall-clock cap so a chatty
     transcript can't pin the request thread forever."""
-    idx = SRC.find("def _handle_transcript_stream(")
-    assert idx >= 0
-    end = SRC.find("\n    def ", idx + 1)
-    body = SRC[idx:end]
+    # _handle_transcript_stream moved to server/transcripts_handlers.py;
+    # getsource off the Handler follows it.
+    body = inspect.getsource(_load_serve().Handler._handle_transcript_stream)
     assert "MAX_SSE_SESSION_S" in body
     assert "session_start" in body
     assert '"reason":"max_session"' in body
