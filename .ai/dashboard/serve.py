@@ -406,6 +406,13 @@ from server.git_utils import (  # noqa: E402
     _git_lsfiles_cached,
     _git_lsfiles_put,
 )
+from server.http_base import (  # noqa: E402
+    MAX_JSON_BODY,
+    MAX_PIPELINE_PUT_BYTES,
+    MAX_SSE_SESSION_S,
+    MAX_TRANSCRIPT_CATCHUP_BYTES,
+    SKIP_DIRS,
+)
 
 
 WORKFLOW_TEMPLATE_URL = _validate_template_url(
@@ -457,53 +464,14 @@ _SUGGESTION_HTTP_TIMEOUT_MAX = 60
 # never modified.
 # _IMPROVER_DEFAULTS moved to server/improver.py (re-exported via shim).
 
-# Maximum size of a JSON request body. Anything larger gets a 413 before we
-# even allocate a buffer — a single multi-MB POST against an endpoint that
-# expects ``{"mode": "..."}`` is a trivial DoS otherwise. 1 MiB is well above
-# any legitimate payload the dashboard sends (the largest is the chat
-# composer with inlined files, which is capped client-side at ~256 KB).
-MAX_JSON_BODY = 1024 * 1024  # 1 MiB
-
-# Per-PUT cap for /api/pipelines/<slug>. Pipeline YAMLs are tiny —
-# a few nodes, kilobytes at most. Capping at 256 KB keeps the
-# generic 1 MiB ceiling for other endpoints while making it cheap
-# to reject obviously-malformed PUTs to this specific route.
-MAX_PIPELINE_PUT_BYTES = 256 * 1024  # 256KB hard cap on PUT body
-
+# HTTP-layer caps (MAX_JSON_BODY, MAX_PIPELINE_PUT_BYTES, MAX_SSE_SESSION_S,
+# MAX_TRANSCRIPT_CATCHUP_BYTES, SKIP_DIRS) moved to server/http_base.py so the
+# per-domain handler mixins can import them without a circular dependency on
+# serve. Re-exported via the http_base shim above.
 # MAX_WS_PAYLOAD (the inbound WebSocket frame cap) moved to server/ws.py with
 # the rest of the WS framing; re-exported via the ws shim above.
 
-# Hard upper bound on a single Server-Sent Events session, regardless of
-# whether the subscriber is idle or not. ``_handle_job_stream`` already
-# bails on a 4-minute idle window, but a chatty job could keep a single
-# connection open indefinitely otherwise — and the SSE response holds a
-# request thread, a queue subscriber slot, and a TCP connection for the
-# whole lifetime. Clients reconnect transparently, so a forced rotation
-# is observationally invisible.
-MAX_SSE_SESSION_S = 1800  # 30 minutes
-
-# Upper bound on the initial catch-up flush in ``_handle_transcript_stream``.
-# Transcript JSONLs grow into the tens of MB over long IDE sessions and the
-# old code did one unbounded ``fh.read()`` per SSE subscriber, so N parallel
-# streams scaled memory pressure linearly with file size. We cap the catch-up
-# at 4 MiB and tail from the last line boundary inside that window — live tail
-# then picks up from EOF so new records still arrive.
-MAX_TRANSCRIPT_CATCHUP_BYTES = 4 * 1024 * 1024  # 4 MiB
-
-
 # _jsonl_line_to_session_events moved to server/session_events.py (re-exported via shim).
-
-
-
-# Directories the fallback ``ROOT.rglob("*")`` walk in ``_handle_files_list``
-# must not descend into. Without this, the autocomplete endpoint walks the
-# entire repo on every keystroke when ``git ls-files`` is unavailable —
-# slow on large repos and leaks dotfile paths (``.git/objects/*``,
-# ``node_modules/**``, ``.venv/**``) into the suggestion list.
-SKIP_DIRS = frozenset({
-    ".git", "node_modules", "__pycache__", ".pytest_cache",
-    ".venv", "venv", ".tox", ".mypy_cache", "tmp",
-})
 
 # _JOB_RUNTIME_FIELDS + _TERMINAL_JOB_STATUSES moved to server/jobs_state.py
 # (re-exported via the shim above) with the rest of the shared job registry.
