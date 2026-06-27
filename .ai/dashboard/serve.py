@@ -259,6 +259,14 @@ from server.ws import (  # noqa: E402
 )
 from server.llm_output import _parse_improver_output  # noqa: E402
 from server.config import _read_yaml_field  # noqa: E402
+from server.jobs_state import (  # noqa: E402
+    JOB_KINDS,
+    JOBS,
+    JOBS_LOCK,
+    JOBS_MAX,
+    _JOB_RUNTIME_FIELDS,
+    _TERMINAL_JOB_STATUSES,
+)
 
 
 WORKFLOW_TEMPLATE_URL = _validate_template_url(
@@ -513,15 +521,8 @@ SKIP_DIRS = frozenset({
     ".venv", "venv", ".tox", ".mypy_cache", "tmp",
 })
 
-# Fields that exist only at runtime inside the JOBS dict and must NOT be
-# serialised to disk (they are either not JSON-encodable or meaningless
-# after the subprocess dies).
-_JOB_RUNTIME_FIELDS = frozenset({"proc", "subscribers", "stdin_lock"})
-
-# Terminal job statuses — used to know when scanned log-file cost can be
-# memoised back onto the job entry (cost can't change once the subprocess
-# is dead).
-_TERMINAL_JOB_STATUSES = frozenset({"done", "failed", "cancelled", "interrupted"})
+# _JOB_RUNTIME_FIELDS + _TERMINAL_JOB_STATUSES moved to server/jobs_state.py
+# (re-exported via the shim above) with the rest of the shared job registry.
 
 
 def _list_pipelines() -> list[dict]:
@@ -855,25 +856,9 @@ _SKILLS_ALL_CACHE: dict = {"at": 0.0, "data": None}
 _AGENTS_ALL_CACHE: dict = {"at": 0.0, "data": None}
 _CATALOG_TTL_SECONDS = 15.0
 
-# Allowed job kinds.
-#   orchestrate / plan : one-shot `claude -p <skill prompt>` runs.
-#   chat               : long-lived interactive `claude` session driven by
-#                        JSON messages on stdin and JSON events on stdout
-#                        (--input-format stream-json / --output-format stream-json).
-#   chat-codex         : one-turn `codex exec --json` run per user message.
-#                        Resumed via `codex exec resume <session_id>`.
-JOB_KINDS = {
-    "orchestrate": "orchestrate",
-    "plan": "planner",
-    "chat": None,
-    "chat-codex": None,
-}
-
-# In-memory job registry. State is lost on server restart by design;
-# log files survive on disk for forensic reading.
-JOBS: dict[str, dict] = {}
-JOBS_LOCK = threading.Lock()
-JOBS_MAX = 50  # cap memory; oldest finished entries get evicted
+# JOB_KINDS + the in-memory job registry (JOBS / JOBS_LOCK / JOBS_MAX) moved to
+# server/jobs_state.py and are re-exported via the shim above. Imported by
+# reference so serve.py and the jobs package mutate one shared dict.
 
 
 # ----- PTY sessions (real shell terminals via WebSocket) ----------------
