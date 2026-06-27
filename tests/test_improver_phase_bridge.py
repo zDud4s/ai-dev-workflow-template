@@ -13,6 +13,7 @@ import json
 import pytest
 
 import serve
+import server.metrics as _metrics  # _aggregate_skill_metrics/_phase_metric_rows read the ledger consts here (follows-the-move)
 
 
 def _write_jsonl(path, rows):
@@ -27,6 +28,7 @@ def ledgers(tmp_path, monkeypatch):
         p = tmp_path / name
         p.write_text("", encoding="utf-8")
         monkeypatch.setattr(serve, const, p)
+        monkeypatch.setattr(_metrics, const, p)  # follows-the-move: rollup reads consts in server.metrics
         files[name] = p
     with serve._JSONL_CACHE_LOCK:
         serve._JSONL_CACHE.clear()
