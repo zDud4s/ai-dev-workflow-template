@@ -32,6 +32,7 @@ This file pins the five fixes:
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -78,13 +79,56 @@ def serve_module():
 
 
 def _function_source(name: str) -> str:
-    """Return the source text of one function/method by name."""
+    """Return the source text of one function/method by name.
+
+    Follows re-export shims: functions split out of serve.py into
+    ``server.*`` modules are no longer in ``SRC`` (the serve.py text), so we
+    prefer ``inspect.getsource`` of the live attribute (which resolves to the
+    defining module) and fall back to scanning ``SRC`` for anything still
+    defined inline in serve.py."""
+    obj = getattr(_serve_for_source(), name, None)
+    if obj is not None:
+        try:
+            return inspect.getsource(obj)
+        except (OSError, TypeError):
+            pass
     needle = f"def {name}("
     idx = SRC.find(needle)
     assert idx >= 0, f"function {name!r} not found in serve.py"
     tail = SRC[idx:]
     end = re.search(r"\n\n    def |\n\ndef |\n\nclass ", tail)
     return tail[: end.start()] if end else tail
+
+
+_SERVE_FOR_SOURCE = None
+
+
+def _serve_for_source():
+    """Lazily import serve once for getsource-based source lookups."""
+    global _SERVE_FOR_SOURCE
+    if _SERVE_FOR_SOURCE is None:
+        spec = importlib.util.spec_from_file_location("dashboard_serve_src", SERVE_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["dashboard_serve_src"] = mod
+        spec.loader.exec_module(mod)
+        _SERVE_FOR_SOURCE = mod
+    return _SERVE_FOR_SOURCE
+
+
+def _patch_root(monkeypatch, serve_module, tmp_path):
+    """Point ROOT at ``tmp_path`` on serve_module AND every loaded ``server.*``
+    submodule that binds its own ``ROOT``.
+
+    The improver / skill-tree helpers were split out of serve.py into
+    ``server.skill_tree`` / ``server.improver_io`` / ``server.improver``; each
+    does ``from server.paths import ROOT``, so a function that moved out
+    resolves ``ROOT`` in its new module's namespace. Patching only
+    ``serve.ROOT`` would leave those copies pointing at the real repo root
+    (follows-the-move)."""
+    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    for name, mod in list(sys.modules.items()):
+        if (name == "server" or name.startswith("server.")) and getattr(mod, "ROOT", None) is not None:
+            monkeypatch.setattr(mod, "ROOT", tmp_path, raising=False)
 
 
 def _skills_js() -> str:
@@ -209,7 +253,7 @@ def test_load_improver_config_parses_sweep_fields(serve_module, tmp_path, monkey
         "  sweep_batch_max: 2\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     # Clear the env var that conftest sets so we actually exercise the
     # YAML overlay path — the env shortcut returns enabled=False without
     # parsing anything else.
@@ -233,7 +277,7 @@ def test_sweep_visits_oldest_skills_first_and_respects_batch_cap(serve_module, t
         (skills_root / name / "SKILL.md").write_text(
             f"---\nname: {name}\n---\n# body\n", encoding="utf-8")
 
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     # Force the project-skill index to return our three.
     proj = {
         "alpha": skills_root / "alpha" / "SKILL.md",
@@ -286,7 +330,7 @@ def test_sweep_respects_throttle(serve_module, tmp_path, monkeypatch):
     skills_root = tmp_path / ".claude" / "skills"
     (skills_root / "alpha").mkdir(parents=True)
     (skills_root / "alpha" / "SKILL.md").write_text("# body\n", encoding="utf-8")
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     monkeypatch.setattr(
         serve_module, "_project_skill_index",
         lambda: {"alpha": skills_root / "alpha" / "SKILL.md"},
@@ -432,7 +476,7 @@ def test_post_improve_returns_inline_status(
     skills_root.mkdir(parents=True)
     (skills_root / "SKILL.md").write_text(
         "---\nname: fake-skill\n---\n# body\n", encoding="utf-8")
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     monkeypatch.setattr(
         serve_module, "_project_skill_index",
         lambda: {"fake-skill": skills_root / "SKILL.md"},
@@ -499,7 +543,7 @@ def test_post_improve_generates_proposal_when_diff_non_empty(
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text("---\nname: fake-skill\n---\n# old\n", encoding="utf-8")
 
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     monkeypatch.setattr(
         serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
@@ -568,7 +612,7 @@ def test_manual_never_auto_applies_even_for_small_diff(
     original_body = "---\nname: fake-skill\n---\n# old body\n"
     skill_md.write_text(original_body, encoding="utf-8")
 
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     monkeypatch.setattr(
         serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
@@ -636,7 +680,7 @@ def test_auto_path_still_auto_applies_for_small_diff(
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text("---\nname: fake-skill\n---\n# v1\n", encoding="utf-8")
 
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     monkeypatch.setattr(
         serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
@@ -777,7 +821,7 @@ def test_mirror_writes_to_agents_tree_after_apply(serve_module, tmp_path, monkey
     ``<repo>/.agents/skills/<x>/SKILL.md`` must end up with the same
     content. Without this, Codex sees a stale skill until the user
     remembers to run .ai/scripts/sync_skills.py by hand."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     monkeypatch.setattr(
         serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
@@ -816,7 +860,7 @@ def test_mirror_skips_when_agents_copy_does_not_exist(serve_module, tmp_path, mo
     The improver applying an edit to such a skill must NOT materialise a
     new .agents/skills/<name>/ directory — the operator never asked for
     a Codex mirror, and silently inventing one would surprise them."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     monkeypatch.setattr(
         serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
@@ -856,7 +900,7 @@ def test_create_skill_in_both_trees_writes_both_sides(serve_module, tmp_path, mo
     .claude/skills/<slug>/ and .agents/skills/<slug>/ when the agents
     tree is present. This is the one path that's allowed to invent a
     fresh .agents mirror — the operator explicitly accepted a draft."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     # .agents/skills exists (typical project layout post-bootstrap).
     (tmp_path / ".agents" / "skills").mkdir(parents=True)
     body = "---\nname: new-skill\n---\n# new\n"
@@ -878,7 +922,7 @@ def test_create_skill_in_both_trees_skips_agents_when_dir_absent(
     """Claude-only project (no .agents/skills/ tree on disk): create in
     .claude/ only, report the skip reason so the operator knows the
     agents side wasn't done."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     info = serve_module._create_skill_in_both_trees(
         "fresh", "---\nname: fresh\n---\n",
     )
@@ -894,7 +938,7 @@ def test_create_skill_in_both_trees_skips_bridge_skills(serve_module, tmp_path, 
     create as well as on update. The agents-side ``codex`` is meant to
     be the 'call claude from codex' bridge, not a copy of the Claude
     'call codex' skill."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     (tmp_path / ".agents" / "skills").mkdir(parents=True)
     info = serve_module._create_skill_in_both_trees(
         "codex", "---\nname: codex\n---\n# call codex\n",
@@ -911,7 +955,7 @@ def test_mirror_skips_bridge_skills(serve_module, tmp_path, monkeypatch):
     must NEVER overwrite a bridge skill — the agents-side ``codex``
     file is actually the "call claude" bridge and copying the Claude
     version on top would break the cross-call mechanism."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     monkeypatch.setattr(
         serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
@@ -945,7 +989,7 @@ def test_mirror_skips_bridge_skills(serve_module, tmp_path, monkeypatch):
 def test_mirror_helper_returns_skip_when_agents_dir_absent(serve_module, tmp_path, monkeypatch):
     """When .agents/skills/ doesn't exist at all (project that uses only
     Claude), the mirror must return a clean skip — not a write error."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     claude_skill = tmp_path / ".claude" / "skills" / "x" / "SKILL.md"
     claude_skill.parent.mkdir(parents=True)
     claude_skill.write_text("# body\n", encoding="utf-8")
@@ -958,7 +1002,7 @@ def test_mirror_helper_skips_non_claude_paths(serve_module, tmp_path, monkeypatc
     """Calling the mirror on a path that isn't under .claude/skills/ (e.g.
     a user-global skill in ~/.claude/skills/) must NOT touch the
     project's .agents/ tree — only project-scope skills mirror."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     # User-global mock — far outside .claude/skills under ROOT.
     foreign = tmp_path / "elsewhere" / "SKILL.md"
     foreign.parent.mkdir(parents=True)
