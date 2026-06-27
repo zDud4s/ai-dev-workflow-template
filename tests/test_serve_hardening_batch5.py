@@ -144,9 +144,9 @@ def test_jobs_persist_file_reads_through_cache_with_errors_replace():
 def test_run_subprocess_uses_list_args_no_shell_true():
     """``_run_subprocess`` must take a ``list[str]`` so Windows path
     quoting is handled by the OS, not by Python string concatenation."""
-    idx = SRC.find("def _run_subprocess(")
-    assert idx >= 0
-    body = SRC[idx : idx + 800]
+    # _run_subprocess moved to server/workflow_handlers.py; getsource off the
+    # Handler follows it (indentation preserved by the move).
+    body = inspect.getsource(_load_serve().Handler._run_subprocess)
     assert "args: list[str]" in body
     assert "shell=True" not in body
     # And `subprocess.run(args, ...)` — the first positional is the list.
@@ -186,14 +186,18 @@ def test_suggestion_semaphore_present_and_used():
     acquire ``_SUGGESTION_SEMAPHORE`` non-blocking and 429 on contention."""
     mod = _load_serve()
     assert hasattr(mod, "_SUGGESTION_SEMAPHORE")
-    # Source-level: at least two acquire sites, at least two release sites.
-    acquires = SRC.count("_SUGGESTION_SEMAPHORE.acquire(blocking=False)")
-    releases = SRC.count("_SUGGESTION_SEMAPHORE.release()")
+    # The acquire/release sites moved with their handlers into the proposals +
+    # agent-suggest mixin modules; scan those module sources (not serve.py).
+    import server.agent_suggest_handlers as _agh
+    import server.proposals_handlers as _ph
+    src = inspect.getsource(_ph) + inspect.getsource(_agh)
+    acquires = src.count("_SUGGESTION_SEMAPHORE.acquire(blocking=False)")
+    releases = src.count("_SUGGESTION_SEMAPHORE.release()")
     assert acquires >= 2, f"expected ≥2 semaphore acquires, found {acquires}"
     assert releases >= 2, f"expected ≥2 semaphore releases, found {releases}"
     # And each acquire site returns 429 with Retry-After.
-    assert SRC.count('send_response(429)') >= 2
-    assert SRC.count('"Retry-After"') >= 2
+    assert src.count('send_response(429)') >= 2
+    assert src.count('"Retry-After"') >= 2
 
 
 # -------- 8. read_text on user-visible files passes errors='replace' -------
