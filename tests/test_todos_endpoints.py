@@ -14,6 +14,7 @@ from typing import Iterator
 import pytest
 
 import server.runtime as _runtime  # BOUND_PORT + Origin allowlist live here (follows-the-move)
+import server.project_handlers as _ph  # TODO/memory/decisions/events handlers read ROOT here (follows-the-move)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +40,7 @@ def serve_module():
 def running_server(tmp_path, monkeypatch, serve_module) -> Iterator[tuple[str, Path]]:
     (tmp_path / ".ai").mkdir()
     monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    monkeypatch.setattr(_ph, "ROOT", tmp_path)  # project-state handlers read ROOT in their own module
     httpd = _ThreadingTCPServer(("127.0.0.1", 0), serve_module.Handler)
     port = httpd.server_address[1]
     monkeypatch.setattr(serve_module, "PORT", port)

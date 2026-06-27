@@ -18,6 +18,17 @@ from pathlib import Path
 _PATH_CACHE_MAX = 1024
 
 
+def _write_text_lf(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` with LF line endings, regardless of platform.
+
+    Python's ``Path.write_text`` defaults to ``newline=None`` which translates
+    ``\\n`` to the OS line terminator (``\\r\\n`` on Windows). The repo's
+    ``.gitattributes`` pins ``*.yaml`` / ``*.md`` to ``eol=lf``, so writing
+    those files through the dashboard previously produced spurious
+    ``"CRLF will be replaced by LF"`` git warnings on Windows."""
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def _bound_path_cache(cache: dict, max_size: int = _PATH_CACHE_MAX) -> None:
     # Plain dicts preserve insertion order, so popping the front drops the
     # least-recently-added entries. Call under the cache's own lock.
