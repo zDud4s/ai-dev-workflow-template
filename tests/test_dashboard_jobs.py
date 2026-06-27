@@ -45,6 +45,7 @@ import server.transcript_paths as _tp  # noqa: E402
 import server.runtime as _runtime  # noqa: E402 — BOUND_PORT + Origin allowlist live here (follows-the-move)
 import server.jobs_persistence as _jp  # noqa: E402 — _persist_job/_load_persisted_jobs + JOBS_PERSIST_FILE live here
 import server.jobs as _jobs  # noqa: E402 — the job runner (reads JOBS_DIR) lives here (follows-the-move)
+import server.analytics as _an  # noqa: E402 — _load_timeline_runs reads EVENTS_FILE here (follows-the-move)
 
 SERVE_PATH = DASHBOARD_DIR / "serve.py"
 
@@ -1392,6 +1393,7 @@ def test_timeline_empty_events(tmp_path, serve_module, monkeypatch):
     fresh repo where no phase has ever been dispatched."""
     p = tmp_path / "events.jsonl"
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     assert serve_module._load_timeline_runs() == []
     p.write_text("", encoding="utf-8")
     assert serve_module._load_timeline_runs() == []
@@ -1410,6 +1412,7 @@ def test_timeline_groups_by_session(tmp_path, serve_module, monkeypatch):
          "phase": "plan",    "tool": "claude", "model": "opus",    "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     runs = serve_module._load_timeline_runs()
     assert len(runs) == 2
     by_sid = {r["session_id"]: r for r in runs}
@@ -1430,6 +1433,7 @@ def test_timeline_phase_duration_derived(tmp_path, serve_module, monkeypatch):
          "phase": "execute", "tool": "codex",  "model": "gpt-5.5", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     runs = serve_module._load_timeline_runs()
     phases = runs[0]["phases"]
     assert phases[0]["duration_ms"] == 0
@@ -1449,6 +1453,7 @@ def test_timeline_status_classification(tmp_path, serve_module, monkeypatch):
          "phase": "review",  "tool": "claude", "model": "opus",    "exit_code": None},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     runs = serve_module._load_timeline_runs()
     statuses = [ph["status"] for ph in runs[0]["phases"]]
     assert statuses == ["success", "failure", "pending"]
@@ -1467,6 +1472,7 @@ def test_timeline_includes_total_duration_and_tag(tmp_path, serve_module, monkey
          "phase": "execute", "tool": "claude", "model": "opus", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
     monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
     runs = serve_module._load_timeline_runs()
@@ -1485,6 +1491,7 @@ def test_timeline_tag_mixed_when_multiple_tools(tmp_path, serve_module, monkeypa
          "phase": "execute", "tool": "codex",  "model": "gpt-5.5", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
     monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
     runs = serve_module._load_timeline_runs()
@@ -1519,6 +1526,7 @@ def test_timeline_task_from_transcript_when_available(tmp_path, serve_module, mo
          "phase": "plan", "tool": "claude", "model": "opus", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     runs = serve_module._load_timeline_runs()
     assert runs[0]["task"] == "Add a timeline view to the dashboard"
 
@@ -1561,6 +1569,7 @@ def test_timeline_task_skips_ide_injected_user_messages(tmp_path, serve_module, 
          "phase": "plan", "tool": "claude", "model": "opus", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     runs = serve_module._load_timeline_runs()
     assert runs[0]["task"] == "fix the bug in the login flow"
 
@@ -1574,6 +1583,7 @@ def test_timeline_task_none_when_transcript_missing(tmp_path, serve_module, monk
          "phase": "plan", "tool": "claude", "model": "opus", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-such-dir")
     monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-such-dir")
     runs = serve_module._load_timeline_runs()

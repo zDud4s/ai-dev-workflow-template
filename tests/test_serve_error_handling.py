@@ -291,7 +291,13 @@ def test_serve_source_no_unguarded_utf8_reads_on_known_jsonl_paths():
     use ``errors="replace"`` AND no direct strict-utf8 read on these
     sentinels may sneak back in.
     """
+    # The METRICS_FILE / EVENTS_FILE readers (_load_auto_select_ranking,
+    # _aggregate_analytics, _load_timeline_runs) moved to server/analytics.py,
+    # so scan that module's source alongside serve.py to keep the invariant in
+    # its new home (follows-the-move).
+    import server.analytics as _an
     src = (pathlib.Path(serve.__file__)).read_text(encoding="utf-8")
+    src += pathlib.Path(_an.__file__).read_text(encoding="utf-8")
 
     # 1. _load_jsonl_cached helper preserves the safety invariant. It now lives
     #    in server/storage.py (re-exported by serve); inspect.getsource follows

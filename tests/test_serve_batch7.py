@@ -42,6 +42,7 @@ SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
 
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
+import server.analytics as _an  # analytics readers resolve consts in their namespace (follows-the-move)
 import server.improver_io as _io  # noqa: E402 — _last_improver_run_ts/_check_skill_regression read consts here (follows-the-move)
 
 
@@ -91,6 +92,7 @@ def test_auto_select_uses_jsonl_cache_object_identity(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(serve, "METRICS_FILE", metrics)
+    monkeypatch.setattr(_an, "METRICS_FILE", metrics)  # follows-the-move
 
     # First call: parses the file (cache miss).
     r1 = serve._load_auto_select_ranking(min_samples=1)
@@ -117,6 +119,7 @@ def test_auto_select_mtime_bump_invalidates_cache(tmp_path, monkeypatch):
             "duration_ms": 1000, "ts": "2026-05-24T00:00:00+00:00"}
     metrics.write_text(json.dumps(base) + "\n", encoding="utf-8")
     monkeypatch.setattr(serve, "METRICS_FILE", metrics)
+    monkeypatch.setattr(_an, "METRICS_FILE", metrics)  # follows-the-move
 
     first = serve._load_jsonl_cached(metrics)
     # Force a forward mtime jump (the comparator uses ``st_mtime_ns ==``).
@@ -129,7 +132,7 @@ def test_auto_select_mtime_bump_invalidates_cache(tmp_path, monkeypatch):
 def test_auto_select_source_no_direct_read_text():
     """Source-level guard: the helper must not call ``METRICS_FILE.read_text(``
     any more — that was exactly the bypass batch 7 closed."""
-    body = SRC.split("def _load_auto_select_ranking(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._load_auto_select_ranking)
     assert "METRICS_FILE.read_text" not in body, (
         "_load_auto_select_ranking still reads METRICS_FILE directly; bypasses cache"
     )
@@ -157,6 +160,7 @@ def test_timeline_runs_uses_jsonl_cache(tmp_path, monkeypatch):
     }
     events.write_text(json.dumps(ev) + "\n", encoding="utf-8")
     monkeypatch.setattr(serve, "EVENTS_FILE", events)
+    monkeypatch.setattr(_an, "EVENTS_FILE", events)  # follows-the-move
 
     runs = serve._load_timeline_runs()
     assert len(runs) == 1
@@ -171,7 +175,7 @@ def test_timeline_runs_uses_jsonl_cache(tmp_path, monkeypatch):
 
 def test_timeline_source_no_direct_read_text():
     """Source-level guard mirroring the auto-select check."""
-    body = SRC.split("def _load_timeline_runs(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._load_timeline_runs)
     assert "EVENTS_FILE.read_text" not in body, (
         "_load_timeline_runs still reads EVENTS_FILE directly; bypasses cache"
     )
@@ -194,6 +198,7 @@ def test_timeline_ignores_non_phase_dispatch(tmp_path, monkeypatch):
     events.write_text("\n".join(json.dumps(r) for r in rows) + "\n",
                       encoding="utf-8")
     monkeypatch.setattr(serve, "EVENTS_FILE", events)
+    monkeypatch.setattr(_an, "EVENTS_FILE", events)  # follows-the-move
     runs = serve._load_timeline_runs()
     assert len(runs) == 1
     assert len(runs[0]["phases"]) == 1, (

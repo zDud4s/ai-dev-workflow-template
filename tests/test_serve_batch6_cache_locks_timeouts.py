@@ -39,6 +39,8 @@ SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
 
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
+import inspect
+import server.analytics as _an  # analytics readers resolve consts in their namespace (follows-the-move)
 
 
 SRC = SERVE_PATH.read_text(encoding="utf-8")
@@ -163,6 +165,7 @@ def test_auto_select_ranking_uses_jsonl_cache(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(serve, "METRICS_FILE", metrics_path)
+    monkeypatch.setattr(_an, "METRICS_FILE", metrics_path)  # follows-the-move
 
     # First call: parses the file.
     r1 = serve._load_auto_select_ranking(min_samples=1)
@@ -196,7 +199,7 @@ def test_auto_select_no_longer_reads_metrics_file_directly():
     """Source-level guard: the auto-select helper must not call
     ``METRICS_FILE.read_text(`` any more — that bypasses the cache and was
     the exact pattern batch 6 replaced."""
-    body = SRC.split("def _load_auto_select_ranking(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._load_auto_select_ranking)
     assert "METRICS_FILE.read_text" not in body, (
         "_load_auto_select_ranking still does a direct read; cache miss every poll"
     )
@@ -220,6 +223,7 @@ def test_timeline_runs_uses_jsonl_cache(tmp_path, monkeypatch):
     }
     events_path.write_text(json.dumps(ev) + "\n", encoding="utf-8")
     monkeypatch.setattr(serve, "EVENTS_FILE", events_path)
+    monkeypatch.setattr(_an, "EVENTS_FILE", events_path)  # follows-the-move
 
     runs = serve._load_timeline_runs()
     assert len(runs) == 1
@@ -233,7 +237,7 @@ def test_timeline_runs_uses_jsonl_cache(tmp_path, monkeypatch):
 
 def test_timeline_no_longer_reads_events_file_directly():
     """Source-level guard mirroring the auto-select check."""
-    body = SRC.split("def _load_timeline_runs(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._load_timeline_runs)
     assert "EVENTS_FILE.read_text" not in body, (
         "_load_timeline_runs still reads EVENTS_FILE directly; bypasses cache"
     )
