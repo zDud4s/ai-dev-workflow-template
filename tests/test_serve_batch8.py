@@ -32,6 +32,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import inspect
 import re
 import sys
 from io import StringIO
@@ -54,9 +55,18 @@ import serve  # noqa: E402 — path mangled above
 
 
 def _function_source(name: str) -> str:
-    """Return the source text of one function/method by name, up to the next
-    top-level ``def`` / ``class``. Methods are matched on their bare ``def``
-    line so this also picks up class-scoped handlers."""
+    """Return the source text of one function/method by name.
+
+    Prefers ``inspect.getsource`` of the live attribute (module-level function
+    or ``Handler`` method) so functions split out of serve.py into ``server.*``
+    modules are still found — they're no longer in ``SRC`` (the serve.py text).
+    Falls back to scanning ``SRC`` for anything still defined inline."""
+    obj = getattr(serve, name, None) or getattr(serve.Handler, name, None)
+    if obj is not None:
+        try:
+            return inspect.getsource(obj)
+        except (OSError, TypeError):
+            pass
     needle = f"def {name}("
     idx = SRC.find(needle)
     assert idx >= 0, f"function {name!r} not found in serve.py"

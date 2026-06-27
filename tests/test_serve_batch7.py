@@ -28,6 +28,7 @@ refactor of the helper can't silently regress UTF-8 robustness.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import pathlib
@@ -41,6 +42,7 @@ SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
 
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
+import server.improver_io as _io  # noqa: E402 — _last_improver_run_ts/_check_skill_regression read consts here (follows-the-move)
 
 
 SRC = SERVE_PATH.read_text(encoding="utf-8")
@@ -217,6 +219,7 @@ def test_last_improver_run_ts_uses_cache(tmp_path, monkeypatch):
     ledger.write_text("\n".join(json.dumps(r) for r in rows) + "\n",
                       encoding="utf-8")
     monkeypatch.setattr(serve, "IMPROVEMENTS_LEDGER", ledger)
+    monkeypatch.setattr(_io, "IMPROVEMENTS_LEDGER", ledger)  # follows-the-move
 
     ts = serve._last_improver_run_ts("frobnicate")
     # The newest row for that skill: 2026-05-24T11:00:00Z = epoch 1779613200.
@@ -232,13 +235,14 @@ def test_last_improver_run_ts_uses_cache(tmp_path, monkeypatch):
 
 def test_last_improver_run_ts_returns_zero_when_no_file(tmp_path, monkeypatch):
     monkeypatch.setattr(serve, "IMPROVEMENTS_LEDGER", tmp_path / "missing.jsonl")
+    monkeypatch.setattr(_io, "IMPROVEMENTS_LEDGER", tmp_path / "missing.jsonl")  # follows-the-move
     assert serve._last_improver_run_ts("anything") == 0.0
 
 
 def test_last_improver_source_no_manual_open():
     """Source-level guard: the helper must NOT do its own ``.open("r"``
     on the ledger any more — that was the bypass batch 7 closed."""
-    body = SRC.split("def _last_improver_run_ts(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._last_improver_run_ts)  # follows the shim
     assert "IMPROVEMENTS_LEDGER.open" not in body, (
         "_last_improver_run_ts still opens the ledger directly; bypasses cache"
     )
@@ -255,7 +259,7 @@ def test_check_skill_regression_source_uses_cache():
     BOTH IMPROVEMENTS_LEDGER and SKILL_METRICS_FILE — those are the two
     bypass sites batch 7 closed in this function (it's the auto-revert
     decider feeding ``_auto_revert_skill``)."""
-    body = SRC.split("def _check_skill_regression(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._check_skill_regression)  # follows the shim
     assert "IMPROVEMENTS_LEDGER.open" not in body, (
         "_check_skill_regression still opens improvements ledger directly"
     )

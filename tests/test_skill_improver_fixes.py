@@ -115,20 +115,26 @@ def _serve_for_source():
     return _SERVE_FOR_SOURCE
 
 
-def _patch_root(monkeypatch, serve_module, tmp_path):
-    """Point ROOT at ``tmp_path`` on serve_module AND every loaded ``server.*``
-    submodule that binds its own ``ROOT``.
+def _patch_attr(monkeypatch, serve_module, name, value):
+    """setattr ``name``=``value`` on serve_module AND every loaded ``server.*``
+    submodule that binds its own copy of ``name``.
 
-    The improver / skill-tree helpers were split out of serve.py into
-    ``server.skill_tree`` / ``server.improver_io`` / ``server.improver``; each
-    does ``from server.paths import ROOT``, so a function that moved out
-    resolves ``ROOT`` in its new module's namespace. Patching only
-    ``serve.ROOT`` would leave those copies pointing at the real repo root
+    The improver helpers were split out of serve.py into ``server.skill_tree`` /
+    ``server.improver_io`` / ``server.improver``; each did ``from server.paths
+    import <CONST>`` (or holds a re-exported function), so a function that moved
+    out resolves the name in its new module's namespace. Patching only
+    ``serve.<name>`` would leave those copies pointing at the real value
     (follows-the-move)."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
-    for name, mod in list(sys.modules.items()):
-        if (name == "server" or name.startswith("server.")) and getattr(mod, "ROOT", None) is not None:
-            monkeypatch.setattr(mod, "ROOT", tmp_path, raising=False)
+    if hasattr(serve_module, name):
+        monkeypatch.setattr(serve_module, name, value, raising=False)
+    for modname, mod in list(sys.modules.items()):
+        if (modname == "server" or modname.startswith("server.")) and mod is not None and hasattr(mod, name):
+            monkeypatch.setattr(mod, name, value, raising=False)
+
+
+def _patch_root(monkeypatch, serve_module, tmp_path):
+    """Point ROOT at ``tmp_path`` everywhere (see :func:`_patch_attr`)."""
+    _patch_attr(monkeypatch, serve_module, "ROOT", tmp_path)
 
 
 def _skills_js() -> str:
@@ -544,12 +550,12 @@ def test_post_improve_generates_proposal_when_diff_non_empty(
     skill_md.write_text("---\nname: fake-skill\n---\n# old\n", encoding="utf-8")
 
     _patch_root(monkeypatch, serve_module, tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
     monkeypatch.setattr(
@@ -613,12 +619,12 @@ def test_manual_never_auto_applies_even_for_small_diff(
     skill_md.write_text(original_body, encoding="utf-8")
 
     _patch_root(monkeypatch, serve_module, tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
     monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
@@ -681,16 +687,16 @@ def test_auto_path_still_auto_applies_for_small_diff(
     skill_md.write_text("---\nname: fake-skill\n---\n# v1\n", encoding="utf-8")
 
     _patch_root(monkeypatch, serve_module, tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "SKILL_BACKUPS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_BACKUPS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_backups",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
     monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
@@ -822,16 +828,16 @@ def test_mirror_writes_to_agents_tree_after_apply(serve_module, tmp_path, monkey
     content. Without this, Codex sees a stale skill until the user
     remembers to run .ai/scripts/sync_skills.py by hand."""
     _patch_root(monkeypatch, serve_module, tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "SKILL_BACKUPS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_BACKUPS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_backups",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
 
@@ -861,16 +867,16 @@ def test_mirror_skips_when_agents_copy_does_not_exist(serve_module, tmp_path, mo
     new .agents/skills/<name>/ directory — the operator never asked for
     a Codex mirror, and silently inventing one would surprise them."""
     _patch_root(monkeypatch, serve_module, tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "SKILL_BACKUPS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_BACKUPS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_backups",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
 
@@ -956,16 +962,16 @@ def test_mirror_skips_bridge_skills(serve_module, tmp_path, monkeypatch):
     file is actually the "call claude" bridge and copying the Claude
     version on top would break the cross-call mechanism."""
     _patch_root(monkeypatch, serve_module, tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "SKILL_BACKUPS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_BACKUPS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_backups",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
     claude_codex_skill = tmp_path / ".claude" / "skills" / "codex" / "SKILL.md"

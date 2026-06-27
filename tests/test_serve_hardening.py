@@ -4,6 +4,7 @@ import sys, pathlib, json, threading, os
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / ".ai" / "dashboard"))
 import serve  # the module under test
 import server.jobs_persistence as _jp  # _persist_job + JOBS_PERSIST_FILE live here (follows-the-move)
+import server.improver_io as _io  # _audit_improvement/_apply_improvement read consts here (follows-the-move)
 
 
 def _bare_handler():
@@ -124,6 +125,7 @@ def test_jobs_persist_lock_serializes_writes(tmp_path, monkeypatch):
 def test_improvements_ledger_lock_serializes_writes(tmp_path, monkeypatch):
     ledger_path = tmp_path / "improvements.jsonl"
     monkeypatch.setattr(serve, "IMPROVEMENTS_LEDGER", ledger_path)
+    monkeypatch.setattr(_io, "IMPROVEMENTS_LEDGER", ledger_path)  # follows-the-move
 
     threads = [
         threading.Thread(
@@ -183,7 +185,9 @@ def test_apply_improvement_atomic_replace_success(tmp_path, monkeypatch):
     skill_path.write_text("ORIGINAL", encoding="utf-8")
     backups_dir = tmp_path / "backups"
     monkeypatch.setattr(serve, "SKILL_BACKUPS_DIR", backups_dir)
+    monkeypatch.setattr(_io, "SKILL_BACKUPS_DIR", backups_dir)  # follows-the-move
     monkeypatch.setattr(serve, "IMPROVEMENTS_LEDGER", tmp_path / "improvements.jsonl")
+    monkeypatch.setattr(_io, "IMPROVEMENTS_LEDGER", tmp_path / "improvements.jsonl")  # follows-the-move
 
     ok = serve._apply_improvement(
         skill_path,
@@ -207,7 +211,9 @@ def test_apply_improvement_atomic_replace_failure_preserves_original(tmp_path, m
     skill_path = tmp_path / "skill.md"
     skill_path.write_text("ORIGINAL", encoding="utf-8")
     monkeypatch.setattr(serve, "SKILL_BACKUPS_DIR", tmp_path / "backups")
+    monkeypatch.setattr(_io, "SKILL_BACKUPS_DIR", tmp_path / "backups")  # follows-the-move
     monkeypatch.setattr(serve, "IMPROVEMENTS_LEDGER", tmp_path / "improvements.jsonl")
+    monkeypatch.setattr(_io, "IMPROVEMENTS_LEDGER", tmp_path / "improvements.jsonl")  # follows-the-move
 
     def fail_replace(src, dst):
         raise OSError("simulated")
