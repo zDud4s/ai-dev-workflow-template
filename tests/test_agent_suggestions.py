@@ -27,6 +27,7 @@ import pytest
 
 import server.runtime as _runtime  # BOUND_PORT + Origin allowlist live here (follows-the-move)
 import server.agent_suggest as _ags  # AGENT_PROPOSALS_DIR/ROOT/JOBS_DIR readers live here (follows-the-move)
+import server.agent_suggest_handlers as _agh  # agent-proposal handlers read AGENT_PROPOSALS_DIR/ROOT here (follows-the-move)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -54,6 +55,7 @@ def isolated_proposals_dir(tmp_path, monkeypatch, serve_module):
     d = tmp_path / "agent_proposals"
     monkeypatch.setattr(serve_module, "AGENT_PROPOSALS_DIR", d)
     monkeypatch.setattr(_ags, "AGENT_PROPOSALS_DIR", d)  # follows-the-move
+    monkeypatch.setattr(_agh, "AGENT_PROPOSALS_DIR", d)  # handlers read it here
     return d
 
 
@@ -68,6 +70,7 @@ def isolated_agents_dir(tmp_path, monkeypatch, serve_module):
     bare ROOT swap leaves it pointing at the real repo)."""
     monkeypatch.setattr(serve_module, "ROOT", tmp_path)
     monkeypatch.setattr(_ags, "ROOT", tmp_path)  # follows-the-move
+    monkeypatch.setattr(_agh, "ROOT", tmp_path)  # _handle_agent_proposal_decision reads it here
     return tmp_path / ".claude" / "agents"
 
 
