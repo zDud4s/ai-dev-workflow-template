@@ -7,6 +7,7 @@ aggregation helpers each method calls are imported from their owning
 ``server.*`` modules (importing them from serve would be circular).
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import datetime as _dt
 import urllib.parse
@@ -19,7 +20,7 @@ from server.analytics import (
 from server.usage import _aggregate_project_token_usage
 
 
-class AnalyticsRoutes:
+class AnalyticsRoutes(_RouteMixin):
     """Usage / timeline / analytics / auto-select endpoints, mixed into ``Handler``."""
 
     def _handle_usage_total(self) -> None:

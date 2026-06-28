@@ -2,8 +2,8 @@
 reconciliation of dead subprocesses, and dict-size bounding.
 
 Runs both on a fixed-cadence daemon loop and request-driven from
-``GET /api/jobs``. Builds on ``server.jobs_state`` (the shared ``JOBS`` dict)
-and persists flipped jobs through ``server.jobs_persistence``.
+``GET /api/jobs``. Builds on ``server.jobs.state`` (the shared ``JOBS`` dict)
+and persists flipped jobs through ``server.jobs.persistence``.
 """
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import re
 import subprocess
 import time
 
-from server.jobs_state import JOBS, JOBS_LOCK, JOBS_MAX
-from server.jobs_persistence import _persist_job
+from server.jobs.state import JOBS, JOBS_LOCK, JOBS_MAX
+from server.jobs.persistence import _persist_job
 
 # Matches a Windows ``tasklist /NH /FO CSV`` row, capturing the PID (2nd field).
 _RE_TASKLIST_PID = re.compile(r'"[^"]*","(\d+)"')

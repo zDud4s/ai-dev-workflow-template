@@ -6,7 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard" / "scripts"))
 
-from server import session_registry as sr
+from server.sessions import registry as sr
 
 
 def test_new_session_starts_in_mirror():

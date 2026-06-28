@@ -7,6 +7,7 @@ the routing block of .ai/models.yaml. Extracted from serve.py as the
 closes over are imported from their owning ``server.*`` modules.
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import re
 
@@ -15,7 +16,7 @@ from server.paths import ROOT
 from server.storage import _write_text_lf
 
 
-class DispatchPhaseRoutes:
+class DispatchPhaseRoutes(_RouteMixin):
     """models.yaml dispatch-mode + per-phase write endpoints, mixed into ``Handler``."""
 
     def _handle_dispatch_mode(self, body: dict) -> None:

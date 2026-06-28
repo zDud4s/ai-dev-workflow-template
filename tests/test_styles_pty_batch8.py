@@ -37,13 +37,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 DASH = ROOT / ".ai" / "dashboard"
 STYLES_CSS = DASH / "styles.css"
 INDEX_HTML = DASH / "index.html"
-PTY_PY = DASH / "server" / "pty_session.py"
+PTY_PY = DASH / "server" / "pty" / "session.py"
 
-# Insert .ai/dashboard on sys.path so we can ``from server import pty_session``
+# Insert .ai/dashboard on sys.path so we can ``from server.pty import session``
 # (pty_session was folded into the server/ package; matches the pattern used
 # by every other ``test_pty_*.py`` via conftest).
 sys.path.insert(0, str(DASH))
-from server import pty_session as _pty  # noqa: E402  (path-injection requires this order)
+from server.pty import session as _pty  # noqa: E402  (path-injection requires this order)
 
 
 def _css() -> str:

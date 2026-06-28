@@ -16,7 +16,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"))
-from server import pty_session as _pty_session
+from server.pty import session as _pty_session
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LOG_EVENT_PATH = ROOT / ".ai" / "scripts" / "log_event.py"

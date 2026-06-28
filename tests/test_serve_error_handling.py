@@ -33,7 +33,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
-import server.transcript_paths as _tp  # noqa: E402
+import server.transcripts.paths as _tp  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

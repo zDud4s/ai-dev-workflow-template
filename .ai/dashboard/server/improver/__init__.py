@@ -1,7 +1,7 @@
 """Auto-improver runtime: config, sweep/run loops, signals, transcript purge.
 
 Extracted from serve.py. This is the runner layer that drives the auto-improver
-subsystem, sitting on top of server/improver_io.py (the audit/proposal/apply
+subsystem, sitting on top of server/improver/io.py (the audit/proposal/apply
 I/O layer) and server/metrics.py (per-skill telemetry):
 
   * Config + index -- ``_load_improver_config`` (merges models.yaml over
@@ -9,7 +9,7 @@ I/O layer) and server/metrics.py (per-skill telemetry):
     ``_diff_line_count``.
   * Per-skill run   -- ``_run_improver_for_skill`` spawns the improver LLM
     against one skill, gates the diff (auto-apply small / propose large), and
-    records the outcome through ``improver_io``; ``_post_job_skill_actions``
+    records the outcome through ``io``; ``_post_job_skill_actions``
     (revert-first, then improve) is the post-job hook, ``_trigger_improvers_for_job``
     and the ``_periodic_improver_sweep`` / ``_periodic_improver_loop`` schedule it.
   * Lifecycle       -- shutdown signal chaining + the tracked-improver-sid set
@@ -24,7 +24,7 @@ I/O layer) and server/metrics.py (per-skill telemetry):
 
 serve.py re-exports every name here via a shim and installs ``_record_skill_metrics``
 as ``server.jobs.record_skill_metrics_hook``. Everything imported here flows one
-way (improver -> improver_io / metrics / jobs_state / foundations); nothing here
+way (improver -> io / metrics / jobs.state / foundations); nothing here
 is imported back, so there is no cycle.
 """
 from __future__ import annotations
@@ -43,9 +43,9 @@ import time
 import uuid
 from pathlib import Path
 
-from server._improver_transcript_policy import classify_transcript, load_ledger_rows
+from server.improver._transcript_policy import classify_transcript, load_ledger_rows
 from server.config import _read_yaml_field
-from server.improver_io import (
+from server.improver.io import (
     _apply_improvement,
     _audit_improvement,
     _auto_revert_skill,
@@ -56,7 +56,7 @@ from server.improver_io import (
     _recent_rejected_proposals,
     _write_proposal,
 )
-from server.jobs_state import JOB_KINDS, JOBS, JOBS_LOCK
+from server.jobs.state import JOB_KINDS, JOBS, JOBS_LOCK
 from server.llm_output import _parse_improver_output
 from server.metrics import _aggregate_skill_metrics
 from server.paths import (
@@ -66,9 +66,9 @@ from server.paths import (
     SKILL_METRICS_FILE,
     SKILL_PROPOSALS_DIR,
 )
-from server.skills_config import _scan_skills_dir
+from server.skills.config import _scan_skills_dir
 from server.storage import _load_jsonl_cached
-from server.transcript_paths import _transcripts_dir_for_cwd
+from server.transcripts.paths import _transcripts_dir_for_cwd
 from server.validation import _iso_to_epoch, _safe_which, _skill_name_canonical
 
 # Improver subsystem state (moved from serve.py).
@@ -147,7 +147,7 @@ def _load_improver_config() -> dict:
 
 # Improver audit-signal + throttle reads (_last_improver_run_ts,
 # _has_audit_signal, _recent_rejected_proposals, _RECENT_FAILURE_MAX_AGE_DAYS)
-# moved to server/improver_io.py and are re-exported via the shim above.
+# moved to server/improver/io.py and are re-exported via the shim above.
 
 
 
@@ -167,7 +167,7 @@ def _project_skill_index() -> dict[str, Path]:
     return out
 
 
-# _build_improver_prompt moved to server/improver_io.py (re-exported via shim).
+# _build_improver_prompt moved to server/improver/io.py (re-exported via shim).
 
 
 
@@ -211,7 +211,7 @@ def _diff_line_count(a: str, b: str) -> int:
 
 # Improver audit ledger + proposal/apply/regression layer (_audit_improvement,
 # _write_proposal, _supersede_prior_pending, _apply_improvement, _check_held_out_gate,
-# _check_skill_regression, _auto_revert_skill) moved to server/improver_io.py and are
+# _check_skill_regression, _auto_revert_skill) moved to server/improver/io.py and are
 # re-exported via the shim above.
 
 

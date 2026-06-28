@@ -19,6 +19,7 @@ actual agent file at .claude/agents/<slug>.md (refusing to overwrite), Reject
 just marks status="rejected".
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import datetime as _dt
 import json
@@ -41,7 +42,7 @@ from server.storage import _write_text_lf
 from server.validation import _safe_which
 
 
-class AgentSuggestRoutes:
+class AgentSuggestRoutes(_RouteMixin):
     """Agent suggestion + agent proposal endpoints, mixed into ``Handler``."""
 
     def _handle_agent_suggest(self) -> None:

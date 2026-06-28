@@ -9,6 +9,7 @@ closes over are imported from their owning ``server.*`` modules (importing them
 from serve would be circular).
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import datetime as _dt
 import json
@@ -22,7 +23,7 @@ from server.improver import (
     _project_skill_index,
     _run_improver_for_skill,
 )
-from server.improver_io import (
+from server.improver.io import (
     _apply_improvement,
     _audit_improvement,
     _check_held_out_gate,
@@ -30,11 +31,11 @@ from server.improver_io import (
 )
 from server.llm_output import _parse_improver_output
 from server.paths import ROOT, SKILL_PROPOSALS_DIR
-from server.skill_tree import _create_skill_in_both_trees
+from server.skills.tree import _create_skill_in_both_trees
 from server.validation import _safe_which, _skill_name_canonical
 
 
-class ProposalRoutes:
+class ProposalRoutes(_RouteMixin):
     """Skill-improvement proposal + manual-improve endpoints, mixed into ``Handler``."""
 
     def _handle_proposals_list(self) -> None:

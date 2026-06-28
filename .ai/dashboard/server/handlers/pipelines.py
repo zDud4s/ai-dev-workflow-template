@@ -8,6 +8,7 @@ imported here from their owning ``server.*`` modules (rather than from serve,
 which would be circular).
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import json
 import os
@@ -25,7 +26,7 @@ from server.runtime import _browser_cross_origin_blocked
 from server.validation import _is_under_trusted_dir
 
 
-class PipelineRoutes:
+class PipelineRoutes(_RouteMixin):
     """Pipeline + agent-orchestration endpoints, mixed into ``Handler``."""
 
     def _agent_orchestrations_origin_guard(self) -> bool:

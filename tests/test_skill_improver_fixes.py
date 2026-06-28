@@ -88,7 +88,7 @@ def _function_source(name: str) -> str:
     defined inline in serve.py."""
     _serve = _serve_for_source()
     # Module-level function or a Handler method (handlers were split into
-    # server/*_handlers.py mixins; getsource follows them off Handler).
+    # server/handlers/*.py mixins; getsource follows them off Handler).
     obj = getattr(_serve, name, None) or getattr(_serve.Handler, name, None)
     if obj is not None:
         try:
@@ -122,8 +122,8 @@ def _patch_attr(monkeypatch, serve_module, name, value):
     """setattr ``name``=``value`` on serve_module AND every loaded ``server.*``
     submodule that binds its own copy of ``name``.
 
-    The improver helpers were split out of serve.py into ``server.skill_tree`` /
-    ``server.improver_io`` / ``server.improver``; each did ``from server.paths
+    The improver helpers were split out of serve.py into ``server.skills.tree`` /
+    ``server.improver.io`` / ``server.improver``; each did ``from server.paths
     import <CONST>`` (or holds a re-exported function), so a function that moved
     out resolves the name in its new module's namespace. Patching only
     ``serve.<name>`` would leave those copies pointing at the real value

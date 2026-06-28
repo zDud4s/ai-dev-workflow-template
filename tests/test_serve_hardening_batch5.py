@@ -63,7 +63,7 @@ def test_reaper_poll_failure_logs():
     """The dead-PID reaper used to swallow ``proc.poll()`` failures
     silently. It must now log the OSError so operators can diagnose
     a stuck job that never gets reaped."""
-    # The reaper (_reconcile_running_pids) moved to server/jobs_reaper.py;
+    # The reaper (_reconcile_running_pids) moved to server/jobs/reaper.py;
     # getsource follows the shim to the new module.
     assert "[serve] reaper poll() failed" in inspect.getsource(
         _load_serve()._reconcile_running_pids
@@ -73,7 +73,7 @@ def test_reaper_poll_failure_logs():
 def test_pty_ws_write_resize_close_log_on_failure():
     """The PTY WebSocket handler used to have three bare ``except Exception``
     blocks. After batch 5 they are scoped + logged."""
-    # The handler is `_handle_pty_ws` — moved to server/pty_handlers.py, so
+    # The handler is `_handle_pty_ws` — moved to server/handlers/pty.py, so
     # getsource off the Handler follows it.
     body = inspect.getsource(_load_serve().Handler._handle_pty_ws)
     # No `except Exception:` inside the handler.
@@ -144,7 +144,7 @@ def test_jobs_persist_file_reads_through_cache_with_errors_replace():
 def test_run_subprocess_uses_list_args_no_shell_true():
     """``_run_subprocess`` must take a ``list[str]`` so Windows path
     quoting is handled by the OS, not by Python string concatenation."""
-    # _run_subprocess moved to server/workflow_handlers.py; getsource off the
+    # _run_subprocess moved to server/handlers/workflow.py; getsource off the
     # Handler follows it (indentation preserved by the move).
     body = inspect.getsource(_load_serve().Handler._run_subprocess)
     assert "args: list[str]" in body
@@ -164,7 +164,7 @@ def test_transcript_stream_has_max_session_cap():
     """``_handle_transcript_stream`` previously only bailed on idle ticks.
     Batch 5 adds a hard ``MAX_SSE_SESSION_S`` wall-clock cap so a chatty
     transcript can't pin the request thread forever."""
-    # _handle_transcript_stream moved to server/transcripts_handlers.py;
+    # _handle_transcript_stream moved to server/handlers/transcripts.py;
     # getsource off the Handler follows it.
     body = inspect.getsource(_load_serve().Handler._handle_transcript_stream)
     assert "MAX_SSE_SESSION_S" in body
@@ -188,8 +188,8 @@ def test_suggestion_semaphore_present_and_used():
     assert hasattr(mod, "_SUGGESTION_SEMAPHORE")
     # The acquire/release sites moved with their handlers into the proposals +
     # agent-suggest mixin modules; scan those module sources (not serve.py).
-    import server.agent_suggest_handlers as _agh
-    import server.proposals_handlers as _ph
+    import server.handlers.agent_suggest as _agh
+    import server.handlers.proposals as _ph
     src = inspect.getsource(_ph) + inspect.getsource(_agh)
     acquires = src.count("_SUGGESTION_SEMAPHORE.acquire(blocking=False)")
     releases = src.count("_SUGGESTION_SEMAPHORE.release()")

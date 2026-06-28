@@ -3,8 +3,8 @@ import sys, pathlib, json, threading, os
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / ".ai" / "dashboard"))
 import serve  # the module under test
-import server.jobs_persistence as _jp  # _persist_job + JOBS_PERSIST_FILE live here (follows-the-move)
-import server.improver_io as _io  # _audit_improvement/_apply_improvement read consts here (follows-the-move)
+import server.jobs.persistence as _jp  # _persist_job + JOBS_PERSIST_FILE live here (follows-the-move)
+import server.improver.io as _io  # _audit_improvement/_apply_improvement read consts here (follows-the-move)
 import server.improver as _im  # _record_skill_metrics reads SKILL_METRICS_FILE/JOBS/_post_job_skill_actions here (follows-the-move)
 
 
@@ -103,7 +103,7 @@ def test_jobs_persist_lock_serializes_writes(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(serve, "JOBS_PERSIST_FILE", persist_path)
     monkeypatch.setattr(serve, "JOBS", jobs)
-    # _persist_job moved to server.jobs_persistence; it reads JOBS_PERSIST_FILE
+    # _persist_job moved to server.jobs.persistence; it reads JOBS_PERSIST_FILE
     # and JOBS from that module's namespace (the `from ... import` bindings),
     # so a serve-only rebind no longer reaches it.
     monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", persist_path)

@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_DIR = REPO_ROOT / ".ai" / "dashboard"
 if str(DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_DIR))
-import server.transcript_paths as _tp  # noqa: E402
+import server.transcripts.paths as _tp  # noqa: E402
 import server.runtime as _runtime  # noqa: E402 — BOUND_PORT + Origin allowlist live here (follows-the-move)
 import server.jobs as _jobs  # noqa: E402 — the job runner / session engine (reads JOBS_DIR) lives here (follows-the-move)
 
@@ -628,7 +628,7 @@ def test_lock_blocks_spawn(serve_module, tmp_path, _reset_session_registry):
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(serve_module.__file__).parent / "scripts"))
-    from server import session_registry as sr
+    from server.sessions import registry as sr
 
     spawn_calls = []
 
@@ -674,7 +674,7 @@ def test_release_calls_lock_release(serve_module, tmp_path, _reset_session_regis
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(serve_module.__file__).parent / "scripts"))
-    from server import session_registry as sr
+    from server.sessions import registry as sr
 
     released = []
 
@@ -1030,7 +1030,7 @@ def test_session_stream_does_not_clear_shared_warnings(serve_module):
     """Warnings must be delivered via a per-stream cursor, never cleared from the
     shared list — otherwise the first of two concurrent streams on the same
     session consumes a warning and the second never sees it."""
-    # _handle_session_stream moved to server/sessions_handlers.py; scope the
+    # _handle_session_stream moved to server/handlers/sessions.py; scope the
     # source scan to that method so the check stays meaningful.
     src = inspect.getsource(serve_module.Handler._handle_session_stream)
     assert ".warnings.clear()" not in src, "the SSE loop must not clear the shared warnings list"

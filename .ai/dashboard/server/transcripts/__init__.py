@@ -5,7 +5,7 @@ import re
 import threading
 from pathlib import Path
 
-from server.transcript_paths import _codex_sessions_root, _transcripts_dir_for_cwd
+from server.transcripts.paths import _codex_sessions_root, _transcripts_dir_for_cwd
 from server.storage import _bound_path_cache
 from server.paths import ROOT
 
@@ -285,7 +285,7 @@ _CODEX_ROLLOUT_PATH_CACHE: dict[str, "Path | None"] = {}
 _CODEX_ROLLOUT_PATH_LOCK = threading.Lock()
 
 # mtime-keyed caches for the /api/sessions status list, populated by the session
-# + transcript list handlers (server/sessions_handlers.py, server/transcripts_handlers.py).
+# + transcript list handlers (server/handlers/sessions.py, server/handlers/transcripts.py).
 # Extracted from serve.py so both handler mixins share one set of caches by
 # reference; serve.py re-exports them via the transcripts shim.
 # session_id -> (mtime_ns, task_str_or_None, title_str_or_None)

@@ -384,11 +384,12 @@ def test_broad_except_count_decreasing():
     excepts, so the count measured over the server surface rose to 62 — a
     scan-scope change, not a regression. The ceiling is re-baselined to 62."""
     # Count silent-excepts across the whole server surface (serve.py +
-    # server/*.py) so this guard tracks the relocated error-handling rather
+    # server/**/*.py, recursive — the server package is now split into domain
+    # sub-packages) so this guard tracks the relocated error-handling rather
     # than only what remains inline in serve.py.
     dash_dir = pathlib.Path(serve.__file__).resolve().parent
     src = pathlib.Path(serve.__file__).read_text(encoding="utf-8")
-    for mod in sorted((dash_dir / "server").glob("*.py")):
+    for mod in sorted((dash_dir / "server").rglob("*.py")):
         src += "\n" + mod.read_text(encoding="utf-8")
     current = _count_silent_excepts(src)
     # Hard ceiling — re-baselined to 62 after the script-fold above (was 38

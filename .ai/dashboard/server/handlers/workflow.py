@@ -16,6 +16,7 @@ workflow, the host repo's history has nothing to do with workflow updates, so a
 pull there was either a no-op or — worse — pulled unrelated project commits.
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import os
 import shutil
@@ -39,7 +40,7 @@ from server.storage import _write_text_lf
 from server.validation import _safe_which
 
 
-class WorkflowSettingsRoutes:
+class WorkflowSettingsRoutes(_RouteMixin):
     """Workflow-update / system-info / settings endpoints, mixed into ``Handler``."""
 
     _AUTO_SELECT_BUDGETS = {"low", "medium", "high"}

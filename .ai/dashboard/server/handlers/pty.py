@@ -8,6 +8,7 @@ helpers and the WebSocket framing are imported from their owning ``server.*``
 modules (importing them from serve would be circular).
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import json
 import queue as _stdqueue
@@ -19,7 +20,7 @@ from server.pty import PTYS, PTYS_LOCK, _pty_kill, _pty_spawn, _pty_summary
 from server.ws import WebSocket, _WsClosed
 
 
-class PtyRoutes:
+class PtyRoutes(_RouteMixin):
     """PTY (real shell) WebSocket endpoints, mixed into ``Handler``."""
 
     def _handle_ptys_list(self) -> None:

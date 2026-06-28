@@ -1,6 +1,6 @@
 """Shared HTTP-layer limits for the dashboard request handler.
 
-Extracted from serve.py so the per-domain handler mixins (``server/*_handlers.py``)
+Extracted from serve.py so the per-domain handler mixins (``server/handlers/*.py``)
 can import these caps without importing serve (which would be circular — serve
 imports the mixins to assemble ``Handler``). serve.py re-exports every name via a
 shim, so ``serve.MAX_JSON_BODY`` etc. keep resolving for existing callers/tests.
