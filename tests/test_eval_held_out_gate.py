@@ -15,7 +15,7 @@ from harness import gate  # noqa: E402
 
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
 import serve  # noqa: E402
-import server.proposals_handlers as _ph  # noqa: E402 — _handle_proposal_decision reads its deps here (follows-the-move)
+import server.handlers.proposals as _ph  # noqa: E402 — _handle_proposal_decision reads its deps here (follows-the-move)
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -136,7 +136,7 @@ def test_proposal_accept_blocked_on_regression_returns_409_and_no_apply(
     )
     verdict = gate.evaluate_proposal(proposal_id, results_dir=results_dir)
 
-    # _handle_proposal_decision moved to server/proposals_handlers.py and reads
+    # _handle_proposal_decision moved to server/handlers/proposals.py and reads
     # these in that module's namespace, so patch both serve (shim) and the
     # handler module (follows-the-move).
     _blocked_apply = lambda *args, **kwargs: pytest.fail("blocked proposal was applied")

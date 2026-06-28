@@ -88,7 +88,7 @@ def _function_source(name: str) -> str:
     defined inline in serve.py."""
     _serve = _serve_for_source()
     # Module-level function or a Handler method (handlers were split into
-    # server/*_handlers.py mixins; getsource follows them off Handler).
+    # server/handlers/*.py mixins; getsource follows them off Handler).
     obj = getattr(_serve, name, None) or getattr(_serve.Handler, name, None)
     if obj is not None:
         try:

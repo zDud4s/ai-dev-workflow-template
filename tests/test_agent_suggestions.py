@@ -27,7 +27,7 @@ import pytest
 
 import server.runtime as _runtime  # BOUND_PORT + Origin allowlist live here (follows-the-move)
 import server.agent_suggest as _ags  # AGENT_PROPOSALS_DIR/ROOT/JOBS_DIR readers live here (follows-the-move)
-import server.agent_suggest_handlers as _agh  # agent-proposal handlers read AGENT_PROPOSALS_DIR/ROOT here (follows-the-move)
+import server.handlers.agent_suggest as _agh  # agent-proposal handlers read AGENT_PROPOSALS_DIR/ROOT here (follows-the-move)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

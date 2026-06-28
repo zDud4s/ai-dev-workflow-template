@@ -1030,7 +1030,7 @@ def test_session_stream_does_not_clear_shared_warnings(serve_module):
     """Warnings must be delivered via a per-stream cursor, never cleared from the
     shared list — otherwise the first of two concurrent streams on the same
     session consumes a warning and the second never sees it."""
-    # _handle_session_stream moved to server/sessions_handlers.py; scope the
+    # _handle_session_stream moved to server/handlers/sessions.py; scope the
     # source scan to that method so the check stays meaningful.
     src = inspect.getsource(serve_module.Handler._handle_session_stream)
     assert ".warnings.clear()" not in src, "the SSE loop must not clear the shared warnings list"

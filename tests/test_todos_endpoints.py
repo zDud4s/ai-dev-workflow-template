@@ -14,7 +14,7 @@ from typing import Iterator
 import pytest
 
 import server.runtime as _runtime  # BOUND_PORT + Origin allowlist live here (follows-the-move)
-import server.project_handlers as _ph  # TODO/memory/decisions/events handlers read ROOT here (follows-the-move)
+import server.handlers.project as _ph  # TODO/memory/decisions/events handlers read ROOT here (follows-the-move)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

@@ -68,7 +68,7 @@ from pathlib import Path
 # or without the dashboard). Inject it onto sys.path so direct invocation
 # (`python .ai/dashboard/serve.py`) and tests that load serve via importlib
 # resolve the bare `import todos_parser` / `import auto_select_scorer` below
-# (and the same imports inside server/analytics.py and project_handlers.py).
+# (and the same imports inside server/analytics.py and server/handlers/project.py).
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
@@ -424,19 +424,19 @@ from server.http_base import (  # noqa: E402
     _SUGGESTION_HTTP_TIMEOUT_MAX,
     _SUGGESTION_SEMAPHORE,
 )
-from server.pipelines_handlers import PipelineRoutes  # noqa: E402 — Handler mixin
-from server.analytics_handlers import AnalyticsRoutes  # noqa: E402 — Handler mixin
-from server.project_handlers import ProjectStateRoutes  # noqa: E402 — Handler mixin
-from server.jobs_handlers import JobRoutes  # noqa: E402 — Handler mixin
-from server.sessions_handlers import SessionRoutes  # noqa: E402 — Handler mixin
-from server.transcripts_handlers import TranscriptRoutes  # noqa: E402 — Handler mixin
-from server.pty_handlers import PtyRoutes  # noqa: E402 — Handler mixin
-from server.skills_handlers import SkillRoutes  # noqa: E402 — Handler mixin
-from server.proposals_handlers import ProposalRoutes  # noqa: E402 — Handler mixin
-from server.agent_suggest_handlers import AgentSuggestRoutes  # noqa: E402 — Handler mixin
-from server.files_handlers import FileRoutes  # noqa: E402 — Handler mixin
-from server.workflow_handlers import WorkflowSettingsRoutes  # noqa: E402 — Handler mixin
-from server.dispatch_handlers import DispatchPhaseRoutes  # noqa: E402 — Handler mixin
+from server.handlers.pipelines import PipelineRoutes  # noqa: E402 — Handler mixin
+from server.handlers.analytics import AnalyticsRoutes  # noqa: E402 — Handler mixin
+from server.handlers.project import ProjectStateRoutes  # noqa: E402 — Handler mixin
+from server.handlers.jobs import JobRoutes  # noqa: E402 — Handler mixin
+from server.handlers.sessions import SessionRoutes  # noqa: E402 — Handler mixin
+from server.handlers.transcripts import TranscriptRoutes  # noqa: E402 — Handler mixin
+from server.handlers.pty import PtyRoutes  # noqa: E402 — Handler mixin
+from server.handlers.skills import SkillRoutes  # noqa: E402 — Handler mixin
+from server.handlers.proposals import ProposalRoutes  # noqa: E402 — Handler mixin
+from server.handlers.agent_suggest import AgentSuggestRoutes  # noqa: E402 — Handler mixin
+from server.handlers.files import FileRoutes  # noqa: E402 — Handler mixin
+from server.handlers.workflow import WorkflowSettingsRoutes  # noqa: E402 — Handler mixin
+from server.handlers.dispatch import DispatchPhaseRoutes  # noqa: E402 — Handler mixin
 
 
 # Install the metrics hook on server.jobs: its job runner calls this when a job

@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
-import server.project_handlers as _ph  # noqa: E402 — _handle_list reads ROOT here (follows-the-move)
+import server.handlers.project as _ph  # noqa: E402 — _handle_list reads ROOT here (follows-the-move)
 
 
 # ---------------------------------------------------------------------------

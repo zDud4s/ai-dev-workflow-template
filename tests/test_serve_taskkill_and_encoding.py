@@ -145,7 +145,7 @@ def test_load_jsonl_cached_empty_when_missing(serve, tmp_path):
 
 def test_max_sse_session_s_used_in_job_and_transcript_streams(serve):
     # Use inspect.getsource off the Handler so the check follows handlers that
-    # were split out of serve.py into server/*_handlers.py mixins.
+    # were split out of serve.py into server/handlers/*.py mixins.
     # _handle_job_stream uses it (batch 4 already shipped this).
     job_stream = inspect.getsource(serve.Handler._handle_job_stream)
     assert "MAX_SSE_SESSION_S" in job_stream
