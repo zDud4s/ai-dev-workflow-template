@@ -373,26 +373,32 @@ def _count_silent_excepts(src: str) -> int:
 def test_broad_except_count_decreasing():
     """Each batch should chip away at the pile of silent ``except: pass``
     sites — they are the single biggest source of "the dashboard
-    silently does the wrong thing" reports. The pre-batch-4 baseline
-    was 43 (23 single-line + 20 two-line); this batch reduced it by
-    at least 4 sites (the PTY/SSE event-loop sites are intentionally
-    left alone, see SKILL handoff)."""
-    # The dashboard server was decomposed: most handlers/helpers moved from
-    # serve.py into the server/ package. Count silent-excepts across the whole
-    # server surface (serve.py + server/*.py) so this guard tracks the relocated
-    # error-handling rather than only what remains inline in serve.py.
+    silently does the wrong thing" reports. The decomposition baseline was
+    43 across serve.py + the server/ package, chipped down to 38.
+
+    The dashboard-agnostic restructure then folded five dashboard-only
+    helper scripts (pty_session, session_registry, session_lock,
+    _improver_transcript_policy, purge_stale_improver_transcripts) from
+    .ai/dashboard/scripts/ INTO the server/ package. Those modules carry
+    their own pre-existing, intentional best-effort PTY/session teardown
+    excepts, so the count measured over the server surface rose to 62 — a
+    scan-scope change, not a regression. The ceiling is re-baselined to 62."""
+    # Count silent-excepts across the whole server surface (serve.py +
+    # server/*.py) so this guard tracks the relocated error-handling rather
+    # than only what remains inline in serve.py.
     dash_dir = pathlib.Path(serve.__file__).resolve().parent
     src = pathlib.Path(serve.__file__).read_text(encoding="utf-8")
     for mod in sorted((dash_dir / "server").glob("*.py")):
         src += "\n" + mod.read_text(encoding="utf-8")
     current = _count_silent_excepts(src)
-    # Hard ceiling — 39 leaves one fix worth of slack but proves
-    # batch 4 actually shipped. If a future batch lowers this further,
-    # please also lower the ceiling here so we don't silently regress.
-    assert current <= 39, (
-        f"silent except sites = {current}; expected <= 39 after batch 4 "
-        f"(pre-batch baseline was 43). Either some were re-introduced, or "
-        f"the ceiling here needs lowering to match progress."
+    # Hard ceiling — re-baselined to 62 after the script-fold above (was 38
+    # over the smaller surface). If a future batch adds logging to these
+    # sites and lowers the count, please also lower this ceiling so we
+    # don't silently regress.
+    assert current <= 62, (
+        f"silent except sites = {current}; expected <= 62 after the "
+        f"dashboard-agnostic script-fold (was 38 over the smaller surface). "
+        f"Either some were re-introduced, or the ceiling here needs lowering."
     )
     # Floor — fail loudly if a future batch deletes a huge chunk of
     # try/except blocks; that almost certainly removed real error

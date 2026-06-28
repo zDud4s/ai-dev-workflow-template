@@ -75,13 +75,15 @@ if _SCRIPTS_DIR not in sys.path:
 # sessions in addition to the existing chat-claude / chat-codex panes;
 # this module wraps POSIX `pty.fork` and Windows `pywinpty.PtyProcess`
 # behind one interface.
-import pty_session as _pty_session  # noqa: E402 — scripts/ helper
-import todos_parser as _todos_parser  # noqa: E402 — scripts/ helper
-import auto_select_scorer  # noqa: E402 — scripts/ helper
-import session_registry  # noqa: E402 — scripts/ helper
-import session_lock  # noqa: E402 — scripts/ helper
+from server import pty_session as _pty_session  # noqa: E402
+from server import session_registry, session_lock  # noqa: E402
+from server._improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
-from _improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
+# auto_select_scorer and todos_parser are shared scripts still under
+# .ai/dashboard/scripts/ in this batch; they relocate to .ai/scripts/ next,
+# at which point the _SCRIPTS_DIR insert above is repointed there.
+import todos_parser as _todos_parser  # noqa: E402 — .ai/dashboard/scripts helper
+import auto_select_scorer  # noqa: E402 — .ai/dashboard/scripts helper
 
 # Pre-compiled URL-routing patterns. Previously each do_GET / do_POST
 # invocation rebuilt these via inline `re.fullmatch(r"...", path)` calls.

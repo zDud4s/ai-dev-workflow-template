@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(
     0, str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard")
 )
-import pty_session as _pty_session
+from server import pty_session as _pty_session
 
 
 def _fake_windows_pty():

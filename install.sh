@@ -78,15 +78,10 @@ copy_if_different "$SCRIPT_DIR/.ai/dashboard/index.html" "$TARGET_DIR/.ai/dashbo
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/styles.css" "$TARGET_DIR/.ai/dashboard/styles.css"
 mkdir -p "$TARGET_DIR/.ai/dashboard/scripts"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/log_event.py" "$TARGET_DIR/.ai/dashboard/scripts/log_event.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/pty_session.py" "$TARGET_DIR/.ai/dashboard/scripts/pty_session.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/todos_parser.py" "$TARGET_DIR/.ai/dashboard/scripts/todos_parser.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/demo.py" "$TARGET_DIR/.ai/dashboard/scripts/demo.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/_improver_transcript_policy.py" "$TARGET_DIR/.ai/dashboard/scripts/_improver_transcript_policy.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/pipeline_schema.py" "$TARGET_DIR/.ai/dashboard/scripts/pipeline_schema.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/pipeline_fanout.py" "$TARGET_DIR/.ai/dashboard/scripts/pipeline_fanout.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/purge_stale_improver_transcripts.py" "$TARGET_DIR/.ai/dashboard/scripts/purge_stale_improver_transcripts.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/session_registry.py" "$TARGET_DIR/.ai/dashboard/scripts/session_registry.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/session_lock.py" "$TARGET_DIR/.ai/dashboard/scripts/session_lock.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/auto_select_scorer.py" "$TARGET_DIR/.ai/dashboard/scripts/auto_select_scorer.py"
 
 # Glob every server/*.py so the serve.py decomposition package (validation,

@@ -20,8 +20,7 @@ import threading
 import time
 import uuid
 
-import pty_session as _pty_session
-
+from server import pty_session as _pty_session
 from server.paths import ROOT
 
 PTYS: dict[str, dict] = {}

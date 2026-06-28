@@ -628,7 +628,7 @@ def test_lock_blocks_spawn(serve_module, tmp_path, _reset_session_registry):
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(serve_module.__file__).parent / "scripts"))
-    import session_registry as sr
+    from server import session_registry as sr
 
     spawn_calls = []
 
@@ -674,7 +674,7 @@ def test_release_calls_lock_release(serve_module, tmp_path, _reset_session_regis
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(serve_module.__file__).parent / "scripts"))
-    import session_registry as sr
+    from server import session_registry as sr
 
     released = []
 

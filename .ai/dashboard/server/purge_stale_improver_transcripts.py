@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-import _improver_transcript_policy as policy
+from server import _improver_transcript_policy as policy
 
 PURGE_BUCKETS = {"orphan", "resolved", "unmatched_pre_audit"}
 

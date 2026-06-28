@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-import _improver_transcript_policy as policy
-import purge_stale_improver_transcripts as purge_script
+from server import _improver_transcript_policy as policy
+from server import purge_stale_improver_transcripts as purge_script
 import server.improver as _im  # _periodic_transcript_purge_loop resolves these names here (follows-the-move)
 
 
