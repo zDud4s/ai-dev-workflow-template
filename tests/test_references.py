@@ -127,18 +127,18 @@ _EXTERNAL_REF_PREFIXES = (
 # the repo tree but are produced at runtime, never checked in. Skip
 # resolution rather than pretending the repo should ship them.
 _RUNTIME_GENERATED_REFS = frozenset({
-    ".ai/ledgers/todos.jsonl",
-    ".ai/ledgers/todos-archive.jsonl",
-    ".ai/ledgers/events.jsonl",
-    ".ai/ledgers/metrics.jsonl",
-    ".ai/ledgers/jobs.jsonl",
-    ".ai/ledgers/skill_metrics.jsonl",
-    ".ai/ledgers/improvements.jsonl",
+    ".ai/local/ledgers/todos.jsonl",
+    ".ai/local/ledgers/todos-archive.jsonl",
+    ".ai/local/ledgers/events.jsonl",
+    ".ai/local/ledgers/metrics.jsonl",
+    ".ai/local/ledgers/jobs.jsonl",
+    ".ai/local/ledgers/skill_metrics.jsonl",
+    ".ai/local/ledgers/improvements.jsonl",
     # .ai/TODO.md is NOT listed here: it ships as a committed empty template
     # (its live content is regenerated locally and pinned via git skip-worktree),
     # so references to it resolve against the tracked file.
     ".ai/.todos.lock",
-    ".ai/dashboard/.todos-parser.log",
+    ".ai/local/.todos-parser.log",
 })
 
 

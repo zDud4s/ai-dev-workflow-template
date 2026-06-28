@@ -1,6 +1,6 @@
 """List saved agent-pipeline definitions under PIPELINES_DIR.
 
-Extracted from serve.py. ``_list_pipelines`` scans ``.ai/pipelines/*.yaml``
+Extracted from serve.py. ``_list_pipelines`` scans ``.ai/local/pipelines/*.yaml``
 (per-developer, gitignored DAG definitions authored by orchestrate-agents) and
 returns one summary record each (slug, name, node/edge counts), tolerating
 missing dir / malformed YAML. PyYAML is imported lazily. serve.py re-exports it

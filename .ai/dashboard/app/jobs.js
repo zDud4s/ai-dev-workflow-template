@@ -3,7 +3,7 @@
 
     // ----- Events clear -----
     async function clearEvents() {
-      if (!confirm("Clear .ai/ledgers/events.jsonl ? This deletes the file.")) return;
+      if (!confirm("Clear .ai/local/ledgers/events.jsonl ? This deletes the file.")) return;
       // Pause the auto-refresh timer for the duration of the clear+reload —
       // otherwise a 5s tick can fire mid-await and re-populate _eventsCache
       // from a partially-deleted file, making the operator see entries

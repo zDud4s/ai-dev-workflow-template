@@ -66,7 +66,7 @@ def _isolate_jobs_dir(tmp_path, monkeypatch, serve_module):
     """Redirect ``serve_module.JOBS_DIR`` to a per-test tmp directory.
 
     Without this, any test that calls ``_start_subprocess_job`` writes a
-    real ``.log`` file under ``.ai/dashboard/jobs/`` — the same dir the
+    real ``.log`` file under ``.ai/local/jobs/`` — the same dir the
     running dashboard reads. Those leftover synthetic fixtures (``task:
     cost test``, ``task: (noop)``, etc.) then show up in the operator's
     job picker and render as confusing empty panes when opened.
@@ -991,7 +991,7 @@ def test_load_persisted_jobs_is_idempotent_when_file_missing(tmp_path, serve_mod
 def test_persist_job_refuses_default_path_under_pytest(serve_module):
     """Defensive guard: under pytest, ``_persist_job`` must NOT write the
     real repo ledger. Tests that forget to monkeypatch ``JOBS_PERSIST_FILE``
-    would otherwise pollute the developer's working ``.ai/ledgers/jobs.jsonl``
+    would otherwise pollute the developer's working ``.ai/local/ledgers/jobs.jsonl``
     with fixture entries (1800+ such pollution entries observed in the wild
     before this guard landed).
 
@@ -1132,7 +1132,7 @@ def test_prune_old_logs_keeps_only_newest_when_above_cap(tmp_path, serve_module)
 def test_chat_job_log_path_points_at_transcript_file(tmp_path, serve_module, monkeypatch):
     """For chat jobs the dashboard reuses ``claude``'s own transcript file
     (which it writes anyway via ``--session-id``) instead of writing a
-    redundant ``.log`` file under ``.ai/dashboard/jobs/``. ``log_path`` on
+    redundant ``.log`` file under ``.ai/local/jobs/``. ``log_path`` on
     the job record points at the transcript path so cost extraction and
     catch-up read from the single source of truth."""
     # Point the projects root at the tmp tree.
@@ -1166,7 +1166,7 @@ def test_chat_job_log_path_points_at_transcript_file(tmp_path, serve_module, mon
                 break
         time.sleep(0.05)
     log_path = Path(serve_module.JOBS[job_id]["log_path"])
-    # The chat job should not produce a file under .ai/dashboard/jobs.
+    # The chat job should not produce a file under .ai/local/jobs.
     expected_legacy = serve_module.JOBS_DIR / f"{job_id}.log"
     assert not expected_legacy.exists(), f"redundant .log file appeared: {expected_legacy}"
     # log_path must point under the claude projects dir for this session.

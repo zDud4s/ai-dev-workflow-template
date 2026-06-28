@@ -12,7 +12,7 @@ Serves the whole repo as static files (read-only) plus a small JSON API:
     POST /api/decisions    {date, decision,
                             why, consequence,
                             revisit}            ->  appends to .ai/decisions.md
-    POST /api/events/clear                      ->  truncates .ai/ledgers/events.jsonl
+    POST /api/events/clear                      ->  truncates .ai/local/ledgers/events.jsonl
     POST /api/models/dispatch_mode {mode}       ->  flips dispatch_mode in
                                                     .ai/models.yaml
 
@@ -457,7 +457,7 @@ class Handler(DispatchPhaseRoutes, WorkflowSettingsRoutes, FileRoutes, AgentSugg
     # at class load so symlinks and Windows case differences cannot bypass.
     # The dashboard intentionally reads other project files (.ai/memory.md,
     # .ai/decisions.md, .ai/project.yaml, .ai/models.yaml, .ai/plans/*,
-    # .ai/specs/*, .ai/packets/*, .ai/ledgers/events.jsonl, .claude/skills/*) via this
+    # .ai/specs/*, .ai/packets/*, .ai/local/ledgers/events.jsonl, .claude/skills/*) via this
     # handler — those must keep working, so we blocklist instead of allowlist.
     _BLOCKED_PATHS = tuple(
         os.path.normcase(os.path.realpath(str(p)))

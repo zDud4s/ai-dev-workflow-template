@@ -305,7 +305,7 @@ def _start_subprocess_job(
     # For chat jobs with a known session_id we route ``log_path`` to
     # claude's own transcript file (which claude writes anyway via
     # ``--session-id``). This avoids duplicating storage in
-    # ``.ai/dashboard/jobs/`` — the transcript is the single source of
+    # ``.ai/local/jobs/`` — the transcript is the single source of
     # truth for the conversation. The pump still forwards stdout chunks
     # to SSE subscribers so live streaming keeps working, but it no
     # longer writes them to a local ``.log`` file for chat jobs.

@@ -45,8 +45,8 @@ DIFF_SKIP_PREFIXES = (
     ".ai/memory-archive.md",
     ".ai/decisions.md",
     ".ai/TODO.md",
-    ".ai/ledgers/todos.jsonl",
-    ".ai/ledgers/todos-archive.jsonl",
+    ".ai/local/ledgers/todos.jsonl",
+    ".ai/local/ledgers/todos-archive.jsonl",
     ".gitignore",
     ".ai/scripts/todos_parser.py",
     "tests/test_todos_",
@@ -64,7 +64,7 @@ def _utc_now() -> str:
 
 
 def _todos_path(repo_root) -> Path:
-    return Path(repo_root) / ".ai" / "ledgers" / "todos.jsonl"
+    return Path(repo_root) / ".ai" / "local" / "ledgers" / "todos.jsonl"
 
 
 def _todo_md_path(repo_root) -> Path:
@@ -105,14 +105,14 @@ def auto_enabled(repo_root) -> bool:
 
 
 def _log_path(repo_root) -> Path:
-    return Path(repo_root) / ".ai" / "dashboard" / ".todos-parser.log"
+    return Path(repo_root) / ".ai" / "local" / ".todos-parser.log"
 
 
 def _load_jsonl(path) -> list[dict]:
     """Load JSONL rows from ``path``.
 
     ``path`` may be either the ledger path itself or a repo root containing
-    ``.ai/ledgers/todos.jsonl``. Malformed lines are skipped so one bad append does not
+    ``.ai/local/ledgers/todos.jsonl``. Malformed lines are skipped so one bad append does not
     poison dashboard reads.
     """
     p = Path(path)
@@ -737,7 +737,7 @@ def _markdown_from_rows(rows: list[dict], now: str) -> str:
                 resolved.append(todo)
 
     lines = [
-        "<!-- AUTO-GENERATED from .ai/ledgers/todos.jsonl - do not edit by hand -->",
+        "<!-- AUTO-GENERATED from .ai/local/ledgers/todos.jsonl - do not edit by hand -->",
         f"<!-- last regen: {now} -->",
         "",
         "## Open",

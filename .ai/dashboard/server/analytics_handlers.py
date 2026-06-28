@@ -28,7 +28,7 @@ class AnalyticsRoutes:
         self._json(200, _aggregate_project_token_usage())
 
     def _handle_timeline(self) -> None:
-        """Pipeline Gantt data — phase_dispatch events from .ai/ledgers/events.jsonl
+        """Pipeline Gantt data — phase_dispatch events from .ai/local/ledgers/events.jsonl
         grouped per session_id. Powers the Timeline view."""
         self._json(200, {"runs": _load_timeline_runs()})
 
@@ -50,7 +50,7 @@ class AnalyticsRoutes:
         self._json(200, payload)
 
     def _handle_auto_select(self, parsed) -> None:
-        """Auto-select scorer ranking — aggregated from .ai/ledgers/metrics.jsonl.
+        """Auto-select scorer ranking — aggregated from .ai/local/ledgers/metrics.jsonl.
         Powers the Auto-select view. Accepts `?min_samples=N` (clamp 1..50,
         default 5); invalid values fall back to the default."""
         raw = urllib.parse.parse_qs(parsed.query or "").get("min_samples", [None])[0]

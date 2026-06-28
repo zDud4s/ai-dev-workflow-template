@@ -74,7 +74,7 @@ Four loops, each writing to a different layer of state. Nothing rewrites itself 
 | Loop | Observes | Regenerates |
 | --- | --- | --- |
 | **Adaptive model selection** | every dispatched phase → `metrics.jsonl` (tool, model, effort, outcome, duration) | the `(size, risk, budget) → model` table in [`auto-models.md`](.ai/workflow/auto-models.md) — tuned from measured outcomes |
-| **Skill & agent auto-improver** | skill/agent quality scores | rewritten skills and agents, staged as old/new diffs under [`proposals/`](.ai/dashboard/proposals/) |
+| **Skill & agent auto-improver** | skill/agent quality scores | rewritten skills and agents, staged as old/new diffs under [`proposals/`](.ai/local/proposals/) |
 | **Accumulating memory** | facts + decisions surfaced while working | `memory.md` / `decisions.md`; `maintenance` consolidates them past the `project.yaml` thresholds |
 | **Regenerating mirror** | canonical `.claude/skills/` | re-synced `.agents/skills/` so Codex always sees the same contract Claude does |
 
@@ -126,8 +126,8 @@ The model names stay yours — the workflow never hard-codes them, and `install.
 
 The phase pipeline is built for code changes. For research, writing, or multi-step analysis, a second track orchestrates **your own** agent catalog (project, user, and installed plugin agents):
 
-- **`orchestrate-agents`** drafts a pipeline — scans every agent you have, wires the fits into a dependency graph, and offers **Save & run** / **Save only** / **Discard** (saved as `.ai/pipelines/<name>.yaml`).
-- **`run-pipeline`** executes one — independent nodes in parallel, dependent ones in order, combined via `passthrough`, `synthesize`, or `per-agent`. A failed node only skips its dependents. Runs persist to `.ai/agent-runs/` and feed the same improvement loops.
+- **`orchestrate-agents`** drafts a pipeline — scans every agent you have, wires the fits into a dependency graph, and offers **Save & run** / **Save only** / **Discard** (saved as `.ai/local/pipelines/<name>.yaml`).
+- **`run-pipeline`** executes one — independent nodes in parallel, dependent ones in order, combined via `passthrough`, `synthesize`, or `per-agent`. A failed node only skips its dependents. Runs persist to `.ai/local/agent-runs/` and feed the same improvement loops.
 
 ```text
 Use the orchestrate-agents skill. Task: <what you want done>

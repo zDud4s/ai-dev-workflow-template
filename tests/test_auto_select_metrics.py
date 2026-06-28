@@ -27,10 +27,10 @@ def test_orchestrate_has_metrics_section(orchestrate_text):
 
 
 def test_metrics_targets_jsonl_file(orchestrate_text):
-    """Metrics writer targets .ai/ledgers/metrics.jsonl, gitignored, append-only."""
+    """Metrics writer targets .ai/local/ledgers/metrics.jsonl, gitignored, append-only."""
     section = orchestrate_text.split("## Metrics logging", 1)[1]
-    assert ".ai/ledgers/metrics.jsonl" in section, (
-        "metrics section must name the target file .ai/ledgers/metrics.jsonl"
+    assert ".ai/local/ledgers/metrics.jsonl" in section, (
+        "metrics section must name the target file .ai/local/ledgers/metrics.jsonl"
     )
     assert "append" in section.lower(), (
         "metrics section must specify append-only semantics"
@@ -84,7 +84,7 @@ def test_metrics_writer_is_observability_not_control_flow(orchestrate_text):
 
 
 def test_gitignore_excludes_metrics_jsonl(gitignore_text):
-    """.gitignore must exclude .ai/ledgers/metrics.jsonl (spec PR 2 acceptance)."""
-    assert ".ai/ledgers/*" in gitignore_text, (
-        ".gitignore must ignore the .ai/ledgers/ folder contents"
+    """.gitignore must exclude .ai/local/ledgers/metrics.jsonl (spec PR 2 acceptance)."""
+    assert ".ai/local/ledgers/*" in gitignore_text, (
+        ".gitignore must ignore the .ai/local/ledgers/ folder contents"
     )

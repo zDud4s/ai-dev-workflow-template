@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 
-TUNING_LEDGER = Path(".ai/ledgers/metrics.jsonl")
+TUNING_LEDGER = Path(".ai/local/ledgers/metrics.jsonl")
 RESULTS_DIR = Path(".ai/eval/results")
 
 
@@ -14,7 +14,7 @@ class PartitionError(Exception):
 
 def assert_results_path(path: str | Path) -> None:
     candidate = Path(path).resolve()
-    ledgers_dir = Path(".ai/ledgers").resolve()
+    ledgers_dir = Path(".ai/local/ledgers").resolve()
     try:
         candidate.relative_to(ledgers_dir)
     except ValueError:

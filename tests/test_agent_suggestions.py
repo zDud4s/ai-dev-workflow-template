@@ -50,7 +50,7 @@ def isolated_proposals_dir(tmp_path, monkeypatch, serve_module):
     """Redirect AGENT_PROPOSALS_DIR to a per-test tmp dir.
 
     Without this every persist test writes into the real
-    `.ai/dashboard/proposals/agents/` and proposals leak between runs.
+    `.ai/local/proposals/agents/` and proposals leak between runs.
     """
     d = tmp_path / "agent_proposals"
     monkeypatch.setattr(serve_module, "AGENT_PROPOSALS_DIR", d)

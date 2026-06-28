@@ -11,7 +11,7 @@ SKILL = CANONICAL
 
 def test_skill_mentions_pipelines_dir() -> None:
     text = SKILL.read_text(encoding="utf-8")
-    assert ".ai/pipelines/" in text
+    assert ".ai/local/pipelines/" in text
 
 
 def test_skill_mentions_three_save_options() -> None:

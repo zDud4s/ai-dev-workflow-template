@@ -96,7 +96,7 @@ def _todo(todo_id: str, title: str, status: str, tags: list[str]) -> dict:
 
 
 def _write_todos(repo_root: Path, rows: list[dict]) -> None:
-    ledger = repo_root / ".ai" / "ledgers" / "todos.jsonl"
+    ledger = repo_root / ".ai" / "local" / "ledgers" / "todos.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     text = "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows)
     ledger.write_text(text, encoding="utf-8", newline="\n")

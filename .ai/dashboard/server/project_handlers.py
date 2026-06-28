@@ -264,7 +264,7 @@ class ProjectStateRoutes:
         """GET /api/events?tail=N — parsed events.jsonl with optional tail.
 
         Replaces the previous client-side approach of fetching the raw
-        .ai/ledgers/events.jsonl static file and re-parsing every line each poll.
+        .ai/local/ledgers/events.jsonl static file and re-parsing every line each poll.
         With ``tail=N`` (default 2000, max 5000) only the most recent N
         rows are returned, so a 100k-event ledger no longer triggers a
         multi-second freeze on every 5s refresh.

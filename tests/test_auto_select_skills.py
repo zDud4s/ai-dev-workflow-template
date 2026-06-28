@@ -97,7 +97,7 @@ def test_planner_documents_adaptive_scoring(planner_text):
     assert "auto_select.adaptive" in section, (
         "planner must reference auto_select.adaptive flag"
     )
-    for marker in (".ai/ledgers/metrics.jsonl", "success_rate", "Guard rail", "Cold-start"):
+    for marker in (".ai/local/ledgers/metrics.jsonl", "success_rate", "Guard rail", "Cold-start"):
         assert marker in section, (
             f"adaptive scoring section missing reference to {marker!r}"
         )

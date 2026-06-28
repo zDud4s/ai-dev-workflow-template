@@ -57,8 +57,8 @@ def test_static_serving_allows_project_state_files():
         "/.ai/decisions.md",
         "/.ai/project.yaml",
         "/.ai/models.yaml",
-        "/.ai/ledgers/events.jsonl",
-        "/.ai/ledgers/jobs.jsonl",
+        "/.ai/local/ledgers/events.jsonl",
+        "/.ai/local/ledgers/jobs.jsonl",
     ]
     for path in needed:
         translated = h.translate_path(path)

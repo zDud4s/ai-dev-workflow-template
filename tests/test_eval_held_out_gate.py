@@ -103,7 +103,7 @@ def test_proposal_accept_blocked_on_regression_returns_409_and_no_apply(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    proposals_dir = tmp_path / ".ai" / "dashboard" / "proposals" / "skills"
+    proposals_dir = tmp_path / ".ai" / "local" / "proposals" / "skills"
     skill_path = tmp_path / "skills" / "foo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("old content\n", encoding="utf-8")

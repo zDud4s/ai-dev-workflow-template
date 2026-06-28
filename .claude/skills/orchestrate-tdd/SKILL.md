@@ -138,7 +138,7 @@ When you build a delegated prompt for any phase, include ONLY: the phase skill b
 
 ## Metrics logging
 
-After every dispatched phase completes, append one JSON line to `.ai/ledgers/metrics.jsonl` (gitignored, append-only; never abort the pipeline if the write fails). Same schema as `orchestrate`, with the `phase` field taking `plan`, `red`, `green`, `refactor`, `review`, `rescue`, or `maintenance`. Gate runs you perform are not dispatches and get no row; their evidence goes in the report. `handoff_complete` applies to `red`/`green`/`refactor`; `review_verdict` only to `review`; `retries` counts recovery resumes + review send-backs.
+After every dispatched phase completes, append one JSON line to `.ai/local/ledgers/metrics.jsonl` (gitignored, append-only; never abort the pipeline if the write fails). Same schema as `orchestrate`, with the `phase` field taking `plan`, `red`, `green`, `refactor`, `review`, `rescue`, or `maintenance`. Gate runs you perform are not dispatches and get no row; their evidence goes in the report. `handoff_complete` applies to `red`/`green`/`refactor`; `review_verdict` only to `review`; `retries` counts recovery resumes + review send-backs.
 
 ## Error table (TDD-specific; the rest inherit from `orchestrate` and dispatch.md)
 

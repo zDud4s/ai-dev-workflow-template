@@ -286,7 +286,7 @@ class ProposalRoutes:
             diff_lines=int(obj.get("diff_lines") or 0),
         )
         if not ok:
-            self._json(500, {"error": "apply failed (see .ai/ledgers/improvements.jsonl)"})
+            self._json(500, {"error": "apply failed (see .ai/local/ledgers/improvements.jsonl)"})
             return
         self._json(200, {"ok": True, "id": proposal_id, "status": "applied"})
 

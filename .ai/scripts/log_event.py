@@ -1,4 +1,4 @@
-"""Claude Code hook: log workflow phase dispatches to .ai/ledgers/events.jsonl.
+"""Claude Code hook: log workflow phase dispatches to .ai/local/ledgers/events.jsonl.
 
 Invoked by the PostToolUse hook for the Bash tool (see .claude/settings.json,
 which points at `.ai/scripts/log_event.py`). Reads the hook payload
@@ -20,7 +20,7 @@ from pathlib import Path
 # Script lives at <repo>/.ai/scripts/log_event.py — repo root is parents[2].
 # (Was parents[3] under the old .ai/dashboard/scripts/ home, one level deeper.)
 ROOT = Path(__file__).resolve().parents[2]
-EVENTS_FILE = ROOT / ".ai" / "ledgers" / "events.jsonl"
+EVENTS_FILE = ROOT / ".ai" / "local" / "ledgers" / "events.jsonl"
 # Cache parent-dir existence across hook invocations in the same process.
 # This hook fires on every PostToolUse so the mkdir syscall would otherwise
 # run thousands of times per session even though the directory is created once.

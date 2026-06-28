@@ -36,7 +36,7 @@ def _persist_job(job_id: str) -> None:
     # the test explicitly monkeypatched JOBS_PERSIST_FILE to a tmp path.
     # Without this, tests that import serve and trigger _persist_job
     # transitively (without per-test monkeypatch) silently pollute the
-    # developer's working .ai/ledgers/jobs.jsonl with hundreds of fake
+    # developer's working .ai/local/ledgers/jobs.jsonl with hundreds of fake
     # entries per pytest run.
     if os.environ.get("PYTEST_CURRENT_TEST") and JOBS_PERSIST_FILE == _DEFAULT_JOBS_PERSIST_FILE:
         return

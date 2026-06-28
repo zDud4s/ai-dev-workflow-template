@@ -88,7 +88,7 @@ check = "check.py"
 
 def test_partition_guard_blocks_tuning_ledger() -> None:
     with pytest.raises(PartitionError):
-        assert_results_path(".ai/ledgers/metrics.jsonl")
+        assert_results_path(".ai/local/ledgers/metrics.jsonl")
 
     assert_results_path(".ai/eval/results/arm-a.jsonl")
 

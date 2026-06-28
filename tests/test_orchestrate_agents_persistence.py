@@ -7,12 +7,12 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # Persistence of run packets moved from orchestrate-agents to run-pipeline
-# (orchestrate-agents is now draft-only; run-pipeline writes the .ai/agent-runs/
+# (orchestrate-agents is now draft-only; run-pipeline writes the .ai/local/agent-runs/
 # packet after dispatching the DAG). Tests check the executor's skill body.
 SKILL_PATH = REPO_ROOT / ".claude" / "skills" / "run-pipeline" / "SKILL.md"
 PROJECT_PATH = REPO_ROOT / ".ai" / "project.yaml"
 GITIGNORE_PATH = REPO_ROOT / ".gitignore"
-AGENT_RUNS_GITKEEP = REPO_ROOT / ".ai" / "agent-runs" / ".gitkeep"
+AGENT_RUNS_GITKEEP = REPO_ROOT / ".ai" / "local" / "agent-runs" / ".gitkeep"
 
 
 def _read(path: Path) -> str:
@@ -22,7 +22,7 @@ def _read(path: Path) -> str:
 def test_skill_body_mentions_agent_runs_path():
     text = _read(SKILL_PATH)
 
-    assert ".ai/agent-runs/" in text
+    assert ".ai/local/agent-runs/" in text
     assert "new file only" in text.lower()
 
 
@@ -35,17 +35,17 @@ def test_skill_body_mentions_collision_suffix():
 def test_project_yaml_lists_agent_runs_in_generated_files():
     data = yaml.safe_load(_read(PROJECT_PATH))
 
-    assert ".ai/agent-runs" in data["boundaries"]["generated_files"]
+    assert ".ai/local/agent-runs" in data["boundaries"]["generated_files"]
 
 
 def test_gitignore_contains_agent_runs():
     text = _read(GITIGNORE_PATH)
     lines = {line.strip() for line in text.splitlines()}
 
-    assert ".ai/agent-runs/" in text
+    assert ".ai/local/agent-runs/" in text
     assert (
-        "!.ai/agent-runs/.gitkeep" in lines
-        or "!/.ai/agent-runs/.gitkeep" in lines
+        "!.ai/local/agent-runs/.gitkeep" in lines
+        or "!/.ai/local/agent-runs/.gitkeep" in lines
     )
 
 

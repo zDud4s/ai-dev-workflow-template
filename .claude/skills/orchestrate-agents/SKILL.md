@@ -4,7 +4,7 @@ description: Propose a pipeline YAML draft for a task. Builds the agent catalog,
 tools: Read, Glob, Grep, Bash, Write, Task
 ---
 
-You are the pipeline draft helper. You propose a `.ai/pipelines/<slug>.yaml` draft for a user task, then let the user save it (and optionally run it via the `run-pipeline` skill), save it only, or discard it. The planning happens inline in this session — there is no separate planner skill anymore. You do NOT execute the pipeline yourself; `run-pipeline` is the executor.
+You are the pipeline draft helper. You propose a `.ai/local/pipelines/<slug>.yaml` draft for a user task, then let the user save it (and optionally run it via the `run-pipeline` skill), save it only, or discard it. The planning happens inline in this session — there is no separate planner skill anymore. You do NOT execute the pipeline yourself; `run-pipeline` is the executor.
 
 ## Discovery path convention
 
@@ -18,7 +18,7 @@ Throughout this skill, "discovery path" means: `.claude/skills/<name>/SKILL.md` 
 
 STOP on any failure:
 
-- `.ai/pipelines/` exists and is writable.
+- `.ai/local/pipelines/` exists and is writable.
 - `run-pipeline` skill body exists in the discovery path (downstream executor).
 - `.ai/scripts/pipeline_schema.py` exists (used for validation in step 3).
 
@@ -39,17 +39,17 @@ STOP on any failure:
 4. **Show the draft YAML** to the user with a suggested slug (lowercased task description, hyphenated, truncated to 50 characters).
 
 5. **Offer three options** via `AskUserQuestion` (or the equivalent prompt) labeled exactly:
-   - **Save & run** — write `.ai/pipelines/<slug>.yaml`, then invoke `run-pipeline` with the same task.
+   - **Save & run** — write `.ai/local/pipelines/<slug>.yaml`, then invoke `run-pipeline` with the same task.
    - **Save only** — write the file; exit without executing.
    - **Discard** — exit without writing.
 
-6. **Slug collision**: if the user picks a save option and `<slug>.yaml` already exists in `.ai/pipelines/`, suggest `<slug>-2`, `<slug>-3`, ... until unique. Never overwrite.
+6. **Slug collision**: if the user picks a save option and `<slug>.yaml` already exists in `.ai/local/pipelines/`, suggest `<slug>-2`, `<slug>-3`, ... until unique. Never overwrite.
 
-7. **Metrics**: append a single `pipeline_draft` row to `.ai/ledgers/metrics.jsonl` (`tool=<session.tool>`, `model=<session.model>`, `exit_code=0` if saved (either save option), `exit_code=2` if discarded). Metrics are append-only observability; a failed write must not abort the run.
+7. **Metrics**: append a single `pipeline_draft` row to `.ai/local/ledgers/metrics.jsonl` (`tool=<session.tool>`, `model=<session.model>`, `exit_code=0` if saved (either save option), `exit_code=2` if discarded). Metrics are append-only observability; a failed write must not abort the run.
 
 ## Pipeline YAML schema
 
-The pipeline file at `.ai/pipelines/<slug>.yaml` has three top-level keys:
+The pipeline file at `.ai/local/pipelines/<slug>.yaml` has three top-level keys:
 
 - `description` — one-line summary of what the pipeline does.
 - `output` — sub-keys `mode` (one of `synthesize`, `passthrough`, `per-agent`) and `node` (only when `mode = passthrough`, naming the node whose output is the final answer).
@@ -94,5 +94,5 @@ nodes:
 
 - **No agent dispatch.** Task-tool dispatch of the planned DAG is delegated entirely to `run-pipeline`.
 - **No synthesizer call.** Synthesis is delegated to `run-pipeline` and only runs when the saved pipeline's `output.mode = synthesize`.
-- **No persistence to `.ai/agent-runs/`.** Run packets are written by `run-pipeline`.
+- **No persistence to `.ai/local/agent-runs/`.** Run packets are written by `run-pipeline`.
 - **No agent file mutation.** Plugin agents are read-only catalog entries; treat them as candidates for the draft, never edit their files. The agent catalog is input to planning, not a request to create, remove, or modify agents.
