@@ -43,7 +43,7 @@ SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
 import server.analytics as _an  # analytics readers resolve consts in their namespace (follows-the-move)
-import server.improver_io as _io  # noqa: E402 — _last_improver_run_ts/_check_skill_regression read consts here (follows-the-move)
+import server.improver.io as _io  # noqa: E402 — _last_improver_run_ts/_check_skill_regression read consts here (follows-the-move)
 
 
 SRC = SERVE_PATH.read_text(encoding="utf-8")

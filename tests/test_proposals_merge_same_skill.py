@@ -27,7 +27,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
-import server.improver_io as _io  # noqa: E402 — _write_proposal/_supersede_prior_pending read consts here (follows-the-move)
+import server.improver.io as _io  # noqa: E402 — _write_proposal/_supersede_prior_pending read consts here (follows-the-move)
 import server.handlers.proposals as _ph  # noqa: E402 — _handle_proposals_list reads SKILL_PROPOSALS_DIR here (follows-the-move)
 
 

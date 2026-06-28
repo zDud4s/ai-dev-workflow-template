@@ -4,7 +4,7 @@ import sys, pathlib, json, threading, os
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / ".ai" / "dashboard"))
 import serve  # the module under test
 import server.jobs_persistence as _jp  # _persist_job + JOBS_PERSIST_FILE live here (follows-the-move)
-import server.improver_io as _io  # _audit_improvement/_apply_improvement read consts here (follows-the-move)
+import server.improver.io as _io  # _audit_improvement/_apply_improvement read consts here (follows-the-move)
 import server.improver as _im  # _record_skill_metrics reads SKILL_METRICS_FILE/JOBS/_post_job_skill_actions here (follows-the-move)
 
 

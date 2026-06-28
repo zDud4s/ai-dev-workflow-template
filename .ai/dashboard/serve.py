@@ -79,7 +79,7 @@ if _SCRIPTS_DIR not in sys.path:
 # behind one interface.
 from server.pty import session as _pty_session  # noqa: E402
 from server.sessions import registry as session_registry, lock as session_lock  # noqa: E402
-from server._improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
+from server.improver._transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
 # Shared scripts, imported by name from .ai/scripts/ (on sys.path above).
 import todos_parser as _todos_parser  # noqa: E402
@@ -337,7 +337,7 @@ from server.skills.tree import (  # noqa: E402
     _create_skill_in_both_trees,
     _mirror_claude_skill_to_agents,
 )
-from server.improver_io import (  # noqa: E402
+from server.improver.io import (  # noqa: E402
     _IMPROVEMENTS_LEDGER_LOCK,
     _RECENT_FAILURE_MAX_AGE_DAYS,
     _apply_improvement,
