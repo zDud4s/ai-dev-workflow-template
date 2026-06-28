@@ -31,7 +31,11 @@ Filled packets flow via stdin/temp files (see `dispatch.md`); never Edit/Write `
 
 ### Directory reference
 
-Sibling `.ai/` directories with overlapping names, disambiguated by actual use:
+Directories that are easy to confuse, disambiguated by actual use. Authored
+task instances (`plans/`, `specs/`) sit at the `.ai/` top level; all generated
+runtime data lives together under the gitignored **`.ai/local/`** bucket
+(`ledgers/`, `agent-runs/`, `pipelines/`, `jobs/`, `proposals/`) so it never
+mixes with the versioned workflow contract.
 
 | Directory | Holds | Distinct from sibling |
 |---|---|---|
