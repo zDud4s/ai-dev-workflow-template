@@ -84,16 +84,19 @@ copy_if_different "$SCRIPT_DIR/.ai/scripts/pipeline_schema.py" "$TARGET_DIR/.ai/
 copy_if_different "$SCRIPT_DIR/.ai/scripts/pipeline_fanout.py" "$TARGET_DIR/.ai/scripts/pipeline_fanout.py"
 copy_if_different "$SCRIPT_DIR/.ai/scripts/auto_select_scorer.py" "$TARGET_DIR/.ai/scripts/auto_select_scorer.py"
 
-# Glob every server/*.py so the serve.py decomposition package (validation,
-# storage, paths, runtime, ws, llm_output, ... — re-export modules serve.py
-# imports at startup) propagates without naming each one. serve.py does
-# `from server.X import ...` on boot; a missing module hard-crashes the
-# dashboard on launch.
+# Ship every server/**/*.py so the serve.py decomposition package — split into
+# domain sub-packages (jobs/, pty/, sessions/, improver/, transcripts/,
+# analytics/, pipelines/, skills/, agent_suggest/) alongside flat foundation
+# modules (paths, storage, validation, runtime, ws, llm_output, ...) —
+# propagates without naming each file. serve.py does `from server.X import ...`
+# and `from server.<domain>.Y import ...` on boot; a missing module hard-crashes
+# the dashboard on launch. find recurses so sub-package files keep their relative
+# path (copy_if_different mkdir -p's each nested destination).
 mkdir -p "$TARGET_DIR/.ai/dashboard/server"
-for py_src in "$SCRIPT_DIR/.ai/dashboard/server/"*.py; do
-  [ -f "$py_src" ] || continue
-  copy_if_different "$py_src" "$TARGET_DIR/.ai/dashboard/server/$(basename "$py_src")"
-done
+while IFS= read -r py_src; do
+  rel="${py_src#"$SCRIPT_DIR/.ai/dashboard/server/"}"
+  copy_if_different "$py_src" "$TARGET_DIR/.ai/dashboard/server/$rel"
+done < <(find "$SCRIPT_DIR/.ai/dashboard/server" -type f -name '*.py')
 
 # Glob every app/*.js so new modules (settings.js, auto-select.js, future ones)
 # propagate without an explicit list to maintain. index.html references files
