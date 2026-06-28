@@ -9,6 +9,7 @@ serve would be circular). ``todos_parser`` lives in the sibling ``scripts/``
 folder, which serve and conftest put on ``sys.path`` before importing this.
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import datetime as _dt
 import re
@@ -18,7 +19,7 @@ from server.paths import EVENTS_FILE, ROOT
 from server.storage import _load_jsonl_cached, _write_text_lf
 
 
-class ProjectStateRoutes:
+class ProjectStateRoutes(_RouteMixin):
     """TODO / memory / decisions / events endpoints, mixed into ``Handler``."""
 
     def _todos_latest(self) -> dict:

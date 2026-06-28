@@ -7,6 +7,7 @@ lives here too (the multimodal composer reaches it via ``self``); the
 ``_BLOCKED_*`` class attributes it consults stay on Handler.
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import os
 import subprocess
@@ -17,7 +18,7 @@ from server.paths import ROOT
 from server.validation import _safe_which
 
 
-class FileRoutes:
+class FileRoutes(_RouteMixin):
     """Repo file-browser endpoints, mixed into ``Handler``."""
 
     def _handle_files_list(self, qs: dict[str, list[str]]) -> None:

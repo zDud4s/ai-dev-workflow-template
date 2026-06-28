@@ -8,6 +8,7 @@ Helpers each method closes over are imported from their owning ``server.*``
 modules (importing them from serve would be circular).
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import re
 import time
@@ -26,7 +27,7 @@ from server.skills.config import (
 from server.storage import _load_jsonl_cached
 
 
-class SkillRoutes:
+class SkillRoutes(_RouteMixin):
     """Skills + agents catalog / content / metrics endpoints, mixed into ``Handler``."""
 
     def _handle_skills_list(self) -> None:

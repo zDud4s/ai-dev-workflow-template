@@ -8,6 +8,7 @@ modules (importing them from serve would be circular). The shared SSE writers
 remain on Handler and are reached via ``self``.
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import datetime as _dt
 import select
@@ -26,7 +27,7 @@ from server.transcripts import (
 )
 
 
-class TranscriptRoutes:
+class TranscriptRoutes(_RouteMixin):
     """IDE transcript list + stream endpoints, mixed into ``Handler``."""
 
     def _handle_transcripts_list(self) -> None:

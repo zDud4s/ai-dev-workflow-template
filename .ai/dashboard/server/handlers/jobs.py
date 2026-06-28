@@ -9,6 +9,7 @@ shared SSE writers (_write_sse_frame / _write_sse_event / _sse_client_gone) and
 _is_blocked_path remain on Handler and are reached via ``self``.
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import datetime as _dt
 import json
@@ -38,7 +39,7 @@ from server.runtime import _browser_cross_origin_blocked
 from server.validation import _safe_which
 
 
-class JobRoutes:
+class JobRoutes(_RouteMixin):
     """Job lifecycle + streaming endpoints, mixed into ``Handler``."""
 
     def _job_summary(self, j: dict) -> dict:

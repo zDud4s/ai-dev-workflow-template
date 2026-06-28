@@ -9,6 +9,7 @@ from serve would be circular). The shared SSE writers and the ``_UUID_RE``
 class attribute remain on Handler and are reached via ``self``.
 """
 from __future__ import annotations
+from server.handlers._base import _RouteMixin
 
 import datetime as _dt
 import json
@@ -43,7 +44,7 @@ from server.transcripts import (
 )
 
 
-class SessionRoutes:
+class SessionRoutes(_RouteMixin):
     """Session status + SSE + control endpoints, mixed into ``Handler``."""
 
     def _handle_session_stream(self, session_id: str) -> None:
