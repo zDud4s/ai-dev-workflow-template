@@ -174,7 +174,7 @@ from server.pty import (  # noqa: E402
     _shutdown_all_ptys,
     _pty_idle_loop,
 )
-from server.transcript_paths import (  # noqa: E402
+from server.transcripts.paths import (  # noqa: E402
     _CLAUDE_PROJECTS_ROOT_OVERRIDE,
     _CODEX_SESSIONS_ROOT_OVERRIDE,
     _TRANSCRIPTS_DIR_NEG_TTL_S,

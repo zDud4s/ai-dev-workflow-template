@@ -26,7 +26,7 @@ from server.paths import ROOT
 from server.runtime import _browser_cross_origin_blocked
 from server.session_events import _jsonl_line_to_session_events
 from server.storage import _bound_path_cache
-from server.transcript_paths import _transcripts_dir_for_cwd
+from server.transcripts.paths import _transcripts_dir_for_cwd
 from server.transcripts import (
     _TRANSCRIPT_ACTIVITY_CACHE,
     _TRANSCRIPT_ACTIVITY_LOCK,

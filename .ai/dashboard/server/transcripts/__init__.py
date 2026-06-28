@@ -5,7 +5,7 @@ import re
 import threading
 from pathlib import Path
 
-from server.transcript_paths import _codex_sessions_root, _transcripts_dir_for_cwd
+from server.transcripts.paths import _codex_sessions_root, _transcripts_dir_for_cwd
 from server.storage import _bound_path_cache
 from server.paths import ROOT
 

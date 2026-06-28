@@ -68,7 +68,7 @@ from server.paths import (
 )
 from server.skills.config import _scan_skills_dir
 from server.storage import _load_jsonl_cached
-from server.transcript_paths import _transcripts_dir_for_cwd
+from server.transcripts.paths import _transcripts_dir_for_cwd
 from server.validation import _iso_to_epoch, _safe_which, _skill_name_canonical
 
 # Improver subsystem state (moved from serve.py).

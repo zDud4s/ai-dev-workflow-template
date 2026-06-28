@@ -8,7 +8,7 @@ from pathlib import Path
 
 from server.paths import ROOT
 from server.storage import _bound_path_cache
-from server.transcript_paths import _codex_sessions_root, _transcripts_dir_for_cwd
+from server.transcripts.paths import _codex_sessions_root, _transcripts_dir_for_cwd
 from server.validation import _normalise_path_for_match, _parse_iso_ts
 
 _CODEX_FILE_AGG_CACHE: dict[str, tuple[int, dict]] = {}
