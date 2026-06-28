@@ -224,12 +224,47 @@
   }
 
   // ----- KPI strip ---------------------------------------------------------
-  function renderKpis(kpis) {
+  function savingsHasModeled(savings) {
+    var tasks = (savings && savings.tasks) || {};
+    return Object.keys(tasks).some(function (slug) {
+      return tasks[slug] && tasks[slug].modeled === true;
+    });
+  }
+
+  function fmtSignedCost(v) {
+    var n = Number(v) || 0;
+    return (n < 0 ? "-" : "") + fmtCost(Math.abs(n));
+  }
+
+  function savingsDetailHtml(savings) {
+    if (!savings || !savings.totals) {
+      return '<span class="kpi-delta" aria-hidden="true">&mdash;</span>';
+    }
+    var b = savings.totals.breakdown || {};
+    var text = "routing " + fmtSignedCost(b.routing) +
+               " / cache " + fmtSignedCost(b.cache) +
+               " / gating " + fmtSignedCost(b.gating);
+    var title = "routing $" + (Number(b.routing) || 0).toFixed(6) +
+                " / cache $" + (Number(b.cache) || 0).toFixed(6) +
+                " / gating $" + (Number(b.gating) || 0).toFixed(6);
+    var modeled = savingsHasModeled(savings)
+      ? '<span class="kpi-modeled" title="Some gating savings are modeled, not measured">modeled</span>'
+      : "";
+    return '<span class="kpi-delta kpi-breakdown" title="' + escapeHtml(title) + '">' +
+           escapeHtml(text) + '</span>' + modeled;
+  }
+
+  function renderKpis(data) {
     var host = $a("#analytics-kpis");
     if (!host) return;
     delete host.dataset.skeletoned;
+    var kpis = data && data.kpis ? data.kpis : (data || {});
+    var savings = data && Object.prototype.hasOwnProperty.call(data, "savings") ? data.savings : null;
     var defs = [
       { key: "total_spend", label: "Total spend", fmt: fmtUsd, better: "down" },
+      { key: "__savings", label: "Cost saved vs opus", fmt: function () {
+          return savings && savings.totals ? fmtPct(savings.totals.savings_pct) : "&mdash;";
+        }, detail: function () { return savingsDetailHtml(savings); } },
       { key: "success_rate", label: "Success rate", fmt: fmtPct, better: "up" },
       { key: "phase_runs", label: "Phase runs", fmt: fmtInt, better: "up" },
       { key: "avg_duration", label: "Avg duration", fmt: fmtDuration, better: "down" },
@@ -243,7 +278,9 @@
       // strip). Show a real trend only when there's a non-zero prior period;
       // otherwise a dim neutral placeholder — never a misleading "▲ — vs prev".
       var deltaHtml = '<span class="kpi-delta" aria-hidden="true">—</span>';
-      if (d.better && k.prev != null && k.value != null && k.prev !== 0) {
+      if (d.detail) {
+        deltaHtml = d.detail();
+      } else if (d.better && k.prev != null && k.value != null && k.prev !== 0) {
         var diff = k.value - k.prev;
         var up = diff > 0;
         var good = (d.better === "up" && up) || (d.better === "down" && !up);
@@ -495,7 +532,7 @@
       })
       .then(function (data) {
         setError("");
-        renderKpis(data.kpis || {});
+        renderKpis(data || {});
         renderCost(data.cost || {});
         renderHealth(data.health || {});
         renderSkills(data.skills || {});

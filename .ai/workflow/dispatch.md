@@ -106,14 +106,16 @@ Wrap every subprocess call with `timeout <T>s` where `<T>` is `<phase>.timeout_s
 
 - **Target = `claude`** (`dispatcher` when `<phase>.tool == claude`):
   ```bash
-  timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | claude -p --bare --exclude-dynamic-system-prompt-sections "Execute the attached <phase> phase exactly. Return only the phase result. If you cannot proceed, emit the Escalation output format and exit non-zero." --model <phase.model> [--effort <phase.reasoning_effort>] 2>/dev/null'
+  timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | claude -p --bare --exclude-dynamic-system-prompt-sections "Execute the attached <phase> phase exactly. Return only the phase result. If you cannot proceed, emit the Escalation output format and exit non-zero." --model <phase.model> [--effort <phase.reasoning_effort>] --output-format json 2>/dev/null'
   ```
+  The controller reads `.result` from the JSON object as the phase output (instead of raw stdout) and maps `.usage.input_tokens` -> `tokens_in`, `.usage.output_tokens` -> `tokens_out`, `.usage.cache_read_input_tokens` -> `cache_read`, and `.usage.cache_creation_input_tokens` -> `cache_creation`.
   `--bare` skips CLAUDE.md auto-discovery, hooks, plugin sync, auto-memory, keychain — the phase only sees the prompt we pipe. `--exclude-dynamic-system-prompt-sections` moves per-machine cwd/env/git/memory out of the system prompt into the first user message; the stable prefix hits the Anthropic prompt cache (5-min TTL) on repeat calls. `<phase.reasoning_effort>` ∈ {`low`, `medium`, `high`, `xhigh`, `max`} from `.ai/models.yaml`; omit the flag entirely when the field is absent (claude default applies).
 
 - **Target = `codex`** (`dispatcher` mode when `<phase>.tool == codex`):
   ```bash
-  timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | codex exec --skip-git-repo-check -m <phase.model> --config model_reasoning_effort="<phase.reasoning_effort>" -C <absolute project path> 2>/dev/null'
+  timeout <T>s sh -c 'cat /tmp/phase-<phase>-prompt.md | codex exec --skip-git-repo-check -m <phase.model> --config model_reasoning_effort="<phase.reasoning_effort>" -C <absolute project path> 2>/tmp/phase-<phase>-stderr.log'
   ```
+  The controller parses `/tmp/phase-<phase>-stderr.log` for `tokens used[:\s]+([\d,]+)`, strips commas from the captured number, records it as `tokens_out`, then runs `rm -f /tmp/phase-<phase>-stderr.log`. Codex prints a single total, so only `tokens_out` is populated (`tokens_in` stays null).
   `<phase.reasoning_effort>` ∈ {`xhigh`, `high`, `medium`, `low`} from `.ai/models.yaml`; default `medium` if absent. Codex does NOT accept `max` — only claude does. **Any write-capable codex phase** (a phase whose packet edits repo files — `execute`, `rescue`, `maintenance`, `bootstrap`) additionally appends `--dangerously-bypass-approvals-and-sandbox` — without it, codex's own sandbox raises approval prompts that stall the subprocess silently. Read-only phases (`plan`, `review`) omit the flag.
 
   **Controller sandbox bypass.** The bypass flag only disables *codex's* sandbox. When the controller is Claude Code with its own sandbox enabled, the dispatched codex subprocess still runs inside the controller's sandbox, which blocks codex's writes/network even though the command is permission-allowed. A write-capable codex dispatch MUST therefore run outside the controller's sandbox: either via `sandbox.excludedCommands` (declarative, in `.claude/settings.json`) or by issuing the dispatch `Bash` call with `dangerouslyDisableSandbox: true`. Both require `sandbox.allowUnsandboxedCommands` to stay `true` (the default).

@@ -30,6 +30,10 @@ EVENTS_FILE = ROOT / ".ai" / "local" / "ledgers" / "events.jsonl"
 # dispatched phase. Powers the /api/auto-select ranking. See the orchestrate
 # skill "## Metrics logging" section for the schema.
 METRICS_FILE = ROOT / ".ai" / "local" / "ledgers" / "metrics.jsonl"
+# Model pricing table ($/Mtok input/output, cache rates) for the savings engine.
+# A versioned config (NOT runtime data), so it stays at the .ai/ top level, not
+# under .ai/local/. Read by server.analytics via the eval harness savings_report.
+PRICING_FILE = ROOT / ".ai" / "pricing.yaml"
 # Filled agent-dispatch packets produced by the agent orchestrator.
 AGENT_RUNS_DIR = ROOT / ".ai" / "local" / "agent-runs"
 PIPELINES_DIR = ROOT / ".ai" / "local" / "pipelines"

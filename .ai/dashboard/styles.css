@@ -6179,7 +6179,7 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
    metrics are tuned (smaller number than the 60px overview vals; a delta line). */
 .analytics-kpis {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: var(--s-3);
   margin-bottom: var(--s-3);
 }
@@ -6198,6 +6198,25 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
 }
 .analytics-kpis .kpi-delta.up { color: oklch(76% 0.14 150); }
 .analytics-kpis .kpi-delta.down { color: oklch(68% 0.15 25); }
+.analytics-kpis .kpi-breakdown {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.analytics-kpis .kpi-modeled {
+  align-self: flex-start;
+  border: 1px solid var(--border-strong);
+  color: var(--warn);
+  font-family: var(--ff-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  margin-top: 2px;
+  padding: 3px 5px;
+  text-transform: uppercase;
+}
 
 .analytics-grid { display: grid; gap: var(--s-3); }
 /* Each section gets a focal "lead" chart (first panel) + two stacked

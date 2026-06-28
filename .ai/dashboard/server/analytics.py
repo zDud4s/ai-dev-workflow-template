@@ -22,6 +22,7 @@ THIS module's namespace, so tests that rebind them on ``serve`` must also rebind
 from __future__ import annotations
 
 import datetime as _dt
+import sys as _sys
 
 import auto_select_scorer
 
@@ -30,12 +31,29 @@ from server.paths import (
     IMPROVEMENTS_LEDGER,
     JOBS_PERSIST_FILE,
     METRICS_FILE,
+    PRICING_FILE,
+    ROOT,
     SKILL_METRICS_FILE,
     TODOS_FILE,
 )
 from server.storage import _load_jsonl_cached
 from server.transcripts import _lookup_session_task
 from server.validation import _parse_iso_ts
+
+# Savings helpers live in the eval harness (`.ai/eval/harness/savings.py`), not
+# the dashboard package or .ai/scripts. The conftest/serve sys.path setup does
+# not cover it, so insert it here. Keep the import optional so analytics fails
+# safe (savings -> None, the page still serves) if the harness is unavailable.
+_EVAL_HARNESS_DIR = str(ROOT / ".ai" / "eval" / "harness")
+if _EVAL_HARNESS_DIR not in _sys.path:
+    _sys.path.insert(0, _EVAL_HARNESS_DIR)
+try:
+    from savings import load_pricing, savings_report  # noqa: E402
+    _SAVINGS_IMPORT_ERROR = None
+except Exception as _exc:  # pragma: no cover - import failure is environment-specific
+    load_pricing = None
+    savings_report = None
+    _SAVINGS_IMPORT_ERROR = _exc
 
 
 _ANALYTICS_RANGES = {"7d": 7, "30d": 30, "90d": 90, "all": None}
@@ -78,6 +96,17 @@ def _analytics_in_range(raw_ts, start, now):
     if start is not None and d < start:
         return False
     return True
+
+
+def _analytics_savings(rows):
+    """Return the savings report for metric rows, or None on any savings error."""
+    try:
+        if _SAVINGS_IMPORT_ERROR is not None or load_pricing is None or savings_report is None:
+            raise RuntimeError(f"savings import failed: {_SAVINGS_IMPORT_ERROR}")
+        return savings_report(rows, load_pricing(PRICING_FILE))
+    except Exception as exc:
+        print(f"[serve] analytics savings failed: {exc}", flush=True)
+        return None
 
 
 def _aggregate_analytics(now, range_key):
@@ -127,6 +156,7 @@ def _aggregate_analytics(now, range_key):
         "health": {"runs_over_time": [], "outcomes": {}, "retries_over_time": [], "review_verdicts": {}},
         "skills": {"top_by_invocations": [], "table": [], "cost_by_skill": []},
         "backlog": {"proposal_status": {}, "todo_burndown": [], "recent_activity": []},
+        "savings": _analytics_savings(metrics),
     }
 
     # ----- Cost & efficiency -------------------------------------------------
