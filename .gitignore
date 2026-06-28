@@ -21,6 +21,17 @@ tests/*
 !tests/_canvas_bus_runner.js
 
 # ─────────────────────────────────────────────────────────────
+# AI workflow — per-project mutable working file
+# ─────────────────────────────────────────────────────────────
+# project.yaml is filled in per project (bootstrap). It must NOT be tracked in
+# this template repo: a tracked file gets reverted to its committed contents on
+# every branch-switch/merge/checkout, silently wiping the bootstrap fill. The
+# blank skeleton ships as the tracked .ai/project.yaml.template (installers copy
+# it to a target's working .ai/project.yaml). models.yaml stays tracked — its
+# committed defaults are useful as-is.
+.ai/project.yaml
+
+# ─────────────────────────────────────────────────────────────
 # AI workflow — generated content
 # Track these directories as empty folders (via .gitkeep);
 # ignore everything generated inside them.

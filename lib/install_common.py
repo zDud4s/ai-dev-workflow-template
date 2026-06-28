@@ -646,7 +646,10 @@ def run_update(target_dir: Path, script_dir: Path) -> None:
         "decisions",
     )
     merge_yaml_skeleton(
-        script_dir / ".ai/project.yaml",
+        # project.yaml ships as a tracked .template skeleton (the working file is
+        # gitignored in the template repo); the target's working .ai/project.yaml
+        # is the merge destination as before.
+        script_dir / ".ai/project.yaml.template",
         target_dir / ".ai/project.yaml",
         "project state",
     )

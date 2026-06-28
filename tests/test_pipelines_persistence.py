@@ -1,6 +1,7 @@
 """Foundation assertions: .ai/local/pipelines/ exists and is wired into ignore/project rules."""
 from __future__ import annotations
 import pathlib
+import pytest
 import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -18,6 +19,14 @@ def test_gitignore_ignores_pipelines_but_keeps_gitkeep() -> None:
 
 
 def test_project_yaml_lists_pipelines_in_generated_files() -> None:
-    d = yaml.safe_load((REPO_ROOT / ".ai" / "project.yaml").read_text(encoding="utf-8"))
+    # This asserts a property of THIS repo's working project.yaml, where .ai/ is
+    # the product so .ai/local/pipelines is genuinely a generated dir. The working
+    # file is gitignored (filled per project) and the shipped .template is blank
+    # by design — downstream generated_files lists the HOST project's artifacts,
+    # not the workflow's. So skip on a clean checkout/CI where the file is absent.
+    working = REPO_ROOT / ".ai" / "project.yaml"
+    if not working.exists():
+        pytest.skip("working .ai/project.yaml absent (gitignored); template is intentionally blank")
+    d = yaml.safe_load(working.read_text(encoding="utf-8"))
     gen = d["boundaries"]["generated_files"]
     assert ".ai/local/pipelines" in gen, f"expected .ai/local/pipelines in generated_files, got {gen}"

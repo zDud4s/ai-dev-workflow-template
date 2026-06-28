@@ -18,8 +18,11 @@ echo "Installing AI workflow into: $TARGET_DIR"
 # driven by the shared-skill list from the manifest.
 ensure_workflow_dirs "$TARGET_DIR" "${SHARED_SKILLS[@]}"
 
-# Mutable project layer — only create if missing
-copy_if_missing "$SCRIPT_DIR/.ai/project.yaml" "$TARGET_DIR/.ai/project.yaml"
+# Mutable project layer — only create if missing.
+# project.yaml ships as a tracked .template skeleton (the working .ai/project.yaml
+# is gitignored in this repo so branch-switches/merges can't revert a project's
+# bootstrap fill); install copies the skeleton to the target's working file.
+copy_if_missing "$SCRIPT_DIR/.ai/project.yaml.template" "$TARGET_DIR/.ai/project.yaml"
 copy_if_missing "$SCRIPT_DIR/.ai/memory.md" "$TARGET_DIR/.ai/memory.md"
 copy_if_missing "$SCRIPT_DIR/.ai/decisions.md" "$TARGET_DIR/.ai/decisions.md"
 copy_if_missing "$SCRIPT_DIR/.ai/models.yaml" "$TARGET_DIR/.ai/models.yaml"

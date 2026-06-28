@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -33,6 +34,13 @@ def test_skill_body_mentions_collision_suffix():
 
 
 def test_project_yaml_lists_agent_runs_in_generated_files():
+    # Property of THIS repo's working project.yaml (here .ai/ is the product, so
+    # .ai/local/agent-runs is a genuine generated dir). The working file is
+    # gitignored (filled per project) and the shipped .template is blank by
+    # design — downstream generated_files lists the HOST project's artifacts, not
+    # the workflow's. Skip on a clean checkout/CI where the file is absent.
+    if not PROJECT_PATH.exists():
+        pytest.skip("working .ai/project.yaml absent (gitignored); template is intentionally blank")
     data = yaml.safe_load(_read(PROJECT_PATH))
 
     assert ".ai/local/agent-runs" in data["boundaries"]["generated_files"]
