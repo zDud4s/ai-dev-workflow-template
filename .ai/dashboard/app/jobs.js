@@ -31,7 +31,10 @@
         // without (b) we'd re-arm against the user's mid-clear opt-out.
         const cb = $("#events-autorefresh");
         if (wasTimer && cb && cb.checked && !_eventsTimer) {
-          _eventsTimer = setInterval(loadEvents, EVENTS_AUTOREFRESH_MS);
+          _eventsTimer = setInterval(function () {
+            // Skip fetch+render work while another in-app view is active.
+            if (document.getElementById("view-events")?.classList.contains("active")) loadEvents();
+          }, EVENTS_AUTOREFRESH_MS);
         }
       }
     }
@@ -1323,7 +1326,10 @@
         if (_eventsTimer) { clearInterval(_eventsTimer); _eventsTimer = null; }
         if (e.target.checked) {
           loadEvents();
-          _eventsTimer = setInterval(loadEvents, EVENTS_AUTOREFRESH_MS);
+          _eventsTimer = setInterval(function () {
+            // Skip fetch+render work while another in-app view is active.
+            if (document.getElementById("view-events")?.classList.contains("active")) loadEvents();
+          }, EVENTS_AUTOREFRESH_MS);
         }
       } else if (e.target.id === "ev-phase") {
         _eventsState.phase = e.target.value; renderEvents();
@@ -1436,7 +1442,10 @@
         loadEvents();
         const cb = document.getElementById("events-autorefresh");
         if (cb && cb.checked && !_eventsTimer) {
-          _eventsTimer = setInterval(loadEvents, EVENTS_AUTOREFRESH_MS);
+          _eventsTimer = setInterval(function () {
+            // Skip fetch+render work while another in-app view is active.
+            if (document.getElementById("view-events")?.classList.contains("active")) loadEvents();
+          }, EVENTS_AUTOREFRESH_MS);
         }
       }
       if (tlActive && typeof loadTimeline === "function") loadTimeline();

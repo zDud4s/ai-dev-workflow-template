@@ -226,7 +226,6 @@
         z-index: 1;
         background:
           repeating-linear-gradient(0deg, transparent 0px, transparent 3px, rgba(0,0,0,0.08) 3px, rgba(0,0,0,0.08) 4px);
-        mix-blend-mode: multiply;
         opacity: 0.18;
       }
     }
@@ -612,6 +611,7 @@
       grid-area: main;
       padding: var(--s-7) clamp(var(--s-5), 4vw, 64px) var(--s-9);
       overflow-y: auto;
+      scroll-behavior: smooth;
       max-width: 1480px;
       width: 100%;
       position: relative;

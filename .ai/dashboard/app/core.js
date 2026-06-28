@@ -59,10 +59,15 @@
     // ----- nav switching -----
     $$("nav button").forEach((btn) => {
       btn.addEventListener("click", () => {
-        $$("nav button").forEach((b) => b.classList.remove("active"));
+        $$("nav button").forEach((b) => {
+          b.classList.remove("active");
+          b.setAttribute("aria-selected", "false");
+        });
         $$(".view").forEach((v) => v.classList.remove("active"));
         btn.classList.add("active");
-        $("#view-" + btn.dataset.view).classList.add("active");
+        btn.setAttribute("aria-selected", "true");
+        const target = $("#view-" + btn.dataset.view);
+        if (target) target.classList.add("active");
         try { localStorage.setItem("dash.view", btn.dataset.view); } catch (_) { /* ignore */ }
         if (btn.dataset.view === "run" || btn.dataset.view === "terminals") loadJobs();
         if (btn.dataset.view === "terminals") termRefreshTranscriptPicker();

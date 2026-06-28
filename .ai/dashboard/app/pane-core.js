@@ -346,15 +346,43 @@ function paneCoreAppendAssistantText(t, text) {
   seg._renderPending = true;
   requestAnimationFrame(() => {
     seg._renderPending = false;
-    if (!seg.isConnected) { seg._rawBuf = []; return; }
+    if (!seg.isConnected) {
+      seg._rawBuf = [];
+      if (seg._parseQueued) { clearTimeout(seg._parseQueued); seg._parseQueued = null; }
+      return;
+    }
     const latest = (seg._rawBuf || []).join("");
     seg.dataset.raw = latest;
     // Mirror onto .text for the dedupe readers (paneCoreRenderJsonObject
     // checks .text dataset.raw to avoid re-appending the final message after
     // deltas already rendered it).
     textEl.dataset.raw = latest;
-    try { seg.innerHTML = DOMPurify.sanitize(marked.parse(latest)); }
-    catch (_) { seg.textContent = latest; }
+    const parseLatest = (value) => {
+      try { seg.innerHTML = DOMPurify.sanitize(marked.parse(value)); }
+      catch (_) { seg.textContent = value; }
+    };
+    const now = Date.now();
+    const last = seg._lastParseAt || 0;
+    const wait = 120 - (now - last);
+    if (wait <= 0) {
+      if (seg._parseQueued) { clearTimeout(seg._parseQueued); seg._parseQueued = null; }
+      parseLatest(latest);
+      seg._lastParseAt = now;
+      return;
+    }
+    if (seg._parseQueued) clearTimeout(seg._parseQueued);
+    seg._parseQueued = setTimeout(() => {
+      seg._parseQueued = null;
+      if (!seg.isConnected || !textEl.isConnected) {
+        seg._rawBuf = [];
+        return;
+      }
+      const queuedLatest = (seg._rawBuf || []).join("");
+      seg.dataset.raw = queuedLatest;
+      textEl.dataset.raw = queuedLatest;
+      parseLatest(queuedLatest);
+      seg._lastParseAt = Date.now();
+    }, wait);
   });
   paneCoreSetActivity(t, "responding…", "busy");
 }

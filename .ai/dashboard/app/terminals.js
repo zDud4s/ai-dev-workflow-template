@@ -579,6 +579,7 @@
     // Last data we rendered from, so the bus listener can re-paint badges
     // (on-canvas state) without re-fetching.
     var _STATUS_LAST = { sessions: [], jobs: [] };
+    var _statusListFp = "";
 
     // ----- launched-but-not-yet-opened resources -----
     // "New terminal" is a pure launcher: the operator picks what to launch
@@ -844,13 +845,83 @@
         // Status rows render before any legacy inline pane in the grid.
         grid.insertBefore(container, grid.firstChild);
       }
-      container.innerHTML = "";
-
       // Drop launched SESSIONS that have since materialised in /api/sessions
       // (first message sent) — the real row takes over, so we don't show both.
       const _sessionSids = new Set((sessions || []).map((s) => s && s.sid).filter(Boolean));
       const _dropped = _LAUNCHED.filter((e) => e.kind === "session" && _sessionSids.has(e.id));
       if (_dropped.length) { _dropped.forEach((e) => removeLaunched(e.id)); }
+
+      const metaFp = (parts) => (parts || []).map((p) => [
+        p && p.text,
+        p && p.cls,
+        p && p.title,
+      ].join("\x1f")).join("\x1e");
+      const launchedFp = (_LAUNCHED || []).map((e) => {
+        const isTerm = e && e.kind === "terminal";
+        const rowKey = e ? (isTerm ? e.id : ("session:" + e.id)) : "";
+        const onCanvas = _CANVAS_ON_KEYS.has(rowKey) ? "1" : "0";
+        return ["launched", rowKey, onCanvas, JSON.stringify(e || null)].join("\x1f");
+      }).join("\x1e");
+      const sessionFp = (sessions || []).map((s) => {
+        if (!s || !s.sid) return ["session", JSON.stringify(s || null)].join("\x1f");
+        const live = _statusIsActiveSession(s);
+        const state = s.state || "mirror";
+        const preview = (s.title || s.task || "").replace(/\s+/g, " ").slice(0, 80);
+        const sTool = s.kind === "chat-codex" ? "codex" : "claude";
+        const act = (live && s.activity && s.activity.text)
+          ? { text: s.activity.text, cls: "busy act-" + (s.activity.kind || "x") }
+          : { text: live ? "live" : "ended", cls: live ? "busy" : "ended" };
+        return [
+          "session",
+          "session:" + s.sid,
+          state,
+          live ? "1" : "0",
+          act.text,
+          act.cls,
+          sTool,
+          s.model || sTool,
+          preview || (s.sid.slice(0, 8) + "..."),
+          "session " + s.sid,
+          metaFp(_statusMeta(s, live)),
+          _CANVAS_ON_KEYS.has("session:" + s.sid) ? "1" : "0",
+          JSON.stringify(s),
+        ].join("\x1f");
+      }).join("\x1e");
+      const jobFp = (jobs || []).map((j) => {
+        if (!j) return "job\x1fnull";
+        const activeJob = _statusIsActiveJob(j);
+        const preview = (j.task || "").replace(/\s+/g, " ").slice(0, 80);
+        const tool = j.kind === "chat-codex" ? "codex" : (j.kind || "job");
+        return [
+          "job",
+          j.id,
+          j.kind || "job",
+          j.status || "?",
+          activeJob ? "1" : "0",
+          activeJob ? "running" : (j.status || "ended"),
+          activeJob ? "busy" : "ended",
+          tool,
+          j.model || tool,
+          preview || String(j.id || "").slice(0, 8),
+          j.task || j.id,
+          metaFp(_statusMeta(j, activeJob)),
+          _CANVAS_ON_KEYS.has(j.id) ? "1" : "0",
+          JSON.stringify(j),
+        ].join("\x1f");
+      }).join("\x1e");
+      const fp = [
+        (typeof TERMS !== "undefined" && TERMS) ? TERMS.size : 0,
+        Array.from(_CANVAS_ON_KEYS || []).sort().join("\x1f"),
+        launchedFp,
+        sessionFp,
+        jobFp,
+      ].join("\x1d");
+      if (fp === _statusListFp && container.children.length) {
+        termUpdateTerminalsCount();
+        return;
+      }
+      _statusListFp = fp;
+      container.innerHTML = "";
 
       // Launched rows render first (the freshest operator intent). Their ⊞
       // materialises + opens on the canvas; the ✕ dismisses the launch.
@@ -2175,13 +2246,38 @@
         // cleanly when the node is no longer connected.
         if (!textEl.isConnected || !seg.isConnected) {
           seg._rawBuf = [];
+          if (seg._parseQueued) { clearTimeout(seg._parseQueued); seg._parseQueued = null; }
           return;
         }
         const latest = (seg._rawBuf || []).join("");
         seg.dataset.raw = latest;
         textEl.dataset.raw = latest;  // mirror for the dedupe readers
-        try { seg.innerHTML = DOMPurify.sanitize(marked.parse(latest)); }
-        catch (_) { seg.textContent = latest; }
+        const parseLatest = (value) => {
+          try { seg.innerHTML = DOMPurify.sanitize(marked.parse(value)); }
+          catch (_) { seg.textContent = value; }
+        };
+        const now = Date.now();
+        const last = seg._lastParseAt || 0;
+        const wait = 120 - (now - last);
+        if (wait <= 0) {
+          if (seg._parseQueued) { clearTimeout(seg._parseQueued); seg._parseQueued = null; }
+          parseLatest(latest);
+          seg._lastParseAt = now;
+          return;
+        }
+        if (seg._parseQueued) clearTimeout(seg._parseQueued);
+        seg._parseQueued = setTimeout(() => {
+          seg._parseQueued = null;
+          if (!textEl.isConnected || !seg.isConnected) {
+            seg._rawBuf = [];
+            return;
+          }
+          const queuedLatest = (seg._rawBuf || []).join("");
+          seg.dataset.raw = queuedLatest;
+          textEl.dataset.raw = queuedLatest;
+          parseLatest(queuedLatest);
+          seg._lastParseAt = Date.now();
+        }, wait);
       });
       termSetActivity(t, "responding…", "busy");
     }
