@@ -1,0 +1,8 @@
+{
+  "//": "Static-analysis config for working ON this template repo (not shipped to installs). The dashboard injects two dirs onto sys.path at runtime that Pylance/Pyright cannot infer: .ai/dashboard (so `import serve` and `from server import ...` resolve) and .ai/scripts (so the bare workflow-helper imports `import todos_parser` / `import auto_select_scorer` / `from pipeline_schema import ...` resolve). Declaring them as extraPaths clears the spurious reportMissingImports warnings without per-line `# type: ignore` noise.",
+  "extraPaths": [
+    ".ai/dashboard",
+    ".ai/scripts"
+  ],
+  "typeCheckingMode": "basic"
+}
