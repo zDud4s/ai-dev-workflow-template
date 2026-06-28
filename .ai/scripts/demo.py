@@ -1,7 +1,7 @@
 """Demo: start the dashboard server and inject 3 simulated agents.
 
 Run from repo root:
-    python .ai/dashboard/scripts/demo.py
+    python .ai/scripts/demo.py
 
 Then open the printed URL, switch to the "Terminals" tab, and click
 "Open all running" to see the three fake agents streaming side by side.

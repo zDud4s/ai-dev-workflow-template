@@ -48,7 +48,7 @@ DIFF_SKIP_PREFIXES = (
     ".ai/ledgers/todos.jsonl",
     ".ai/ledgers/todos-archive.jsonl",
     ".gitignore",
-    ".ai/dashboard/scripts/todos_parser.py",
+    ".ai/scripts/todos_parser.py",
     "tests/test_todos_",
     "tests/test_references.py",
 )

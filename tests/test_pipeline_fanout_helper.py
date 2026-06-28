@@ -10,7 +10,6 @@ from pathlib import Path
 HELPER_PATH = (
     Path(__file__).resolve().parent.parent
     / ".ai"
-    / "dashboard"
     / "scripts"
     / "pipeline_fanout.py"
 )

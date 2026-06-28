@@ -112,7 +112,7 @@ def test_install_provisions_todos_module(tmp_path: Path):
         text=True,
         timeout=120,
     )
-    assert (tmp_path / ".ai" / "dashboard" / "scripts" / "todos_parser.py").is_file()
+    assert (tmp_path / ".ai" / "scripts" / "todos_parser.py").is_file()
     assert (tmp_path / ".ai" / "dashboard" / "app" / "todos.js").is_file()
 
 

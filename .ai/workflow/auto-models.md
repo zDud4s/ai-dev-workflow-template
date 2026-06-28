@@ -38,4 +38,4 @@ Rows evaluated in order, first match wins. `*` matches any value.
 - The `trivial` size never reaches downstream phases — the planner emits `TRIVIAL: ...` and stops. No row needed.
 - When no row matches a `(phase, size, risk, budget)` tuple, the planner omits the line for that phase and the orchestrator falls back to `models.yaml`.
 - `plan`, `maintenance`, and `bootstrap` are intentionally NOT listed. They are always served from `.ai/models.yaml` regardless of `auto_select.enabled` — auto-selection is reserved for the per-task phases (`execute`, `review`, `rescue`) whose model choice the planner can vary.
-- The adaptive scorer (canonical implementation `.ai/dashboard/scripts/auto_select_scorer.py`) penalizes small samples via the Wilson 95% lower bound and uses median, not mean, duration. The static table remains the documented authority for the <5-samples cold-start.
+- The adaptive scorer (canonical implementation `.ai/scripts/auto_select_scorer.py`) penalizes small samples via the Wilson 95% lower bound and uses median, not mean, duration. The static table remains the documented authority for the <5-samples cold-start.

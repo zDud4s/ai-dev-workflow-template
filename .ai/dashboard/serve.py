@@ -64,10 +64,12 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-# Helper modules live in the sibling `scripts/` folder. Inject it onto
-# sys.path so direct invocation (`python .ai/dashboard/serve.py`) and
-# tests that load serve via importlib both resolve the imports below.
-_SCRIPTS_DIR = str(Path(__file__).resolve().parent / "scripts")
+# Shared helper scripts live in `.ai/scripts/` (workflow-level — usable with
+# or without the dashboard). Inject it onto sys.path so direct invocation
+# (`python .ai/dashboard/serve.py`) and tests that load serve via importlib
+# resolve the bare `import todos_parser` / `import auto_select_scorer` below
+# (and the same imports inside server/analytics.py and project_handlers.py).
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
@@ -79,11 +81,9 @@ from server import pty_session as _pty_session  # noqa: E402
 from server import session_registry, session_lock  # noqa: E402
 from server._improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
-# auto_select_scorer and todos_parser are shared scripts still under
-# .ai/dashboard/scripts/ in this batch; they relocate to .ai/scripts/ next,
-# at which point the _SCRIPTS_DIR insert above is repointed there.
-import todos_parser as _todos_parser  # noqa: E402 — .ai/dashboard/scripts helper
-import auto_select_scorer  # noqa: E402 — .ai/dashboard/scripts helper
+# Shared scripts, imported by name from .ai/scripts/ (on sys.path above).
+import todos_parser as _todos_parser  # noqa: E402
+import auto_select_scorer  # noqa: E402
 
 # Pre-compiled URL-routing patterns. Previously each do_GET / do_POST
 # invocation rebuilt these via inline `re.fullmatch(r"...", path)` calls.

@@ -116,13 +116,13 @@ fi
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/serve.py" "$TARGET_DIR/.ai/dashboard/serve.py"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/index.html" "$TARGET_DIR/.ai/dashboard/index.html"
 copy_if_different "$SCRIPT_DIR/.ai/dashboard/styles.css" "$TARGET_DIR/.ai/dashboard/styles.css"
-mkdir -p "$TARGET_DIR/.ai/dashboard/scripts"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/log_event.py" "$TARGET_DIR/.ai/dashboard/scripts/log_event.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/todos_parser.py" "$TARGET_DIR/.ai/dashboard/scripts/todos_parser.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/demo.py" "$TARGET_DIR/.ai/dashboard/scripts/demo.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/pipeline_schema.py" "$TARGET_DIR/.ai/dashboard/scripts/pipeline_schema.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/pipeline_fanout.py" "$TARGET_DIR/.ai/dashboard/scripts/pipeline_fanout.py"
-copy_if_different "$SCRIPT_DIR/.ai/dashboard/scripts/auto_select_scorer.py" "$TARGET_DIR/.ai/dashboard/scripts/auto_select_scorer.py"
+mkdir -p "$TARGET_DIR/.ai/scripts"
+copy_if_different "$SCRIPT_DIR/.ai/scripts/log_event.py" "$TARGET_DIR/.ai/scripts/log_event.py"
+copy_if_different "$SCRIPT_DIR/.ai/scripts/todos_parser.py" "$TARGET_DIR/.ai/scripts/todos_parser.py"
+copy_if_different "$SCRIPT_DIR/.ai/scripts/demo.py" "$TARGET_DIR/.ai/scripts/demo.py"
+copy_if_different "$SCRIPT_DIR/.ai/scripts/pipeline_schema.py" "$TARGET_DIR/.ai/scripts/pipeline_schema.py"
+copy_if_different "$SCRIPT_DIR/.ai/scripts/pipeline_fanout.py" "$TARGET_DIR/.ai/scripts/pipeline_fanout.py"
+copy_if_different "$SCRIPT_DIR/.ai/scripts/auto_select_scorer.py" "$TARGET_DIR/.ai/scripts/auto_select_scorer.py"
 
 # Glob every server/*.py so the serve.py decomposition package (validation,
 # storage, paths, runtime, ws, llm_output, ... — re-export modules serve.py

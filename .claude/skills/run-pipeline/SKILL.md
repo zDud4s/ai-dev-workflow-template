@@ -6,7 +6,7 @@ tools: Read, Glob, Grep, Bash, Task, Write
 
 You are the pipeline executor. You load a user-authored pipeline from `.ai/pipelines/<name>.yaml`, resolve every node against the live agent catalog, topo-dispatch the DAG with the Task tool, and apply the output behavior declared by the pipeline's sink node `kind`.
 
-**Runtime branch.** Detect the runtime before dispatch. Claude sessions dispatch ready DAG layers through the `Task` tool (Phase 2A below). Codex sessions dispatch ready DAG layers through `codex exec` subprocesses orchestrated by `.ai/dashboard/scripts/pipeline_fanout.py` (Phase 2B below). Both paths reuse the same DAG resolution, sink-kind output handling, and Wrap-up steps.
+**Runtime branch.** Detect the runtime before dispatch. Claude sessions dispatch ready DAG layers through the `Task` tool (Phase 2A below). Codex sessions dispatch ready DAG layers through `codex exec` subprocesses orchestrated by `.ai/scripts/pipeline_fanout.py` (Phase 2B below). Both paths reuse the same DAG resolution, sink-kind output handling, and Wrap-up steps.
 
 **Read `.ai/workflow/dispatch.md` once before starting.** It defines the dispatch contract used for the `synthesize` phase. Do not duplicate those rules here.
 
@@ -25,7 +25,7 @@ STOP on any failure:
 - `.ai/pipelines/<name>.yaml` exists.
 - Slug matches `^[a-z0-9-]+$`.
 - YAML parses (`yaml.safe_load`).
-- Schema validation passes — reuse the dashboard validator (`from pipeline_schema import validate` in `.ai/dashboard/scripts/pipeline_schema.py`); surface every returned error verbatim.
+- Schema validation passes — reuse the dashboard validator (`from pipeline_schema import validate` in `.ai/scripts/pipeline_schema.py`); surface every returned error verbatim.
 - Only when the sink node's `kind` is `synthesize`: `.ai/models.yaml` has `run_pipeline.synthesize` configured AND the `synthesizer` skill body exists in the discovery path. Other sink kinds skip both checks.
 
 ## Phase 1 - Load + catalog
@@ -100,7 +100,7 @@ STOP with an explicit message naming the missing piece if any check fails:
 
 ### Dispatch
 
-Topo-sort the DAG with the same readiness rules as Phase 2A. For each ready layer, build a JSON spec for `.ai/dashboard/scripts/pipeline_fanout.py` with one `node` per ready DAG node.
+Topo-sort the DAG with the same readiness rules as Phase 2A. For each ready layer, build a JSON spec for `.ai/scripts/pipeline_fanout.py` with one `node` per ready DAG node.
 
 **Platform note (Windows):** `cmd[0]` must be the absolute path returned by `shutil.which("codex")` (e.g. `C:\Users\…\AppData\Roaming\npm\codex.CMD`). Python's `subprocess.run` does not consult `PATHEXT` when the first arg is a bare name, so the literal `"codex"` fails with `FileNotFoundError [WinError 2]` on Windows. Resolve once at pre-flight and reuse for every node. On POSIX, `shutil.which("codex")` returns the same string the shell would resolve, so the same pattern is portable.
 
@@ -132,7 +132,7 @@ Invoke the helper synchronously. The helper itself already pins UTF-8 encoding w
 
 ```
 subprocess.run(
-    [sys.executable, ".ai/dashboard/scripts/pipeline_fanout.py"],
+    [sys.executable, ".ai/scripts/pipeline_fanout.py"],
     input=json.dumps(spec),
     capture_output=True,
     text=True,
@@ -203,7 +203,7 @@ Report to the user: final output (per sink kind), per-node statuses, failed and 
 | All remaining nodes are `skipped` | Halt Phase 2; still run Phase 3 over whatever completed and persist the run. |
 | `codex` binary not on PATH when running Codex Phase 2B | STOP with an explicit message naming the missing `codex` binary. |
 | `.ai/models.yaml` missing `run_pipeline.codex_dispatch` block when running Codex Phase 2B | STOP `run_pipeline.codex_dispatch not configured`. |
-| Helper subprocess crashes or exits non-zero during Codex Phase 2B | STOP and report stderr from `.ai/dashboard/scripts/pipeline_fanout.py`. |
+| Helper subprocess crashes or exits non-zero during Codex Phase 2B | STOP and report stderr from `.ai/scripts/pipeline_fanout.py`. |
 
 ## Notes
 

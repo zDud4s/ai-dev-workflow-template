@@ -1,7 +1,7 @@
 """Tests for the pipeline YAML schema validator (explicit input/sink nodes)."""
 from __future__ import annotations
 
-# conftest.py adds .ai/dashboard/scripts/ to sys.path; no local insert needed.
+# conftest.py adds .ai/scripts/ to sys.path; no local insert needed.
 from pipeline_schema import validate  # noqa: E402
 
 

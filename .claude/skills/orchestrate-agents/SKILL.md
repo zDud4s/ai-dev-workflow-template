@@ -20,7 +20,7 @@ STOP on any failure:
 
 - `.ai/pipelines/` exists and is writable.
 - `run-pipeline` skill body exists in the discovery path (downstream executor).
-- `.ai/dashboard/scripts/pipeline_schema.py` exists (used for validation in step 3).
+- `.ai/scripts/pipeline_schema.py` exists (used for validation in step 3).
 
 ## Flow
 
@@ -34,7 +34,7 @@ STOP on any failure:
 
 2. **Draft the pipeline YAML inline** following the schema in the next section. Pick agents whose `description` fits each subtask; choose `output.mode` based on whether the task needs integrated synthesis (`synthesize`), a single dominant answer (`passthrough`), or independent results (`per-agent`). Keep the draft compact enough that the user can read it in one screen.
 
-3. **Validate** the draft against the schema via `.ai/dashboard/scripts/pipeline_schema.py` `validate()`. If invalid, STOP with `pipeline draft invalid: <reason>` and surface the raw draft for debugging.
+3. **Validate** the draft against the schema via `.ai/scripts/pipeline_schema.py` `validate()`. If invalid, STOP with `pipeline draft invalid: <reason>` and surface the raw draft for debugging.
 
 4. **Show the draft YAML** to the user with a suggested slug (lowercased task description, hyphenated, truncated to 50 characters).
 

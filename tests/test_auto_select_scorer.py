@@ -239,7 +239,7 @@ def test_median_duration_and_per_group_tail():
 
 def _load_serve_module():
     dashboard_dir = str(SERVE_PATH.parent)
-    scripts_dir = str(SERVE_PATH.parent / "scripts")
+    scripts_dir = str(SERVE_PATH.parent.parent / "scripts")
     for path in (scripts_dir, dashboard_dir):
         if path not in sys.path:
             sys.path.insert(0, path)
