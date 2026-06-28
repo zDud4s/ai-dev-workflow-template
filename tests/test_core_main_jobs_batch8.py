@@ -286,13 +286,16 @@ def test_jobs_events_autorefresh_constant() -> None:
         "EVENTS_AUTOREFRESH_MS, not the inline 5000 literal — found: "
         + repr(matches)
     )
-    # And the constant must appear in both call sites.
+    # And the constant must drive both call sites. dash-perf wrapped the bare
+    # `setInterval(loadEvents, ...)` in a visibility gate (only refresh while
+    # the events view is active), so accept either the bare form or the gated
+    # wrapper — both call loadEvents on the EVENTS_AUTOREFRESH_MS cadence.
     const_calls = re.findall(
-        r"setInterval\(\s*loadEvents\s*,\s*EVENTS_AUTOREFRESH_MS\s*\)",
+        r"setInterval\(\s*(?:loadEvents\s*,|function[\s\S]{0,200}?loadEvents\(\)[\s\S]{0,80}?,)\s*EVENTS_AUTOREFRESH_MS\s*\)",
         src,
     )
     assert len(const_calls) >= 2, (
-        "Both setInterval(loadEvents, ...) sites must use EVENTS_AUTOREFRESH_MS"
+        "Both setInterval(...loadEvents...) sites must use EVENTS_AUTOREFRESH_MS"
     )
 
 

@@ -516,6 +516,7 @@
   function startAutoRefresh() {
     if (_refreshTimer) return;
     _refreshTimer = setInterval(function () {
+      if (document.hidden) return;
       if (analyticsVisible()) loadAnalytics();
     }, AUTO_REFRESH_MS);
   }

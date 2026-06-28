@@ -510,7 +510,7 @@
         // via the UI. It's isolated (no edges) and flagged `dup` so it renders
         // with error styling; the user can rename it to a unique id to clear
         // the validation error and rejoin the graph.
-        var dupKey = " dup:" + idx + ":" + ref.id;
+        var dupKey = " dup:" + idx + ":" + ref.id;
         var dnode = { id: dupKey, dup: true, agent: ref.agent || "",
           depends_on: [], ref: ref };
         byId[dupKey] = dnode; refsById[dupKey] = ref; nodes.push(dnode);

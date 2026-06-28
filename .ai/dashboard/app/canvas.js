@@ -251,6 +251,7 @@ function startCanvasHeartbeat() {
   if (typeof window === "undefined") return;
   if (!_canvasHeartbeat && typeof setInterval === "function") {
     _canvasHeartbeat = setInterval(function () {
+      if (typeof document !== "undefined" && document.hidden) return;
       var state = window.CanvasBus.loadState() || {};
       state.lastSeen = Date.now();
       window.CanvasBus.saveState(state);
