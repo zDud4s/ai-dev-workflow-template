@@ -26,6 +26,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
+import server.project_handlers as _ph  # noqa: E402 — _handle_list reads ROOT here (follows-the-move)
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,7 @@ def test_handle_list_rejects_symlink_escape(tmp_path, monkeypatch):
     os.symlink(escape_target, repo / "inside" / "link", target_is_directory=True)
 
     monkeypatch.setattr(serve, "ROOT", repo)
+    monkeypatch.setattr(_ph, "ROOT", repo)  # _handle_list reads ROOT in its own module
 
     h = _FakeHandler()
     # Drive the bound method directly off the Handler class so we don't trip

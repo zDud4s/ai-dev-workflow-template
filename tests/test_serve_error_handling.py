@@ -33,6 +33,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
+import server.transcript_paths as _tp  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +162,7 @@ def test_codex_usage_cap_limits_traversal(tmp_path, monkeypatch):
         fake_files.append(p)
 
     monkeypatch.setattr(serve, "_CODEX_SESSIONS_ROOT_OVERRIDE", sessions_root)
+    monkeypatch.setattr(_tp, "_CODEX_SESSIONS_ROOT_OVERRIDE", sessions_root)
 
     # Spy on ``Path.open`` so we can count how many rollouts get read.
     real_open = pathlib.Path.open
@@ -203,6 +205,7 @@ def test_codex_usage_cap_keeps_newest_by_mtime(tmp_path, monkeypatch):
         paths.append(p)
 
     monkeypatch.setattr(serve, "_CODEX_SESSIONS_ROOT_OVERRIDE", sessions_root)
+    monkeypatch.setattr(_tp, "_CODEX_SESSIONS_ROOT_OVERRIDE", sessions_root)
 
     real_open = pathlib.Path.open
     opened_names: list[str] = []
@@ -288,12 +291,19 @@ def test_serve_source_no_unguarded_utf8_reads_on_known_jsonl_paths():
     use ``errors="replace"`` AND no direct strict-utf8 read on these
     sentinels may sneak back in.
     """
+    # The METRICS_FILE / EVENTS_FILE readers (_load_auto_select_ranking,
+    # _aggregate_analytics, _load_timeline_runs) moved to server/analytics.py,
+    # so scan that module's source alongside serve.py to keep the invariant in
+    # its new home (follows-the-move).
+    import server.analytics as _an
     src = (pathlib.Path(serve.__file__)).read_text(encoding="utf-8")
+    src += pathlib.Path(_an.__file__).read_text(encoding="utf-8")
 
-    # 1. _load_jsonl_cached helper preserves the safety invariant.
-    helper_idx = src.find("def _load_jsonl_cached(")
-    assert helper_idx != -1, "expected _load_jsonl_cached helper to exist"
-    helper_window = src[helper_idx : helper_idx + 2500]
+    # 1. _load_jsonl_cached helper preserves the safety invariant. It now lives
+    #    in server/storage.py (re-exported by serve); inspect.getsource follows
+    #    the re-export, so this stays robust regardless of which file holds it.
+    import inspect
+    helper_window = inspect.getsource(serve._load_jsonl_cached)
     assert 'errors="replace"' in helper_window, \
         "_load_jsonl_cached must read with errors=\"replace\""
 

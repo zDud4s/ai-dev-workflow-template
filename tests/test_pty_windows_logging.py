@@ -16,10 +16,10 @@ import sys
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"))
-import pty_session as _pty_session
+from server import pty_session as _pty_session
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-LOG_EVENT_PATH = ROOT / ".ai" / "dashboard" / "scripts" / "log_event.py"
+LOG_EVENT_PATH = ROOT / ".ai" / "scripts" / "log_event.py"
 
 
 def _fake_posix_pty():

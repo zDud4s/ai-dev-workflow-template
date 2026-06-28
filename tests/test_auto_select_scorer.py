@@ -11,6 +11,9 @@ from auto_select_scorer import budget_alignment, score_groups, wilson_lower_boun
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
 
+sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
+import server.analytics as _an  # noqa: E402 — _load_auto_select_ranking reads METRICS_FILE here (follows-the-move)
+
 
 def _record(
     *,
@@ -236,7 +239,7 @@ def test_median_duration_and_per_group_tail():
 
 def _load_serve_module():
     dashboard_dir = str(SERVE_PATH.parent)
-    scripts_dir = str(SERVE_PATH.parent / "scripts")
+    scripts_dir = str(SERVE_PATH.parent.parent / "scripts")
     for path in (scripts_dir, dashboard_dir):
         if path not in sys.path:
             sys.path.insert(0, path)
@@ -269,6 +272,7 @@ def test_serve_delegates_to_scorer_helper(tmp_path, monkeypatch):
 
     serve = _load_serve_module()
     monkeypatch.setattr(serve, "METRICS_FILE", metrics)
+    monkeypatch.setattr(_an, "METRICS_FILE", metrics)  # follows-the-move
     with serve._JSONL_CACHE_LOCK:
         serve._JSONL_CACHE.pop(str(metrics), None)
 
@@ -322,6 +326,7 @@ def test_default_min_samples_is_5(tmp_path, monkeypatch):
 
     serve = _load_serve_module()
     monkeypatch.setattr(serve, "METRICS_FILE", metrics)
+    monkeypatch.setattr(_an, "METRICS_FILE", metrics)  # follows-the-move
     with serve._JSONL_CACHE_LOCK:
         serve._JSONL_CACHE.pop(str(metrics), None)
 

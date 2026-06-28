@@ -26,7 +26,14 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
+DASHBOARD_DIR = REPO_ROOT / ".ai" / "dashboard"
+if str(DASHBOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(DASHBOARD_DIR))
+import server.transcript_paths as _tp  # noqa: E402
+import server.runtime as _runtime  # noqa: E402 — BOUND_PORT + Origin allowlist live here (follows-the-move)
+import server.jobs as _jobs  # noqa: E402 — the job runner / session engine (reads JOBS_DIR) lives here (follows-the-move)
+
+SERVE_PATH = DASHBOARD_DIR / "serve.py"
 
 
 @pytest.fixture(scope="module")
@@ -44,6 +51,7 @@ def serve_module():
 def _isolate_jobs_dir(tmp_path, monkeypatch, serve_module):
     """Redirect ``serve_module.JOBS_DIR`` to a per-test tmp directory."""
     monkeypatch.setattr(serve_module, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(_jobs, "JOBS_DIR", tmp_path / "jobs")  # follows-the-move: runner/factory read jobs.JOBS_DIR
 
 
 @pytest.fixture(autouse=True)
@@ -62,8 +70,11 @@ def running_server(serve_module):
     port = httpd.server_address[1]
     original_port = serve_module.PORT
     original_bound = serve_module.BOUND_PORT
+    original_runtime_bound = _runtime.BOUND_PORT
     serve_module.PORT = port
     serve_module.BOUND_PORT = port
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    _runtime.BOUND_PORT = port
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -71,6 +82,7 @@ def running_server(serve_module):
     finally:
         serve_module.PORT = original_port
         serve_module.BOUND_PORT = original_bound
+        _runtime.BOUND_PORT = original_runtime_bound
         httpd.shutdown()
         httpd.server_close()
 
@@ -118,6 +130,7 @@ def _seed_projects_root(serve_module, monkeypatch, tmp_path):
     sdir = projects / slug
     sdir.mkdir(parents=True)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     return sdir
 
 
@@ -186,6 +199,7 @@ def test_transcripts_dir_encodes_dot_segments(serve_module, monkeypatch, tmp_pat
     expected = projects / _claude_project_slug(cwd)
     expected.mkdir(parents=True)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     serve_module._TRANSCRIPTS_DIR_CACHE.clear()
 
     assert serve_module._transcripts_dir_for_cwd(cwd) == expected
@@ -196,6 +210,7 @@ def test_transcripts_dir_negative_cache_expires(serve_module, monkeypatch, tmp_p
     projects.mkdir(parents=True)
     cwd = tmp_path / "proj" / ".worktrees" / "wt"
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     serve_module._TRANSCRIPTS_DIR_CACHE.clear()
 
     assert serve_module._transcripts_dir_for_cwd(cwd) is None
@@ -253,6 +268,7 @@ def test_sessions_list_merges_ide_transcripts_and_dashboard(running_server, serv
     (projects / slug / f"{sid}.jsonl").write_text(
         '{"type":"user","message":{"role":"user","content":"oi"}}\n', encoding="utf-8")
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     status, body, _ = _http("GET", f"{running_server}/api/sessions")
     assert status == 200, body
@@ -296,6 +312,7 @@ def test_session_stream_tails_jsonl_in_mirror(running_server, serve_module, tmp_
         '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ola do IDE"}]}}\n',
         encoding="utf-8")
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     buf = _read_sse(running_server, f"/api/sessions/{sid}/stream", until=b"ola do IDE")
     assert b"text/event-stream" in buf.lower()
     assert b"ola do IDE" in buf
@@ -611,7 +628,7 @@ def test_lock_blocks_spawn(serve_module, tmp_path, _reset_session_registry):
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(serve_module.__file__).parent / "scripts"))
-    import session_registry as sr
+    from server import session_registry as sr
 
     spawn_calls = []
 
@@ -657,7 +674,7 @@ def test_release_calls_lock_release(serve_module, tmp_path, _reset_session_regis
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(serve_module.__file__).parent / "scripts"))
-    import session_registry as sr
+    from server import session_registry as sr
 
     released = []
 
@@ -915,6 +932,7 @@ def test_stream_leading_frame_carries_pending(running_server, serve_module, tmp_
         encoding="utf-8",
     )
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     # Put the session in the registry with a pending turn so the leading frame
     # should report pending=True.
@@ -951,6 +969,7 @@ def test_stream_emits_warning_frame(running_server, serve_module, tmp_path, monk
         encoding="utf-8",
     )
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     # Pre-seed a warning on the session so the first poll tick drains it.
     reg = serve_module.SESSION_REGISTRY
@@ -992,10 +1011,12 @@ def test_stream_emits_warning_frame(running_server, serve_module, tmp_path, monk
 def test_resume_adapter_submit_reports_send_failure(serve_module, monkeypatch):
     """_ResumeEngineAdapter.submit must return False when the stdin write fails
     and True when it succeeds, so the registry can fail safe instead of wedging."""
-    monkeypatch.setattr(serve_module, "_send_to_stdin", lambda j, t: (False, "job not running"))
+    # _ResumeEngineAdapter moved to server/jobs.py, so submit() resolves
+    # _send_to_stdin in jobs.py's namespace — patch there (follows-the-move).
+    monkeypatch.setattr(_jobs, "_send_to_stdin", lambda j, t: (False, "job not running"))
     assert serve_module._ResumeEngineAdapter("job-dead").submit({"text": "hi"}) is False
 
-    monkeypatch.setattr(serve_module, "_send_to_stdin", lambda j, t: (True, ""))
+    monkeypatch.setattr(_jobs, "_send_to_stdin", lambda j, t: (True, ""))
     assert serve_module._ResumeEngineAdapter("job-live").submit({"text": "hi"}) is True
 
 
@@ -1009,7 +1030,9 @@ def test_session_stream_does_not_clear_shared_warnings(serve_module):
     """Warnings must be delivered via a per-stream cursor, never cleared from the
     shared list — otherwise the first of two concurrent streams on the same
     session consumes a warning and the second never sees it."""
-    src = inspect.getsource(serve_module.Handler)
+    # _handle_session_stream moved to server/sessions_handlers.py; scope the
+    # source scan to that method so the check stays meaningful.
+    src = inspect.getsource(serve_module.Handler._handle_session_stream)
     assert ".warnings.clear()" not in src, "the SSE loop must not clear the shared warnings list"
     assert "warn_seen" in src, "the SSE loop should track a per-stream warning cursor"
 

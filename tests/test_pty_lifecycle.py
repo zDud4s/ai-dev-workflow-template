@@ -35,8 +35,9 @@ sys.path.insert(
     0,
     str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"),
 )
-import pty_session as _pty_session  # noqa: E402
+from server import pty_session as _pty_session  # noqa: E402
 import serve  # noqa: E402
+import server.pty as _server_pty  # noqa: E402 — PTY state/funcs moved here; serve re-exports
 
 
 _PTY_SOURCE_PATH = pathlib.Path(_pty_session.__file__)
@@ -250,7 +251,9 @@ def _fake_winpty():
 
 
 def test_pty_eviction_unregisters(monkeypatch, clean_serve_ptys, fake_posix_kill):
-    monkeypatch.setattr(serve, "PTYS_MAX", 2)
+    # _evict_old_ptys reads PTYS_MAX from its defining module (server.pty),
+    # so the cap override must be patched there, not on the serve re-export.
+    monkeypatch.setattr(_server_pty, "PTYS_MAX", 2)
     oldest = _add_lifecycle_entry("oldest", "ended", "2026-05-26T00:00:00+00:00")
     _add_lifecycle_entry("newer", "ended", "2026-05-26T00:00:01+00:00")
     _add_lifecycle_entry("newest", "ended", "2026-05-26T00:00:02+00:00")
@@ -280,7 +283,7 @@ def test_pty_kill_unregisters(clean_serve_ptys, fake_posix_kill):
 
 
 def test_pty_churn_30_does_not_exhaust(monkeypatch, clean_serve_ptys, fake_posix_kill):
-    monkeypatch.setattr(serve, "PTYS_MAX", 20)
+    monkeypatch.setattr(_server_pty, "PTYS_MAX", 20)
     for i in range(30):
         pty_id = f"pty-{i}"
         _add_lifecycle_entry(pty_id, "running", f"2026-05-26T00:00:{i:02d}+00:00")
@@ -292,13 +295,17 @@ def test_pty_churn_30_does_not_exhaust(monkeypatch, clean_serve_ptys, fake_posix
 
 
 def test_cleanup_idle_timer_wired():
+    # The idle thread is wired up in serve.py's main(); the loop body that
+    # actually calls cleanup_idle now lives in server/pty.py (re-exported as
+    # serve._pty_idle_loop), so check that via getsource — same approach as
+    # the storage/agent_runs extractions.
     assert re.search(
         r"threading\.Thread\([^)]*target=\s*_pty_idle_loop",
         _SERVE_SOURCE,
     )
     assert re.search(
         r"_pty_session\.Pty\.cleanup_idle\(\)",
-        _SERVE_SOURCE,
+        inspect.getsource(serve._pty_idle_loop),
     )
 
 

@@ -54,7 +54,7 @@ BUDGETS = [
     (".ai/packets/execute.md",               50,  2100),
     (".ai/packets/review.md",                35,  1500),
     (".ai/packets/rescue.md",                25,   900),
-    (".ai/ledgers/todos.jsonl",            1000, 100000),
+    (".ai/local/ledgers/todos.jsonl",            1000, 100000),
     # memory.md: local per-checkout file (skip-worktree). The committed
     # template is empty; each checkout grows it as tasks land. Pin a
     # generous-but-bounded ceiling so a real bloat (>120L / >12KB) still

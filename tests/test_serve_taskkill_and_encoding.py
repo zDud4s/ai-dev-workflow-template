@@ -8,6 +8,7 @@ verify the real code paths, not just the source text.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -143,16 +144,13 @@ def test_load_jsonl_cached_empty_when_missing(serve, tmp_path):
 # -------- MAX_SSE_SESSION_S is wired through both SSE handlers --------
 
 def test_max_sse_session_s_used_in_job_and_transcript_streams(serve):
-    src = SERVE_PATH.read_text(encoding="utf-8")
+    # Use inspect.getsource off the Handler so the check follows handlers that
+    # were split out of serve.py into server/*_handlers.py mixins.
     # _handle_job_stream uses it (batch 4 already shipped this).
-    job_stream = src.split("def _handle_job_stream(", 1)[1].split(
-        "\n    def ", 1
-    )[0]
+    job_stream = inspect.getsource(serve.Handler._handle_job_stream)
     assert "MAX_SSE_SESSION_S" in job_stream
     # _handle_transcript_stream now also uses it (batch 5 fix).
-    tr_stream = src.split("def _handle_transcript_stream(", 1)[1].split(
-        "\n    def ", 1
-    )[0]
+    tr_stream = inspect.getsource(serve.Handler._handle_transcript_stream)
     assert "MAX_SSE_SESSION_S" in tr_stream
 
 

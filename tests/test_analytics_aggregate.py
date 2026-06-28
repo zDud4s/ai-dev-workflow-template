@@ -8,6 +8,7 @@ import json
 import pytest
 
 import serve
+import server.analytics as _an  # analytics reads the ledger consts in its own namespace (follows-the-move)
 
 
 def _write_jsonl(path, rows):
@@ -32,6 +33,7 @@ def ledgers(tmp_path, monkeypatch):
         p = tmp_path / name
         p.write_text("", encoding="utf-8")
         monkeypatch.setattr(serve, const, p)
+        monkeypatch.setattr(_an, const, p)  # follows-the-move: analytics reads consts in its own namespace
         files[name] = p
     with serve._JSONL_CACHE_LOCK:
         serve._JSONL_CACHE.clear()

@@ -26,6 +26,18 @@ def serve_module():
     return mod
 
 
+def _patch_attr(monkeypatch, serve_module, name, value):
+    """setattr name=value on serve_module AND every loaded server.* module that
+    binds its own copy (re-export shims create independent bindings, so a fn
+    moved out of serve.py — e.g. into server.analytics — reads the name in its
+    new module's namespace). follows-the-move."""
+    if hasattr(serve_module, name):
+        monkeypatch.setattr(serve_module, name, value, raising=False)
+    for modname, mod in list(sys.modules.items()):
+        if (modname == "server" or modname.startswith("server.")) and mod is not None and hasattr(mod, name):
+            monkeypatch.setattr(mod, name, value, raising=False)
+
+
 @pytest.fixture
 def running_server(serve_module):
     httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 0), serve_module.Handler)
@@ -49,7 +61,7 @@ def _write_metrics(tmp_path: Path, records: list[dict]) -> Path:
 
 
 def test_loader_returns_empty_when_file_missing(serve_module, tmp_path, monkeypatch):
-    monkeypatch.setattr(serve_module, "METRICS_FILE", tmp_path / "absent.jsonl")
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", tmp_path / "absent.jsonl")
     result = serve_module._load_auto_select_ranking()
     # Loader response shape expanded over time — pin only the fields this
     # test cares about (samples count + groups list); other diagnostics
@@ -78,7 +90,7 @@ def test_loader_groups_by_phase_size_risk(serve_module, tmp_path, monkeypatch):
            "review_verdict": "approve"} for _ in range(5)],
     ]
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     assert result["samples"] == 10
     keys = {(g["key"]["phase"], g["key"]["size"], g["key"]["risk"])
@@ -101,7 +113,7 @@ def test_loader_drops_candidates_below_min_samples(serve_module, tmp_path, monke
         for _ in range(3)  # 3 samples — below explicit threshold of 5
     ]
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking(min_samples=5)
     assert result["samples"] == 3
     assert result["groups"] == []  # no group qualifies
@@ -120,7 +132,7 @@ def test_loader_computes_success_rate(serve_module, tmp_path, monkeypatch):
          "handoff_complete": True, "review_verdict": None},
     ]
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     assert len(result["groups"]) == 1
     candidates = result["groups"][0]["candidates"]
@@ -156,7 +168,7 @@ def test_loader_ranks_candidates_by_score(serve_module, tmp_path, monkeypatch):
         for _ in range(2)
     ])
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     cands = result["groups"][0]["candidates"]
     assert cands[0]["model"] == "gpt-5.4"
@@ -174,7 +186,7 @@ def _http_get(url: str) -> tuple[int, bytes]:
 
 def test_endpoint_returns_json_payload(running_server, serve_module, tmp_path, monkeypatch):
     """/api/auto-select returns a 200 JSON payload with samples + groups."""
-    monkeypatch.setattr(serve_module, "METRICS_FILE", tmp_path / "missing.jsonl")
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", tmp_path / "missing.jsonl")
     status, body = _http_get(f"{running_server}/api/auto-select")
     assert status == 200
     payload = json.loads(body)
@@ -205,7 +217,7 @@ def test_loader_skips_malformed_json_lines(serve_module, tmp_path, monkeypatch):
     )
     p = tmp_path / "metrics.jsonl"
     p.write_text(raw, encoding="utf-8")
-    monkeypatch.setattr(serve_module, "METRICS_FILE", p)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", p)
     result = serve_module._load_auto_select_ranking()
     assert result["samples"] == 3  # 3 valid + 1 garbage skipped + 1 blank skipped
 
@@ -221,7 +233,7 @@ def test_loader_skips_records_without_phase(serve_module, tmp_path, monkeypatch)
         {"size": "small", "tool": "codex", "exit_code": 0},
     ]
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     assert result["samples"] == 5
     assert len(result["groups"]) == 1
@@ -239,7 +251,7 @@ def test_loader_handles_null_size_risk_budget(serve_module, tmp_path, monkeypatc
         for _ in range(5)
     ]
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     assert len(result["groups"]) == 1
     g = result["groups"][0]
@@ -261,7 +273,7 @@ def test_loader_tolerates_missing_duration_ms(serve_module, tmp_path, monkeypatc
         for _ in range(5)
     ]
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     assert result["groups"][0]["candidates"][0]["mean_duration_ms"] == 0
     assert result["groups"][0]["candidates"][0]["median_duration_ms"] == 0
@@ -280,7 +292,7 @@ def test_loader_max_records_window_only_tails(serve_module, tmp_path, monkeypatc
             "tool": "codex", "model": "gpt-5.5", "exit_code": 0, "duration_ms": 1000,
             "handoff_complete": True, "review_verdict": "approve"} for _ in range(200)]
     metrics = _write_metrics(tmp_path, old + new)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking(max_records=200)
     cands = result["groups"][0]["candidates"]
     assert len(cands) == 1
@@ -307,7 +319,7 @@ def test_loader_caps_candidates_at_top_3(serve_module, tmp_path, monkeypatch):
             for _ in range(5)
         ])
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     assert len(result["groups"][0]["candidates"]) == 3  # capped
 
@@ -336,7 +348,7 @@ def test_loader_score_matches_delegated_scorer(serve_module, tmp_path, monkeypat
         for _ in range(5)
     ])
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     expected = serve_module.auto_select_scorer.score_groups(
         records,
@@ -372,7 +384,7 @@ def test_handoff_false_counts_as_failure(serve_module, tmp_path, monkeypatch):
            "handoff_complete": False, "review_verdict": None} for _ in range(2)],
     ]
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     assert result["groups"][0]["candidates"][0]["success_rate"] == 0.6  # 3/5
 
@@ -390,7 +402,7 @@ def test_review_verdict_request_changes_counts_as_failure(serve_module, tmp_path
          "handoff_complete": True, "review_verdict": "request-changes"},
     ]
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     assert result["groups"][0]["candidates"][0]["success_rate"] == 0.8
 
@@ -414,7 +426,7 @@ def test_reasoning_effort_is_part_of_candidate_key(serve_module, tmp_path, monke
         for _ in range(5)
     ])
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     result = serve_module._load_auto_select_ranking()
     cands = result["groups"][0]["candidates"]
     assert len(cands) == 2
@@ -438,7 +450,7 @@ def test_endpoint_returns_populated_rankings_end_to_end(
         for _ in range(5)
     ]
     metrics = _write_metrics(tmp_path, records)
-    monkeypatch.setattr(serve_module, "METRICS_FILE", metrics)
+    _patch_attr(monkeypatch, serve_module, "METRICS_FILE", metrics)
     status, body = _http_get(f"{running_server}/api/auto-select")
     assert status == 200
     payload = json.loads(body)

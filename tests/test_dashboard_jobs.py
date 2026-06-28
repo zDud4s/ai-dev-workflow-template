@@ -38,7 +38,16 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
+DASHBOARD_DIR = REPO_ROOT / ".ai" / "dashboard"
+if str(DASHBOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(DASHBOARD_DIR))
+import server.transcript_paths as _tp  # noqa: E402
+import server.runtime as _runtime  # noqa: E402 — BOUND_PORT + Origin allowlist live here (follows-the-move)
+import server.jobs_persistence as _jp  # noqa: E402 — _persist_job/_load_persisted_jobs + JOBS_PERSIST_FILE live here
+import server.jobs as _jobs  # noqa: E402 — the job runner (reads JOBS_DIR) lives here (follows-the-move)
+import server.analytics as _an  # noqa: E402 — _load_timeline_runs reads EVENTS_FILE here (follows-the-move)
+
+SERVE_PATH = DASHBOARD_DIR / "serve.py"
 
 
 @pytest.fixture(scope="module")
@@ -57,12 +66,13 @@ def _isolate_jobs_dir(tmp_path, monkeypatch, serve_module):
     """Redirect ``serve_module.JOBS_DIR`` to a per-test tmp directory.
 
     Without this, any test that calls ``_start_subprocess_job`` writes a
-    real ``.log`` file under ``.ai/dashboard/jobs/`` — the same dir the
+    real ``.log`` file under ``.ai/local/jobs/`` — the same dir the
     running dashboard reads. Those leftover synthetic fixtures (``task:
     cost test``, ``task: (noop)``, etc.) then show up in the operator's
     job picker and render as confusing empty panes when opened.
     """
     monkeypatch.setattr(serve_module, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(_jobs, "JOBS_DIR", tmp_path / "jobs")  # follows-the-move: runner reads jobs.JOBS_DIR
 
 
 @pytest.fixture
@@ -80,8 +90,11 @@ def running_server(serve_module):
     port = httpd.server_address[1]
     original_port = serve_module.PORT
     original_bound = serve_module.BOUND_PORT
+    original_runtime_bound = _runtime.BOUND_PORT
     serve_module.PORT = port
     serve_module.BOUND_PORT = port
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    _runtime.BOUND_PORT = port
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -89,6 +102,7 @@ def running_server(serve_module):
     finally:
         serve_module.PORT = original_port
         serve_module.BOUND_PORT = original_bound
+        _runtime.BOUND_PORT = original_runtime_bound
         httpd.shutdown()
         httpd.server_close()
 
@@ -575,6 +589,7 @@ def test_list_transcripts_returns_session_files_for_current_repo(running_server,
     has written for the current repo's working directory."""
     projects = _make_fake_transcripts_dir(tmp_path, serve_module.ROOT)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     status, body, _ = _http("GET", f"{running_server}/api/transcripts")
     assert status == 200, body
@@ -592,6 +607,7 @@ def test_transcript_stream_emits_existing_lines_via_sse(running_server, serve_mo
     operator immediately sees the IDE conversation."""
     projects = _make_fake_transcripts_dir(tmp_path, serve_module.ROOT)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     # Pull the session id back out of our fake file.
     sid = "12345678-1234-1234-1234-1234abcd0001"
 
@@ -627,6 +643,7 @@ def test_transcript_stream_404_for_unknown_session(running_server, serve_module,
     """Unknown session id -> 404 (don't leak filesystem state)."""
     projects = _make_fake_transcripts_dir(tmp_path, serve_module.ROOT)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
     status, body, _ = _http(
         "GET",
         f"{running_server}/api/transcripts/00000000-0000-0000-0000-000000000000/stream",
@@ -884,6 +901,7 @@ def test_persist_job_appends_snapshot_to_jsonl_file(tmp_path, serve_module, monk
     and don't survive a restart anyway."""
     p = tmp_path / "jobs.jsonl"
     monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", p)  # follows-the-move
     job_id = str(uuid.uuid4())
     with serve_module.JOBS_LOCK:
         serve_module.JOBS[job_id] = {
@@ -911,6 +929,7 @@ def test_persist_job_appends_one_line_per_call(tmp_path, serve_module, monkeypat
     keeps the LAST snapshot per job_id."""
     p = tmp_path / "jobs.jsonl"
     monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", p)  # follows-the-move
     job_id = str(uuid.uuid4())
     with serve_module.JOBS_LOCK:
         serve_module.JOBS[job_id] = {"id": job_id, "kind": "chat", "task": "x", "status": "queued", "created_at": "t"}
@@ -940,6 +959,7 @@ def test_load_persisted_jobs_rebuilds_JOBS_dict_with_last_snapshot(tmp_path, ser
         json.dumps({"id": "a2", "kind": "chat", "status": "running", "task": "fresh", "created_at": "2026-01-02"}),
     ]) + "\n", encoding="utf-8")
     monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", p)  # follows-the-move
 
     with serve_module.JOBS_LOCK:
         # Clear any leakage from other tests.
@@ -960,6 +980,7 @@ def test_load_persisted_jobs_is_idempotent_when_file_missing(tmp_path, serve_mod
     """Missing file -> no-op, no crash. (Fresh repo, first run.)"""
     p = tmp_path / "does-not-exist.jsonl"
     monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", p)  # follows-the-move
     with serve_module.JOBS_LOCK:
         before = dict(serve_module.JOBS)
     serve_module._load_persisted_jobs()  # must not raise
@@ -970,7 +991,7 @@ def test_load_persisted_jobs_is_idempotent_when_file_missing(tmp_path, serve_mod
 def test_persist_job_refuses_default_path_under_pytest(serve_module):
     """Defensive guard: under pytest, ``_persist_job`` must NOT write the
     real repo ledger. Tests that forget to monkeypatch ``JOBS_PERSIST_FILE``
-    would otherwise pollute the developer's working ``.ai/ledgers/jobs.jsonl``
+    would otherwise pollute the developer's working ``.ai/local/ledgers/jobs.jsonl``
     with fixture entries (1800+ such pollution entries observed in the wild
     before this guard landed).
 
@@ -1010,6 +1031,7 @@ def test_persist_job_writes_when_monkeypatched_to_tmp(tmp_path, serve_module, mo
     under pytest."""
     p = tmp_path / "jobs.jsonl"
     monkeypatch.setattr(serve_module, "JOBS_PERSIST_FILE", p)
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", p)  # follows-the-move
     job_id = str(uuid.uuid4())
     with serve_module.JOBS_LOCK:
         serve_module.JOBS[job_id] = {
@@ -1110,7 +1132,7 @@ def test_prune_old_logs_keeps_only_newest_when_above_cap(tmp_path, serve_module)
 def test_chat_job_log_path_points_at_transcript_file(tmp_path, serve_module, monkeypatch):
     """For chat jobs the dashboard reuses ``claude``'s own transcript file
     (which it writes anyway via ``--session-id``) instead of writing a
-    redundant ``.log`` file under ``.ai/dashboard/jobs/``. ``log_path`` on
+    redundant ``.log`` file under ``.ai/local/jobs/``. ``log_path`` on
     the job record points at the transcript path so cost extraction and
     catch-up read from the single source of truth."""
     # Point the projects root at the tmp tree.
@@ -1118,6 +1140,7 @@ def test_chat_job_log_path_points_at_transcript_file(tmp_path, serve_module, mon
     slug = str(serve_module.ROOT).replace(":", "-").replace("\\", "-").replace("/", "-").replace(" ", "-")
     (projects / slug).mkdir(parents=True)
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     job_id = str(uuid.uuid4())
     sid = "11111111-aaaa-bbbb-cccc-222222222222"
@@ -1143,7 +1166,7 @@ def test_chat_job_log_path_points_at_transcript_file(tmp_path, serve_module, mon
                 break
         time.sleep(0.05)
     log_path = Path(serve_module.JOBS[job_id]["log_path"])
-    # The chat job should not produce a file under .ai/dashboard/jobs.
+    # The chat job should not produce a file under .ai/local/jobs.
     expected_legacy = serve_module.JOBS_DIR / f"{job_id}.log"
     assert not expected_legacy.exists(), f"redundant .log file appeared: {expected_legacy}"
     # log_path must point under the claude projects dir for this session.
@@ -1370,6 +1393,7 @@ def test_timeline_empty_events(tmp_path, serve_module, monkeypatch):
     fresh repo where no phase has ever been dispatched."""
     p = tmp_path / "events.jsonl"
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     assert serve_module._load_timeline_runs() == []
     p.write_text("", encoding="utf-8")
     assert serve_module._load_timeline_runs() == []
@@ -1388,6 +1412,7 @@ def test_timeline_groups_by_session(tmp_path, serve_module, monkeypatch):
          "phase": "plan",    "tool": "claude", "model": "opus",    "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     runs = serve_module._load_timeline_runs()
     assert len(runs) == 2
     by_sid = {r["session_id"]: r for r in runs}
@@ -1408,6 +1433,7 @@ def test_timeline_phase_duration_derived(tmp_path, serve_module, monkeypatch):
          "phase": "execute", "tool": "codex",  "model": "gpt-5.5", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     runs = serve_module._load_timeline_runs()
     phases = runs[0]["phases"]
     assert phases[0]["duration_ms"] == 0
@@ -1427,6 +1453,7 @@ def test_timeline_status_classification(tmp_path, serve_module, monkeypatch):
          "phase": "review",  "tool": "claude", "model": "opus",    "exit_code": None},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     runs = serve_module._load_timeline_runs()
     statuses = [ph["status"] for ph in runs[0]["phases"]]
     assert statuses == ["success", "failure", "pending"]
@@ -1445,7 +1472,9 @@ def test_timeline_includes_total_duration_and_tag(tmp_path, serve_module, monkey
          "phase": "execute", "tool": "claude", "model": "opus", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
     runs = serve_module._load_timeline_runs()
     assert runs[0]["total_duration_ms"] == 45_000
     assert runs[0]["tag"] == "claude/opus"
@@ -1462,7 +1491,9 @@ def test_timeline_tag_mixed_when_multiple_tools(tmp_path, serve_module, monkeypa
          "phase": "execute", "tool": "codex",  "model": "gpt-5.5", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-transcripts")
     runs = serve_module._load_timeline_runs()
     assert runs[0]["tag"] == "mixed"
 
@@ -1487,6 +1518,7 @@ def test_timeline_task_from_transcript_when_available(tmp_path, serve_module, mo
         encoding="utf-8",
     )
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     p = tmp_path / "events.jsonl"
     _write_events(p, [
@@ -1494,6 +1526,7 @@ def test_timeline_task_from_transcript_when_available(tmp_path, serve_module, mo
          "phase": "plan", "tool": "claude", "model": "opus", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     runs = serve_module._load_timeline_runs()
     assert runs[0]["task"] == "Add a timeline view to the dashboard"
 
@@ -1528,6 +1561,7 @@ def test_timeline_task_skips_ide_injected_user_messages(tmp_path, serve_module, 
         encoding="utf-8",
     )
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", projects)
 
     p = tmp_path / "events.jsonl"
     _write_events(p, [
@@ -1535,6 +1569,7 @@ def test_timeline_task_skips_ide_injected_user_messages(tmp_path, serve_module, 
          "phase": "plan", "tool": "claude", "model": "opus", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     runs = serve_module._load_timeline_runs()
     assert runs[0]["task"] == "fix the bug in the login flow"
 
@@ -1548,7 +1583,9 @@ def test_timeline_task_none_when_transcript_missing(tmp_path, serve_module, monk
          "phase": "plan", "tool": "claude", "model": "opus", "exit_code": 0},
     ])
     monkeypatch.setattr(serve_module, "EVENTS_FILE", p)
+    monkeypatch.setattr(_an, "EVENTS_FILE", p)  # follows-the-move
     monkeypatch.setattr(serve_module, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-such-dir")
+    monkeypatch.setattr(_tp, "_CLAUDE_PROJECTS_ROOT_OVERRIDE", tmp_path / "no-such-dir")
     runs = serve_module._load_timeline_runs()
     assert runs[0]["task"] is None
 

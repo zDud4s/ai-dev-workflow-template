@@ -3,6 +3,9 @@ import sys, pathlib, json, threading, os
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / ".ai" / "dashboard"))
 import serve  # the module under test
+import server.jobs_persistence as _jp  # _persist_job + JOBS_PERSIST_FILE live here (follows-the-move)
+import server.improver_io as _io  # _audit_improvement/_apply_improvement read consts here (follows-the-move)
+import server.improver as _im  # _record_skill_metrics reads SKILL_METRICS_FILE/JOBS/_post_job_skill_actions here (follows-the-move)
 
 
 def _bare_handler():
@@ -54,8 +57,8 @@ def test_static_serving_allows_project_state_files():
         "/.ai/decisions.md",
         "/.ai/project.yaml",
         "/.ai/models.yaml",
-        "/.ai/ledgers/events.jsonl",
-        "/.ai/ledgers/jobs.jsonl",
+        "/.ai/local/ledgers/events.jsonl",
+        "/.ai/local/ledgers/jobs.jsonl",
     ]
     for path in needed:
         translated = h.translate_path(path)
@@ -100,6 +103,11 @@ def test_jobs_persist_lock_serializes_writes(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(serve, "JOBS_PERSIST_FILE", persist_path)
     monkeypatch.setattr(serve, "JOBS", jobs)
+    # _persist_job moved to server.jobs_persistence; it reads JOBS_PERSIST_FILE
+    # and JOBS from that module's namespace (the `from ... import` bindings),
+    # so a serve-only rebind no longer reaches it.
+    monkeypatch.setattr(_jp, "JOBS_PERSIST_FILE", persist_path)
+    monkeypatch.setattr(_jp, "JOBS", jobs)
 
     threads = [
         threading.Thread(target=serve._persist_job, args=(job_id,))
@@ -118,6 +126,7 @@ def test_jobs_persist_lock_serializes_writes(tmp_path, monkeypatch):
 def test_improvements_ledger_lock_serializes_writes(tmp_path, monkeypatch):
     ledger_path = tmp_path / "improvements.jsonl"
     monkeypatch.setattr(serve, "IMPROVEMENTS_LEDGER", ledger_path)
+    monkeypatch.setattr(_io, "IMPROVEMENTS_LEDGER", ledger_path)  # follows-the-move
 
     threads = [
         threading.Thread(
@@ -154,8 +163,11 @@ def test_skill_metrics_lock_serializes_writes(tmp_path, monkeypatch):
         for i in range(20)
     }
     monkeypatch.setattr(serve, "SKILL_METRICS_FILE", metrics_path)
+    monkeypatch.setattr(_im, "SKILL_METRICS_FILE", metrics_path)  # follows-the-move
     monkeypatch.setattr(serve, "JOBS", jobs)
+    monkeypatch.setattr(_im, "JOBS", jobs)  # follows-the-move (rebind, not in-place)
     monkeypatch.setattr(serve, "_post_job_skill_actions", lambda job_id, skill_ids: None)
+    monkeypatch.setattr(_im, "_post_job_skill_actions", lambda job_id, skill_ids: None)  # follows-the-move
 
     threads = [
         threading.Thread(target=serve._record_skill_metrics, args=(job_id,))
@@ -177,7 +189,9 @@ def test_apply_improvement_atomic_replace_success(tmp_path, monkeypatch):
     skill_path.write_text("ORIGINAL", encoding="utf-8")
     backups_dir = tmp_path / "backups"
     monkeypatch.setattr(serve, "SKILL_BACKUPS_DIR", backups_dir)
+    monkeypatch.setattr(_io, "SKILL_BACKUPS_DIR", backups_dir)  # follows-the-move
     monkeypatch.setattr(serve, "IMPROVEMENTS_LEDGER", tmp_path / "improvements.jsonl")
+    monkeypatch.setattr(_io, "IMPROVEMENTS_LEDGER", tmp_path / "improvements.jsonl")  # follows-the-move
 
     ok = serve._apply_improvement(
         skill_path,
@@ -201,7 +215,9 @@ def test_apply_improvement_atomic_replace_failure_preserves_original(tmp_path, m
     skill_path = tmp_path / "skill.md"
     skill_path.write_text("ORIGINAL", encoding="utf-8")
     monkeypatch.setattr(serve, "SKILL_BACKUPS_DIR", tmp_path / "backups")
+    monkeypatch.setattr(_io, "SKILL_BACKUPS_DIR", tmp_path / "backups")  # follows-the-move
     monkeypatch.setattr(serve, "IMPROVEMENTS_LEDGER", tmp_path / "improvements.jsonl")
+    monkeypatch.setattr(_io, "IMPROVEMENTS_LEDGER", tmp_path / "improvements.jsonl")  # follows-the-move
 
     def fail_replace(src, dst):
         raise OSError("simulated")

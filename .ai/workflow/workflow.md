@@ -29,11 +29,28 @@ The shared dispatch mechanism (routing modes, prompt-passing, resume rule, confi
 
 Filled packets flow via stdin/temp files (see `dispatch.md`); never Edit/Write `.ai/packets/*.md` during a task — workflow violation.
 
+### Directory reference
+
+Directories that are easy to confuse, disambiguated by actual use. Authored
+task instances (`plans/`, `specs/`) sit at the `.ai/` top level; all generated
+runtime data lives together under the gitignored **`.ai/local/`** bucket
+(`ledgers/`, `agent-runs/`, `pipelines/`, `jobs/`, `proposals/`) so it never
+mixes with the versioned workflow contract.
+
+| Directory | Holds | Distinct from sibling |
+|---|---|---|
+| `.ai/plans/` | Persisted execution plan (packet-level breakdown) for medium/large code tasks. | `specs/` is the design; `plans/` is the executable phase breakdown. |
+| `.ai/specs/` | Persisted spec (broader design/intent) for large tasks. | Written before/above the plan; large tasks may have both. |
+| `.ai/local/pipelines/` | Saved agent-pipeline YAML definitions (structure-only DAGs) authored by `orchestrate-agents`. | Definitions, not results — per-developer, gitignored. |
+| `.ai/local/agent-runs/` | Filled run records persisted by `run-pipeline` after executing a pipeline. | Outputs of a pipeline run, not its definition. |
+| `.ai/local/ledgers/` | Durable append-only JSONL: `metrics.jsonl`, `events.jsonl`, `jobs.jsonl` (snapshot index), `todos.jsonl`. | Permanent observability log; survives across jobs. |
+| `.ai/local/jobs/` | Per-job runtime files `<id>.log` / `<id>.json` from the dashboard. | Transient working files (pruned after 7 days), not the durable ledger. |
+
 ## Rules
 
 1. If `project_name` in `.ai/project.yaml` is `unknown`, run bootstrap first.
 2. Bootstrap may NOT rewrite the workflow core nor implement product changes; preserve existing repository instructions.
 3. Executor must fill the Handoff section before declaring done. `Validation evidence` is mandatory — one block per validation command (exit code + output tail). Self-reported success without evidence is not acceptable.
 4. Prefer the smallest correct change; do not broaden scope silently.
-5. A phase SHOULD be launched through the tool/model configured in `.ai/models.yaml` (or the planner's `## Selected models` block when auto-select is enabled). Manual runs that bypass dispatch don't generate a `.ai/ledgers/metrics.jsonl` row, so they can't be scored by the adaptive selector and won't appear in `## Phase execution log` — the orchestrator surfaces them as `source=manual` if a user later replays them through the pipeline.
+5. A phase SHOULD be launched through the tool/model configured in `.ai/models.yaml` (or the planner's `## Selected models` block when auto-select is enabled). Manual runs that bypass dispatch don't generate a `.ai/local/ledgers/metrics.jsonl` row, so they can't be scored by the adaptive selector and won't appear in `## Phase execution log` — the orchestrator surfaces them as `source=manual` if a user later replays them through the pipeline.
 6. Review runs when Risk level is `elevated` OR Size is `medium`/`large`. Size alone never bypasses risk; for code changes the deterministic gate is the ship/no-ship decision; LLM review is advisory.

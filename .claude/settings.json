@@ -22,7 +22,7 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "python \"${CLAUDE_PROJECT_DIR}/.ai/dashboard/scripts/log_event.py\"" }
+          { "type": "command", "command": "python \"${CLAUDE_PROJECT_DIR}/.ai/scripts/log_event.py\"" }
         ]
       }
     ]

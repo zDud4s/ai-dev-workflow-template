@@ -3,6 +3,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / ".ai" / "dashboard"))
 import serve
+import server.runtime  # BOUND_PORT + Origin allowlist now live here (follows-the-move)
 
 import pytest
 
@@ -60,6 +61,8 @@ def test_origin_uses_bound_port_not_configured(monkeypatch):
     # concurrent dashboard rejected every POST with 403.
     monkeypatch.setattr(serve, "PORT", 8765)
     monkeypatch.setattr(serve, "BOUND_PORT", 8766)
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    monkeypatch.setattr(server.runtime, "BOUND_PORT", 8766)
     assert serve._origin_allowed({"Origin": "http://localhost:8766"}) is True
     assert serve._origin_allowed({"Origin": "http://127.0.0.1:8766"}) is True
     assert serve._origin_allowed({"Origin": "http://[::1]:8766"}) is True

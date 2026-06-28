@@ -348,7 +348,7 @@
     // ----- Agent suggestions (POST /api/agents/suggest -> proposals) -----
     // Backend mirrors the skill-improver flow but for agents: one click runs
     // a one-shot LLM that proposes 0..N new agent files. Each proposal is
-    // persisted as {id}.json + {id}.body.md under .ai/dashboard/proposals/agents
+    // persisted as {id}.json + {id}.body.md under .ai/local/proposals/agents
     // and surfaced here until the user accepts (materialises the agent at
     // .claude/agents/<slug>.md) or rejects (kept on disk, status=rejected).
     var _currentAgentProposalId = null;

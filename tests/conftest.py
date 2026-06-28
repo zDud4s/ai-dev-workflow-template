@@ -26,13 +26,13 @@ os.environ.setdefault("AI_WORKFLOW_DISABLE_IMPROVER", "1")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Tests that load `serve.py` via `importlib.util.spec_from_file_location` hit
-# `import pty_session as _pty_session` inside serve.py. The helper modules
-# live in `.ai/dashboard/scripts/` (sibling folder); serve.py itself stays at
-# `.ai/dashboard/serve.py`. Insert both so tests can `import serve` AND
-# `import pty_session`/`import todos_parser` directly.
+# Tests that load `serve.py` via `importlib.util.spec_from_file_location` need
+# two dirs on sys.path: `.ai/dashboard` so `import serve` and `from server
+# import …` resolve (dashboard-only helpers now live in the server/ package),
+# and `.ai/scripts` so the bare workflow-helper imports (`import todos_parser`
+# / `import auto_select_scorer` / `from pipeline_schema import …`) resolve.
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
-sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard" / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / ".ai" / "scripts"))
 
 WORKFLOW_DIR = REPO_ROOT / ".ai" / "workflow"
 PACKETS_DIR = REPO_ROOT / ".ai" / "packets"

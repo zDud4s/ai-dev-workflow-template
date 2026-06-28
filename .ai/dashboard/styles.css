@@ -6586,9 +6586,10 @@ body.pipeline-wire-active { user-select: none; -webkit-user-select: none; }
   overflow: hidden;
 }
 .council-rank-bar-fill {
+  --bar: 0%;   /* default; council.js sets the real % per-element via setProperty */
   display: block;
   height: 100%;
-  width: var(--bar, 0%);
+  width: var(--bar);
   border-radius: inherit;
   background: var(--accent);   /* neutral while blind */
   transition: width var(--dur-slow) var(--ease-out-expo);

@@ -13,6 +13,7 @@ from typing import Iterator
 
 import pytest
 import serve
+import server.runtime  # BOUND_PORT + Origin allowlist now live here (follows-the-move)
 
 
 class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
@@ -24,6 +25,18 @@ class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
 def agent_runs_dir(tmp_path, monkeypatch) -> Path:
     monkeypatch.setattr(serve, "AGENT_RUNS_DIR", tmp_path)
     monkeypatch.setattr(serve, "METRICS_FILE", tmp_path / "metrics.jsonl")
+    # _list_agent_runs / _agent_run_metrics_by_slug now live in
+    # server.agent_runs (re-exported by serve), and they read AGENT_RUNS_DIR /
+    # METRICS_FILE from that module's namespace. Patch the canonical location
+    # too so the move stays transparent to this endpoint test.
+    import server.agent_runs as _agent_runs_mod
+    monkeypatch.setattr(_agent_runs_mod, "AGENT_RUNS_DIR", tmp_path)
+    monkeypatch.setattr(_agent_runs_mod, "METRICS_FILE", tmp_path / "metrics.jsonl")
+    # _handle_agent_orchestration_get moved to server.pipelines_handlers and
+    # reads AGENT_RUNS_DIR from that module's namespace for its trusted-dir
+    # check, so patch it there too (follows-the-move).
+    import server.pipelines_handlers as _plh
+    monkeypatch.setattr(_plh, "AGENT_RUNS_DIR", tmp_path)
     with serve._JSONL_CACHE_LOCK:
         serve._JSONL_CACHE.clear()
     return tmp_path
@@ -35,6 +48,8 @@ def running_server(monkeypatch) -> Iterator[str]:
     port = httpd.server_address[1]
     monkeypatch.setattr(serve, "PORT", port)
     monkeypatch.setattr(serve, "BOUND_PORT", port)
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    monkeypatch.setattr(server.runtime, "BOUND_PORT", port)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:

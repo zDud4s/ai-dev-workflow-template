@@ -28,6 +28,7 @@ refactor of the helper can't silently regress UTF-8 robustness.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import pathlib
@@ -41,6 +42,8 @@ SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
 
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
+import server.analytics as _an  # analytics readers resolve consts in their namespace (follows-the-move)
+import server.improver_io as _io  # noqa: E402 — _last_improver_run_ts/_check_skill_regression read consts here (follows-the-move)
 
 
 SRC = SERVE_PATH.read_text(encoding="utf-8")
@@ -89,6 +92,7 @@ def test_auto_select_uses_jsonl_cache_object_identity(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(serve, "METRICS_FILE", metrics)
+    monkeypatch.setattr(_an, "METRICS_FILE", metrics)  # follows-the-move
 
     # First call: parses the file (cache miss).
     r1 = serve._load_auto_select_ranking(min_samples=1)
@@ -115,6 +119,7 @@ def test_auto_select_mtime_bump_invalidates_cache(tmp_path, monkeypatch):
             "duration_ms": 1000, "ts": "2026-05-24T00:00:00+00:00"}
     metrics.write_text(json.dumps(base) + "\n", encoding="utf-8")
     monkeypatch.setattr(serve, "METRICS_FILE", metrics)
+    monkeypatch.setattr(_an, "METRICS_FILE", metrics)  # follows-the-move
 
     first = serve._load_jsonl_cached(metrics)
     # Force a forward mtime jump (the comparator uses ``st_mtime_ns ==``).
@@ -127,7 +132,7 @@ def test_auto_select_mtime_bump_invalidates_cache(tmp_path, monkeypatch):
 def test_auto_select_source_no_direct_read_text():
     """Source-level guard: the helper must not call ``METRICS_FILE.read_text(``
     any more — that was exactly the bypass batch 7 closed."""
-    body = SRC.split("def _load_auto_select_ranking(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._load_auto_select_ranking)
     assert "METRICS_FILE.read_text" not in body, (
         "_load_auto_select_ranking still reads METRICS_FILE directly; bypasses cache"
     )
@@ -155,6 +160,7 @@ def test_timeline_runs_uses_jsonl_cache(tmp_path, monkeypatch):
     }
     events.write_text(json.dumps(ev) + "\n", encoding="utf-8")
     monkeypatch.setattr(serve, "EVENTS_FILE", events)
+    monkeypatch.setattr(_an, "EVENTS_FILE", events)  # follows-the-move
 
     runs = serve._load_timeline_runs()
     assert len(runs) == 1
@@ -169,7 +175,7 @@ def test_timeline_runs_uses_jsonl_cache(tmp_path, monkeypatch):
 
 def test_timeline_source_no_direct_read_text():
     """Source-level guard mirroring the auto-select check."""
-    body = SRC.split("def _load_timeline_runs(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._load_timeline_runs)
     assert "EVENTS_FILE.read_text" not in body, (
         "_load_timeline_runs still reads EVENTS_FILE directly; bypasses cache"
     )
@@ -192,6 +198,7 @@ def test_timeline_ignores_non_phase_dispatch(tmp_path, monkeypatch):
     events.write_text("\n".join(json.dumps(r) for r in rows) + "\n",
                       encoding="utf-8")
     monkeypatch.setattr(serve, "EVENTS_FILE", events)
+    monkeypatch.setattr(_an, "EVENTS_FILE", events)  # follows-the-move
     runs = serve._load_timeline_runs()
     assert len(runs) == 1
     assert len(runs[0]["phases"]) == 1, (
@@ -217,6 +224,7 @@ def test_last_improver_run_ts_uses_cache(tmp_path, monkeypatch):
     ledger.write_text("\n".join(json.dumps(r) for r in rows) + "\n",
                       encoding="utf-8")
     monkeypatch.setattr(serve, "IMPROVEMENTS_LEDGER", ledger)
+    monkeypatch.setattr(_io, "IMPROVEMENTS_LEDGER", ledger)  # follows-the-move
 
     ts = serve._last_improver_run_ts("frobnicate")
     # The newest row for that skill: 2026-05-24T11:00:00Z = epoch 1779613200.
@@ -232,13 +240,14 @@ def test_last_improver_run_ts_uses_cache(tmp_path, monkeypatch):
 
 def test_last_improver_run_ts_returns_zero_when_no_file(tmp_path, monkeypatch):
     monkeypatch.setattr(serve, "IMPROVEMENTS_LEDGER", tmp_path / "missing.jsonl")
+    monkeypatch.setattr(_io, "IMPROVEMENTS_LEDGER", tmp_path / "missing.jsonl")  # follows-the-move
     assert serve._last_improver_run_ts("anything") == 0.0
 
 
 def test_last_improver_source_no_manual_open():
     """Source-level guard: the helper must NOT do its own ``.open("r"``
     on the ledger any more — that was the bypass batch 7 closed."""
-    body = SRC.split("def _last_improver_run_ts(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._last_improver_run_ts)  # follows the shim
     assert "IMPROVEMENTS_LEDGER.open" not in body, (
         "_last_improver_run_ts still opens the ledger directly; bypasses cache"
     )
@@ -255,7 +264,7 @@ def test_check_skill_regression_source_uses_cache():
     BOTH IMPROVEMENTS_LEDGER and SKILL_METRICS_FILE — those are the two
     bypass sites batch 7 closed in this function (it's the auto-revert
     decider feeding ``_auto_revert_skill``)."""
-    body = SRC.split("def _check_skill_regression(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._check_skill_regression)  # follows the shim
     assert "IMPROVEMENTS_LEDGER.open" not in body, (
         "_check_skill_regression still opens improvements ledger directly"
     )
@@ -318,7 +327,7 @@ def test_suggestion_draft_source_caps_subprocess_timeout():
     """Source-level guard: ``_handle_suggestion_draft`` must compose the
     ``timeout=`` arg as ``min(cfg.get('timeout_seconds', 120),
     _SUGGESTION_HTTP_TIMEOUT_MAX)`` — not the raw cfg value."""
-    body = SRC.split("def _handle_suggestion_draft(", 1)[1].split("\n    def ", 1)[0]
+    body = inspect.getsource(serve.Handler._handle_suggestion_draft)
     assert "_SUGGESTION_HTTP_TIMEOUT_MAX" in body, (
         "_handle_suggestion_draft does not cap subprocess timeout — DoS risk"
     )
@@ -326,7 +335,7 @@ def test_suggestion_draft_source_caps_subprocess_timeout():
 
 def test_agent_suggest_source_caps_subprocess_timeout():
     """Same guard for ``_handle_agent_suggest``."""
-    body = SRC.split("def _handle_agent_suggest(", 1)[1].split("\n    def ", 1)[0]
+    body = inspect.getsource(serve.Handler._handle_agent_suggest)
     assert "_SUGGESTION_HTTP_TIMEOUT_MAX" in body, (
         "_handle_agent_suggest does not cap subprocess timeout — DoS risk"
     )

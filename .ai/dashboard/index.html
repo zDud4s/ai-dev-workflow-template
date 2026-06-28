@@ -19,7 +19,29 @@
   <script defer src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js" integrity="sha384-xjfWUeCWdMtvpAb/SmM6lMzS6pQGcQa0loOl1d97j6Odw0vjK9nW3+dTb/bn/mwH" crossorigin="anonymous"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js" integrity="sha384-dpjGwSSISUTz2taP54Bor7qkyMR20sSO9oe11UVYnGs2/YdUBf7HW30XKQx9PCzn" crossorigin="anonymous"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js" integrity="sha384-iAAiqSZrWZz/YKZSTKOPNaRhVOg9JY14avg2EWEpYNnUsrnATA+Sg8pV7mak84/G" crossorigin="anonymous"></script>
-  <link rel="stylesheet" href="styles.css" />
+  <!-- styles.css was split into flat partials under styles/ (refactor #4).
+       The links below load them in the EXACT original cascade order:
+       tokens/base/layout first, then each UI-domain partial in source order.
+       Order is load-bearing — keep it identical to the section sequence in
+       the (retained, unlinked) styles.css source of record. An installer
+       glob distributes styles/*.css alongside this file. -->
+  <link rel="stylesheet" href="styles/tokens.css" />
+  <link rel="stylesheet" href="styles/base.css" />
+  <link rel="stylesheet" href="styles/layout.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+  <link rel="stylesheet" href="styles/terminals.css" />
+  <link rel="stylesheet" href="styles/toolbar.css" />
+  <link rel="stylesheet" href="styles/skills.css" />
+  <link rel="stylesheet" href="styles/forms.css" />
+  <link rel="stylesheet" href="styles/settings.css" />
+  <link rel="stylesheet" href="styles/misc.css" />
+  <link rel="stylesheet" href="styles/timeline.css" />
+  <link rel="stylesheet" href="styles/jobs.css" />
+  <link rel="stylesheet" href="styles/analytics-models.css" />
+  <link rel="stylesheet" href="styles/todos.css" />
+  <link rel="stylesheet" href="styles/agent-orchestrations.css" />
+  <link rel="stylesheet" href="styles/pipelines.css" />
+  <link rel="stylesheet" href="styles/analytics.css" />
   <style>
     /* Visually-hidden label helper for inputs that use placeholder-as-label.
        Keeps text in the accessibility tree (WCAG 1.3.1 / 3.3.2) while hiding
@@ -257,7 +279,7 @@
           <summary>How auto-select ranking works</summary>
           <div class="tl-hint">
             Ranking per <code>(phase, size, risk, budget)</code> tuple, computed from
-            <code>.ai/ledgers/metrics.jsonl</code> (the orchestrator appends one line per dispatched phase).
+            <code>.ai/local/ledgers/metrics.jsonl</code> (the orchestrator appends one line per dispatched phase).
             Candidates with <strong>fewer than <span id="auto-select-threshold-label">3</span> samples</strong> are excluded; groups with no
             qualifying candidates are omitted. The planner's adaptive scorer ranks with the
             same formula: <code>0.6·success_rate + 0.2·(1-norm_duration) + 0.2·budget_align</code>.
@@ -1134,6 +1156,10 @@
        not call PaneCore. canvas-bus.js, however, IS needed here — it provides
        the cross-window bus the "send to canvas" button posts over. -->
   <script defer src="app/canvas-bus.js"></script>
+  <!-- Inline tool-detail renderers extracted from terminals.js (refactor #7).
+       Pure DOM builders with no top-level state; loaded BEFORE terminals.js so
+       termAddToolPill / simpleLineDiff resolve them as globals at call time. -->
+  <script defer src="app/terminals-tooldetail.js"></script>
   <script defer src="app/terminals.js"></script>
   <!-- Top-center toast stack. All setMsg() calls render here so transient
        status never affects toolbar layout. aria-live makes screen readers

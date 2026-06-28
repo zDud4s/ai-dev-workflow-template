@@ -1,0 +1,117 @@
+    /* === Agent orchestrations === */
+    #view-agent-orchestrations .agent-runs-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+      gap: var(--s-3);
+      margin-bottom: var(--s-6);
+    }
+    #view-agent-orchestrations .agent-run-card {
+      background: var(--surf-2);
+      border: 1px solid var(--border-soft);
+      padding: var(--s-4) var(--s-5);
+      display: flex;
+      flex-direction: column;
+      gap: var(--s-2);
+      min-height: 160px;
+      position: relative;
+      clip-path: var(--clip-card);
+      transition: transform 200ms var(--easing), background 200ms var(--easing), border-color 200ms var(--easing);
+    }
+    #view-agent-orchestrations .agent-run-card:hover {
+      transform: translateY(-2px);
+      background: var(--surf-3);
+    }
+    #view-agent-orchestrations .agent-run-card .badge-dispatch,
+    #view-agent-orchestrations .agent-run-card .pill-output {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      max-width: 100%;
+      min-height: 24px;
+      padding: 3px 8px;
+      border: 1px solid var(--border-soft);
+      background: var(--bg-inset);
+      color: var(--text-2);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      line-height: 1.2;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #view-agent-orchestrations .agent-run-card .badge-dispatch {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--accent-bg);
+    }
+    #view-agent-orchestrations .agent-run-card .pill-output {
+      color: var(--text-dim);
+    }
+    #view-agent-orchestrations .pill-pipeline {
+      font-size: 11px;
+      padding: 2px 6px;
+      background: var(--bg-inset);
+      color: var(--text-dim);
+    }
+    #view-agent-orchestrations .agent-run-card[data-status="success"] {
+      border-color: var(--good);
+    }
+    #view-agent-orchestrations .agent-run-card[data-status="failed"] {
+      border-color: var(--bad);
+    }
+    #view-agent-orchestrations .agent-runs-empty {
+      grid-column: 1 / -1;
+      padding: var(--s-6);
+      border: 1px dashed var(--border-soft);
+      background: var(--bg-inset);
+      color: var(--text-dim);
+      text-align: center;
+      font-size: var(--fs-3);
+    }
+    #view-agent-orchestrations .agent-runs-empty code {
+      color: var(--text-2);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+    }
+    #agent-run-modal svg.dag-svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    #agent-run-modal .dag-node rect {
+      fill: var(--surf-2);
+      stroke: var(--border-strong);
+      stroke-width: 1;
+    }
+    #agent-run-modal .dag-node text {
+      fill: var(--text);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      letter-spacing: 0.04em;
+    }
+    #agent-run-modal .dag-node[data-status="pending"] rect {
+      fill: var(--text-dim);
+      stroke: var(--text-dim);
+    }
+    #agent-run-modal .dag-node[data-status="pending"] text {
+      fill: var(--bg);
+    }
+    #agent-run-modal .dag-node[data-status="completed"] rect {
+      fill: var(--ok-bg);
+      stroke: var(--good);
+    }
+    #agent-run-modal .dag-node[data-status="failed"] rect {
+      fill: var(--bad);
+      stroke: var(--bad);
+    }
+    #agent-run-modal .dag-node[data-status="failed"] text {
+      fill: var(--on-bad);
+    }
+    #agent-run-modal .dag-edge {
+      fill: none;
+      stroke: var(--text-dim);
+      stroke-width: 1.5;
+    }
+

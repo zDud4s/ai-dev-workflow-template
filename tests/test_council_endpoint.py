@@ -22,6 +22,7 @@ DASHBOARD = REPO_ROOT / ".ai" / "dashboard"
 sys.path.insert(0, str(DASHBOARD))
 
 import serve  # noqa: E402
+import server.runtime  # noqa: E402 — BOUND_PORT + Origin allowlist live here (follows-the-move)
 
 
 CATALOG = {
@@ -56,6 +57,9 @@ def _live_server(tmp_path, monkeypatch, *, agents=("security-reviewer",)):
     port = httpd.server_address[1]
     monkeypatch.setattr(serve, "PORT", port)
     monkeypatch.setattr(serve, "BOUND_PORT", port)
+    # _origin_allowed / _browser_cross_origin_blocked read BOUND_PORT from
+    # server.runtime's namespace now (follows-the-move from the structure overhaul).
+    monkeypatch.setattr(server.runtime, "BOUND_PORT", port)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:

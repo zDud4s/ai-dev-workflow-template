@@ -27,6 +27,7 @@ two mirror loops) to both scripts. To deliberately NOT ship one: add it to
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -142,11 +143,62 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+# Skill lists are single-sourced in lib/skills.manifest (refactor #3). The
+# installers no longer carry a literal `.claude/skills/<name>/SKILL.md` line per
+# shared skill — they `source lib/workflow-lib.sh` and drive copy + mirror loops
+# from the manifest groups. So "referenced" for those files means: the script
+# reads the manifest AND the manifest lists that skill name in a group the loops
+# consume. The result-based tests below (which actually run the installers) are
+# the real guarantee the file lands; this text check just points at the wiring.
+def _read_manifest_group(group: str) -> set[str]:
+    manifest = REPO_ROOT / "lib" / "skills.manifest"
+    if not manifest.exists():
+        return set()
+    names: set[str] = set()
+    current = None
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        m = re.match(r"^#\s*===\s*([A-Za-z0-9_-]+)\s*===\s*$", stripped)
+        if m:
+            current = m.group(1)
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        if current == group:
+            names.add(stripped)
+    return names
+
+
+_MANIFEST_SHARED = _read_manifest_group("shared")
+_MANIFEST_BRIDGE = _read_manifest_group("codex-bridge")
+
+
+def _script_sources_manifest(script_text: str) -> bool:
+    return "skills.manifest" in script_text and "workflow-lib.sh" in script_text
+
+
 def _is_referenced(rel: str, script_text: str) -> bool:
     # app/*.js is shipped via a glob loop, not per-file lines. Treat the glob
     # over that dir as covering every .js under it.
     if rel.startswith(".ai/dashboard/app/") and rel.endswith(".js"):
         return ".ai/dashboard/app/" in script_text
+    # styles/*.css ships via an analogous glob loop (sibling dashboard refactor).
+    if rel.startswith(".ai/dashboard/styles/") and rel.endswith(".css"):
+        return ".ai/dashboard/styles/" in script_text
+    # server/*.py ships via an analogous glob loop (the serve.py decomposition
+    # package — re-export modules serve.py imports at startup).
+    if rel.startswith(".ai/dashboard/server/") and rel.endswith(".py"):
+        return ".ai/dashboard/server/" in script_text
+    # Shared / bridge skill SKILL.md files: driven by lib/skills.manifest loops.
+    m = re.match(r"^\.(?:claude|agents)/skills/([^/]+)/SKILL\.md$", rel)
+    if m and _script_sources_manifest(script_text):
+        name = m.group(1)
+        if name in _MANIFEST_SHARED or name in _MANIFEST_BRIDGE:
+            return True
+    # .claude/settings.json is merged inside lib/install_common.py now, not via a
+    # literal line in the shell scripts.
+    if rel == ".claude/settings.json" and "install_common.py" in script_text:
+        return True
     return rel in script_text
 
 

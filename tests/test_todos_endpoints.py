@@ -13,6 +13,9 @@ from typing import Iterator
 
 import pytest
 
+import server.runtime as _runtime  # BOUND_PORT + Origin allowlist live here (follows-the-move)
+import server.project_handlers as _ph  # TODO/memory/decisions/events handlers read ROOT here (follows-the-move)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
@@ -37,10 +40,13 @@ def serve_module():
 def running_server(tmp_path, monkeypatch, serve_module) -> Iterator[tuple[str, Path]]:
     (tmp_path / ".ai").mkdir()
     monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    monkeypatch.setattr(_ph, "ROOT", tmp_path)  # project-state handlers read ROOT in their own module
     httpd = _ThreadingTCPServer(("127.0.0.1", 0), serve_module.Handler)
     port = httpd.server_address[1]
     monkeypatch.setattr(serve_module, "PORT", port)
     monkeypatch.setattr(serve_module, "BOUND_PORT", port)
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    monkeypatch.setattr(_runtime, "BOUND_PORT", port)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -90,7 +96,7 @@ def _todo(todo_id: str, title: str, status: str, tags: list[str]) -> dict:
 
 
 def _write_todos(repo_root: Path, rows: list[dict]) -> None:
-    ledger = repo_root / ".ai" / "ledgers" / "todos.jsonl"
+    ledger = repo_root / ".ai" / "local" / "ledgers" / "todos.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     text = "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows)
     ledger.write_text(text, encoding="utf-8", newline="\n")

@@ -39,6 +39,8 @@ SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
 
 sys.path.insert(0, str(REPO_ROOT / ".ai" / "dashboard"))
 import serve  # noqa: E402 — path mangled above
+import inspect
+import server.analytics as _an  # analytics readers resolve consts in their namespace (follows-the-move)
 
 
 SRC = SERVE_PATH.read_text(encoding="utf-8")
@@ -163,6 +165,7 @@ def test_auto_select_ranking_uses_jsonl_cache(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(serve, "METRICS_FILE", metrics_path)
+    monkeypatch.setattr(_an, "METRICS_FILE", metrics_path)  # follows-the-move
 
     # First call: parses the file.
     r1 = serve._load_auto_select_ranking(min_samples=1)
@@ -196,7 +199,7 @@ def test_auto_select_no_longer_reads_metrics_file_directly():
     """Source-level guard: the auto-select helper must not call
     ``METRICS_FILE.read_text(`` any more — that bypasses the cache and was
     the exact pattern batch 6 replaced."""
-    body = SRC.split("def _load_auto_select_ranking(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._load_auto_select_ranking)
     assert "METRICS_FILE.read_text" not in body, (
         "_load_auto_select_ranking still does a direct read; cache miss every poll"
     )
@@ -220,6 +223,7 @@ def test_timeline_runs_uses_jsonl_cache(tmp_path, monkeypatch):
     }
     events_path.write_text(json.dumps(ev) + "\n", encoding="utf-8")
     monkeypatch.setattr(serve, "EVENTS_FILE", events_path)
+    monkeypatch.setattr(_an, "EVENTS_FILE", events_path)  # follows-the-move
 
     runs = serve._load_timeline_runs()
     assert len(runs) == 1
@@ -233,7 +237,7 @@ def test_timeline_runs_uses_jsonl_cache(tmp_path, monkeypatch):
 
 def test_timeline_no_longer_reads_events_file_directly():
     """Source-level guard mirroring the auto-select check."""
-    body = SRC.split("def _load_timeline_runs(", 1)[1].split("\ndef ", 1)[0]
+    body = inspect.getsource(serve._load_timeline_runs)
     assert "EVENTS_FILE.read_text" not in body, (
         "_load_timeline_runs still reads EVENTS_FILE directly; bypasses cache"
     )
@@ -300,7 +304,7 @@ def test_suggestion_draft_caps_subprocess_timeout():
     """Source-level guard: ``_handle_suggestion_draft`` must compute
     ``http_timeout`` as ``min(cfg.get("timeout_seconds"), _SUGGESTION_HTTP_TIMEOUT_MAX)``
     and pass that — not the raw config — to ``subprocess.run``."""
-    body = SRC.split("def _handle_suggestion_draft(", 1)[1].split("\n    def ", 1)[0]
+    body = inspect.getsource(serve.Handler._handle_suggestion_draft)
     assert "_SUGGESTION_HTTP_TIMEOUT_MAX" in body, (
         "_handle_suggestion_draft does not cap its timeout"
     )
@@ -312,7 +316,7 @@ def test_suggestion_draft_caps_subprocess_timeout():
 def test_agent_suggest_caps_subprocess_timeout():
     """Same guard for ``_handle_agent_suggest`` — it shares the same CLI
     binary and was the second DoS path."""
-    body = SRC.split("def _handle_agent_suggest(", 1)[1].split("\n    def ", 1)[0]
+    body = inspect.getsource(serve.Handler._handle_agent_suggest)
     assert "_SUGGESTION_HTTP_TIMEOUT_MAX" in body
     assert "timeout=http_timeout" in body
 
@@ -432,7 +436,7 @@ def test_run_subprocess_uses_list_args_no_shell_true():
     """``_run_subprocess`` must take ``list[str]`` and never set
     ``shell=True``. Windows path quoting is the OS's job — string-mode
     invocation re-introduces the quoting hazard the args list avoids."""
-    body = SRC.split("def _run_subprocess(", 1)[1].split("\n    def ", 1)[0]
+    body = inspect.getsource(serve.Handler._run_subprocess)
     assert "args: list[str]" in body
     assert "shell=True" not in body
 
@@ -448,7 +452,8 @@ def test_git_log_excerpt_has_timeout():
     """``_git_log_excerpt`` is the suggester's ``git log`` shell-out — it
     must keep its 10s timeout so a hung git can't pin the suggester
     thread indefinitely. Regression guard, not a new fix."""
-    body = SRC.split("def _git_log_excerpt(", 1)[1].split("\ndef ", 1)[0]
+    import inspect
+    body = inspect.getsource(serve._git_log_excerpt)  # moved to server.agent_suggest; follows the shim
     assert re.search(r"timeout\s*=\s*10", body), (
         "_git_log_excerpt lost its timeout=10 guard"
     )

@@ -119,7 +119,7 @@ After Phase 1, parse the planner's `Memory tags: [tag1, tag2, ...]` line. For Ph
 
 ## Metrics logging
 
-After every dispatched phase completes (regardless of `auto_select.enabled`), append one JSON line to `.ai/ledgers/metrics.jsonl`. Gitignored, append-only, observability — never abort the pipeline if writing the line fails. Source data for the adaptive scorer (PR 3).
+After every dispatched phase completes (regardless of `auto_select.enabled`), append one JSON line to `.ai/local/ledgers/metrics.jsonl`. Gitignored, append-only, observability — never abort the pipeline if writing the line fails. Source data for the adaptive scorer (PR 3).
 
 Schema (one JSON object per line, compact, no pretty-print):
 

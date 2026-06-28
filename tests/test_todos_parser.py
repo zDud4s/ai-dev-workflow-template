@@ -34,7 +34,7 @@ def _commit_all(repo: Path, message: str) -> str:
 
 
 def _latest(repo: Path) -> dict[str, dict]:
-    rows = todos_parser._load_jsonl(repo / ".ai" / "ledgers" / "todos.jsonl")
+    rows = todos_parser._load_jsonl(repo / ".ai" / "local" / "ledgers" / "todos.jsonl")
     return {row["id"]: row for row in rows}
 
 
@@ -112,7 +112,7 @@ def test_dedup_hash_is_idempotent(tmp_path):
     first = todos_parser.scan_and_append(repo, last_sha=base)
     second = todos_parser.scan_and_append(repo, last_sha=base)
 
-    rows = todos_parser._load_jsonl(repo / ".ai" / "ledgers" / "todos.jsonl")
+    rows = todos_parser._load_jsonl(repo / ".ai" / "local" / "ledgers" / "todos.jsonl")
     assert first["added"] == 1
     assert second["updated"] == 1
     assert len({row["id"] for row in rows}) == 1
@@ -168,7 +168,7 @@ def test_one_source_failure_does_not_abort_others(tmp_path, monkeypatch):
     assert result["added"] == 1
     todo = next(iter(_latest(repo).values()))
     assert todo["title"] == "Capture from surviving source"
-    assert "memory exploded" in (repo / ".ai" / "dashboard" / ".todos-parser.log").read_text(
+    assert "memory exploded" in (repo / ".ai" / "local" / ".todos-parser.log").read_text(
         encoding="utf-8"
     )
 
@@ -185,7 +185,7 @@ def _dead_pid() -> int:
 
 def test_regen_markdown_reclaims_orphan_lock(tmp_path):
     repo = _init_repo(tmp_path)
-    _write(repo / ".ai" / "ledgers" / "todos.jsonl", "")
+    _write(repo / ".ai" / "local" / "ledgers" / "todos.jsonl", "")
     lock = todos_parser._lock_path(repo)
     lock.parent.mkdir(parents=True, exist_ok=True)
     # Orphan lock: dead PID and a far-past mtime.
@@ -201,7 +201,7 @@ def test_regen_markdown_reclaims_orphan_lock(tmp_path):
 
 def test_regen_markdown_respects_live_lock(tmp_path):
     repo = _init_repo(tmp_path)
-    _write(repo / ".ai" / "ledgers" / "todos.jsonl", "")
+    _write(repo / ".ai" / "local" / "ledgers" / "todos.jsonl", "")
     lock = todos_parser._lock_path(repo)
     lock.parent.mkdir(parents=True, exist_ok=True)
     # Live lock: this process' PID and a fresh mtime.

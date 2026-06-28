@@ -17,6 +17,7 @@ import time
 import pytest
 
 import serve
+import server.usage as _usage
 
 
 def _future_ms() -> int:
@@ -77,8 +78,10 @@ def clear_usage_caches():
     def reset():
         if hasattr(serve, "_CLAUDE_USAGE_CACHE"):
             serve._CLAUDE_USAGE_CACHE.update(at=0.0, data=None)
+        _usage._CLAUDE_USAGE_CACHE.update(at=0.0, data=None)
         if hasattr(serve, "_CLAUDE_USAGE_LAST_GOOD"):
             serve._CLAUDE_USAGE_LAST_GOOD.update(at=0.0, data=None)
+        _usage._CLAUDE_USAGE_LAST_GOOD.update(at=0.0, data=None)
 
     reset()
     yield
@@ -87,6 +90,7 @@ def clear_usage_caches():
 
 def _patch_token(monkeypatch, value):
     monkeypatch.setattr(serve, "_read_claude_oauth_token", lambda: value)
+    monkeypatch.setattr(_usage, "_read_claude_oauth_token", lambda: value)
 
 
 def _patch_urlopen(monkeypatch, payload: dict):
@@ -102,6 +106,7 @@ def _patch_urlopen(monkeypatch, payload: dict):
 def test_credentials_read_retries_past_transient_oserror(monkeypatch, no_sleep):
     flaky = _FlakyPath(_creds_json(), fail_times=2, exc=OSError("WinError 32: file in use"))
     monkeypatch.setattr(serve, "_CLAUDE_CREDENTIALS_PATH_OVERRIDE", flaky)
+    monkeypatch.setattr(_usage, "_CLAUDE_CREDENTIALS_PATH_OVERRIDE", flaky)
     tok, tier = serve._read_claude_oauth_token()
     assert tok == "tok-xyz"
     assert tier == "default_claude_max_5x"
@@ -111,6 +116,7 @@ def test_credentials_read_retries_past_transient_oserror(monkeypatch, no_sleep):
 def test_credentials_read_retries_past_partial_json(monkeypatch, no_sleep):
     flaky = _FlakyPath(_creds_json(), fail_times=1, exc=json.JSONDecodeError("Expecting value", "", 0))
     monkeypatch.setattr(serve, "_CLAUDE_CREDENTIALS_PATH_OVERRIDE", flaky)
+    monkeypatch.setattr(_usage, "_CLAUDE_CREDENTIALS_PATH_OVERRIDE", flaky)
     tok, _ = serve._read_claude_oauth_token()
     assert tok == "tok-xyz"
     assert flaky.calls == 2
@@ -119,6 +125,7 @@ def test_credentials_read_retries_past_partial_json(monkeypatch, no_sleep):
 def test_credentials_read_gives_up_after_max_retries(monkeypatch, no_sleep):
     flaky = _FlakyPath("", fail_times=99, exc=OSError("permanently locked"))
     monkeypatch.setattr(serve, "_CLAUDE_CREDENTIALS_PATH_OVERRIDE", flaky)
+    monkeypatch.setattr(_usage, "_CLAUDE_CREDENTIALS_PATH_OVERRIDE", flaky)
     tok, tier = serve._read_claude_oauth_token()
     assert tok is None and tier is None
     assert flaky.calls == serve._CREDENTIALS_READ_RETRIES
@@ -145,6 +152,7 @@ def test_fetch_serves_last_good_when_token_disappears(monkeypatch, clear_usage_c
 
     # Expire the cache and make the next read fail (token vanished mid-rewrite).
     serve._CLAUDE_USAGE_CACHE["at"] = 0.0
+    _usage._CLAUDE_USAGE_CACHE["at"] = 0.0
     _patch_token(monkeypatch, (None, "tier-5x"))
 
     degraded = serve._fetch_claude_oauth_usage()

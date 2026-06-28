@@ -25,6 +25,10 @@ from pathlib import Path
 
 import pytest
 
+import server.runtime as _runtime  # BOUND_PORT + Origin allowlist live here (follows-the-move)
+import server.agent_suggest as _ags  # AGENT_PROPOSALS_DIR/ROOT/JOBS_DIR readers live here (follows-the-move)
+import server.agent_suggest_handlers as _agh  # agent-proposal handlers read AGENT_PROPOSALS_DIR/ROOT here (follows-the-move)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
@@ -46,10 +50,12 @@ def isolated_proposals_dir(tmp_path, monkeypatch, serve_module):
     """Redirect AGENT_PROPOSALS_DIR to a per-test tmp dir.
 
     Without this every persist test writes into the real
-    `.ai/dashboard/proposals/agents/` and proposals leak between runs.
+    `.ai/local/proposals/agents/` and proposals leak between runs.
     """
     d = tmp_path / "agent_proposals"
     monkeypatch.setattr(serve_module, "AGENT_PROPOSALS_DIR", d)
+    monkeypatch.setattr(_ags, "AGENT_PROPOSALS_DIR", d)  # follows-the-move
+    monkeypatch.setattr(_agh, "AGENT_PROPOSALS_DIR", d)  # handlers read it here
     return d
 
 
@@ -63,6 +69,8 @@ def isolated_agents_dir(tmp_path, monkeypatch, serve_module):
     fixture (its module-level default reads ROOT at import time, so a
     bare ROOT swap leaves it pointing at the real repo)."""
     monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    monkeypatch.setattr(_ags, "ROOT", tmp_path)  # follows-the-move
+    monkeypatch.setattr(_agh, "ROOT", tmp_path)  # _handle_agent_proposal_decision reads it here
     return tmp_path / ".claude" / "agents"
 
 
@@ -77,8 +85,11 @@ def running_server(serve_module):
     port = httpd.server_address[1]
     original_port = serve_module.PORT
     original_bound = serve_module.BOUND_PORT
+    original_runtime_bound = _runtime.BOUND_PORT
     serve_module.PORT = port
     serve_module.BOUND_PORT = port
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    _runtime.BOUND_PORT = port
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -86,6 +97,7 @@ def running_server(serve_module):
     finally:
         serve_module.PORT = original_port
         serve_module.BOUND_PORT = original_bound
+        _runtime.BOUND_PORT = original_runtime_bound
         httpd.shutdown()
         httpd.server_close()
 
@@ -198,6 +210,7 @@ def test_load_editable_agent_names_smoke(serve_module, tmp_path, monkeypatch):
     (proj_dir / "Bar.md").write_text("---\nname: Bar\n---\n", encoding="utf-8")
     (user_dir / "baz.md").write_text("---\nname: baz\n---\n", encoding="utf-8")
     monkeypatch.setattr(serve_module, "ROOT", tmp_path / "repo")
+    monkeypatch.setattr(_ags, "ROOT", tmp_path / "repo")  # follows-the-move
     monkeypatch.setattr(serve_module.Path, "home", lambda: tmp_path / "user_home")
     names = serve_module._load_editable_agent_names()
     assert names == {"foo", "bar", "baz"}

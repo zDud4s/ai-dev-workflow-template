@@ -1,12 +1,12 @@
 ---
 name: run-pipeline
-description: Execute a saved pipeline YAML from .ai/pipelines/<name>.yaml by dispatching its agents in-session via the Task tool.
+description: Execute a saved pipeline YAML from .ai/local/pipelines/<name>.yaml by dispatching its agents in-session via the Task tool.
 tools: Read, Glob, Grep, Bash, Task, Write
 ---
 
-You are the pipeline executor. You load a user-authored pipeline from `.ai/pipelines/<name>.yaml`, resolve every node against the live agent catalog, topo-dispatch the DAG with the Task tool, and apply the output behavior declared by the pipeline's sink node `kind`.
+You are the pipeline executor. You load a user-authored pipeline from `.ai/local/pipelines/<name>.yaml`, resolve every node against the live agent catalog, topo-dispatch the DAG with the Task tool, and apply the output behavior declared by the pipeline's sink node `kind`.
 
-**Runtime branch.** Detect the runtime before dispatch. Claude sessions dispatch ready DAG layers through the `Task` tool (Phase 2A below). Codex sessions dispatch ready DAG layers through `codex exec` subprocesses orchestrated by `.ai/dashboard/scripts/pipeline_fanout.py` (Phase 2B below). Both paths reuse the same DAG resolution, sink-kind output handling, and Wrap-up steps.
+**Runtime branch.** Detect the runtime before dispatch. Claude sessions dispatch ready DAG layers through the `Task` tool (Phase 2A below). Codex sessions dispatch ready DAG layers through `codex exec` subprocesses orchestrated by `.ai/scripts/pipeline_fanout.py` (Phase 2B below). Both paths reuse the same DAG resolution, sink-kind output handling, and Wrap-up steps.
 
 **Read `.ai/workflow/dispatch.md` once before starting.** It defines the dispatch contract used for the `synthesize` phase. Do not duplicate those rules here.
 
@@ -22,10 +22,10 @@ Throughout this skill, "discovery path" means: `.claude/skills/<name>/SKILL.md` 
 
 STOP on any failure:
 
-- `.ai/pipelines/<name>.yaml` exists.
+- `.ai/local/pipelines/<name>.yaml` exists.
 - Slug matches `^[a-z0-9-]+$`.
 - YAML parses (`yaml.safe_load`).
-- Schema validation passes — reuse the dashboard validator (`from pipeline_schema import validate` in `.ai/dashboard/scripts/pipeline_schema.py`); surface every returned error verbatim.
+- Schema validation passes — reuse the dashboard validator (`from pipeline_schema import validate` in `.ai/scripts/pipeline_schema.py`); surface every returned error verbatim.
 - Only when the sink node's `kind` is `synthesize`: `.ai/models.yaml` has `run_pipeline.synthesize` configured AND the `synthesizer` skill body exists in the discovery path. Other sink kinds skip both checks.
 
 ## Phase 1 - Load + catalog
@@ -100,7 +100,7 @@ STOP with an explicit message naming the missing piece if any check fails:
 
 ### Dispatch
 
-Topo-sort the DAG with the same readiness rules as Phase 2A. For each ready layer, build a JSON spec for `.ai/dashboard/scripts/pipeline_fanout.py` with one `node` per ready DAG node.
+Topo-sort the DAG with the same readiness rules as Phase 2A. For each ready layer, build a JSON spec for `.ai/scripts/pipeline_fanout.py` with one `node` per ready DAG node.
 
 **Platform note (Windows):** `cmd[0]` must be the absolute path returned by `shutil.which("codex")` (e.g. `C:\Users\…\AppData\Roaming\npm\codex.CMD`). Python's `subprocess.run` does not consult `PATHEXT` when the first arg is a bare name, so the literal `"codex"` fails with `FileNotFoundError [WinError 2]` on Windows. Resolve once at pre-flight and reuse for every node. On POSIX, `shutil.which("codex")` returns the same string the shell would resolve, so the same pattern is portable.
 
@@ -132,7 +132,7 @@ Invoke the helper synchronously. The helper itself already pins UTF-8 encoding w
 
 ```
 subprocess.run(
-    [sys.executable, ".ai/dashboard/scripts/pipeline_fanout.py"],
+    [sys.executable, ".ai/scripts/pipeline_fanout.py"],
     input=json.dumps(spec),
     capture_output=True,
     text=True,
@@ -152,7 +152,7 @@ Descendants of failed nodes become `skipped`, using the same rule as Phase 2A. I
 
 ### Metrics row spec (Codex dispatch)
 
-For each dispatched node, append one compact JSON row to `.ai/ledgers/metrics.jsonl` with exactly six fields:
+For each dispatched node, append one compact JSON row to `.ai/local/ledgers/metrics.jsonl` with exactly six fields:
 
 ```
 {
@@ -179,8 +179,8 @@ Read the sink node's `kind`:
 
 ## Wrap-up
 
-1. Persist the filled run to `.ai/agent-runs/<YYYY-MM-DD>-<task_slug>.md`. The packet includes a top-level `pipeline: <name>` field. New file only — never overwrite; if the path exists, append `-2`, `-3`, ... before `.md` until unique. `<YYYY-MM-DD>` is today's UTC date.
-2. Append compact JSON metrics rows to `.ai/ledgers/metrics.jsonl`:
+1. Persist the filled run to `.ai/local/agent-runs/<YYYY-MM-DD>-<task_slug>.md`. The packet includes a top-level `pipeline: <name>` field. New file only — never overwrite; if the path exists, append `-2`, `-3`, ... before `.md` until unique. `<YYYY-MM-DD>` is today's UTC date.
+2. Append compact JSON metrics rows to `.ai/local/ledgers/metrics.jsonl`:
    - One `pipeline_dispatch` row per dispatched node (`tool=<agent_name>`, `model=<agent.model from frontmatter>`). Skipped nodes do not emit a row.
    - One `pipeline_synthesis` row only when the sink node's `kind` is `synthesize` (`tool=claude`, `model=<configured synth model>`).
    - Metrics are append-only observability; a failed write must not abort the run.
@@ -192,7 +192,7 @@ Report to the user: final output (per sink kind), per-node statuses, failed and 
 
 | Condition | Action |
 | --- | --- |
-| `.ai/pipelines/<name>.yaml` missing | STOP `pipeline '<name>' not found at .ai/pipelines/<name>.yaml`. |
+| `.ai/local/pipelines/<name>.yaml` missing | STOP `pipeline '<name>' not found at .ai/local/pipelines/<name>.yaml`. |
 | Slug fails regex | STOP `invalid slug '<name>' (must match ^[a-z0-9-]+$)`. |
 | YAML parse error | STOP `pipeline invalid: <yaml parse error>`. |
 | Schema validation failure | STOP and surface every `pipeline invalid: ...` error from the validator. |
@@ -203,7 +203,7 @@ Report to the user: final output (per sink kind), per-node statuses, failed and 
 | All remaining nodes are `skipped` | Halt Phase 2; still run Phase 3 over whatever completed and persist the run. |
 | `codex` binary not on PATH when running Codex Phase 2B | STOP with an explicit message naming the missing `codex` binary. |
 | `.ai/models.yaml` missing `run_pipeline.codex_dispatch` block when running Codex Phase 2B | STOP `run_pipeline.codex_dispatch not configured`. |
-| Helper subprocess crashes or exits non-zero during Codex Phase 2B | STOP and report stderr from `.ai/dashboard/scripts/pipeline_fanout.py`. |
+| Helper subprocess crashes or exits non-zero during Codex Phase 2B | STOP and report stderr from `.ai/scripts/pipeline_fanout.py`. |
 
 ## Notes
 

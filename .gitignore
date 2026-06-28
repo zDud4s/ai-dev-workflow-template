@@ -27,26 +27,21 @@ tests/*
 # ─────────────────────────────────────────────────────────────
 .ai/plans/*
 .ai/specs/*
-.ai/ledgers/*
-.ai/agent-runs/*
+# Agent Council run records (the council writes runtime here; the other former
+# runtime dirs moved under .ai/local/ in the structure overhaul).
 .ai/council/runs/*
-.ai/dashboard/jobs/*
-.ai/dashboard/proposals/agents/*
-.ai/dashboard/proposals/skills/*
-.ai/dashboard/proposals/skill_backups/*
+!.ai/council/runs/.gitkeep
 !.ai/plans/.gitkeep
 !.ai/specs/.gitkeep
-!.ai/ledgers/.gitkeep
-!.ai/agent-runs/.gitkeep
-!.ai/dashboard/jobs/.gitkeep
-!.ai/dashboard/proposals/agents/.gitkeep
-!.ai/dashboard/proposals/skills/.gitkeep
-!.ai/dashboard/proposals/skill_backups/.gitkeep
 
-# Pipeline definitions are personal workflows (per-developer);
-# .gitkeep preserves the directory.
-.ai/pipelines/*
-!.ai/pipelines/.gitkeep
+# The .agents/skills/ mirror is GENERATED from .claude/skills/ by
+# .ai/scripts/sync_skills.py (and by the installers' mirror loop). It is
+# byte-identical to .claude/skills/ for the 10 shared skills, so we don't
+# version it. The one exception is the cross-tool bridge `claude/`, which has
+# NO .claude/skills/ source — it is its own source of truth, so it stays tracked.
+.agents/skills/*
+!.agents/skills/claude/
+!.agents/skills/claude/**
 
 # Eval harness run outputs: arm-*.jsonl and archived runs are regenerated per
 # run (machine-specific timings, transient). The curated record lives in
@@ -60,7 +55,34 @@ tests/*
 # ─────────────────────────────────────────────────────────────
 # AI workflow — local / per-developer files
 # ─────────────────────────────────────────────────────────────
-.ai/local/
+# Generated runtime data lives under .ai/local/. The known runtime dirs are
+# tracked as empty folders (.gitkeep) so they exist on a fresh clone; their
+# generated contents are ignored. Anything else under .ai/local/ is ignored
+# too (catch-all for ad-hoc local / per-developer files).
+.ai/local/*
+!.ai/local/ledgers/
+!.ai/local/agent-runs/
+!.ai/local/pipelines/
+!.ai/local/jobs/
+!.ai/local/proposals/
+.ai/local/ledgers/*
+!.ai/local/ledgers/.gitkeep
+.ai/local/agent-runs/*
+!.ai/local/agent-runs/.gitkeep
+.ai/local/pipelines/*
+!.ai/local/pipelines/.gitkeep
+.ai/local/jobs/*
+!.ai/local/jobs/.gitkeep
+.ai/local/proposals/*
+!.ai/local/proposals/agents/
+!.ai/local/proposals/skills/
+!.ai/local/proposals/skill_backups/
+.ai/local/proposals/agents/*
+!.ai/local/proposals/agents/.gitkeep
+.ai/local/proposals/skills/*
+!.ai/local/proposals/skills/.gitkeep
+.ai/local/proposals/skill_backups/*
+!.ai/local/proposals/skill_backups/.gitkeep
 .ai/dashboard/.server-*.log
 .ai/dashboard/.server-*.err
 # Per-session runtime lock files written by the dashboard session engine.

@@ -32,6 +32,7 @@ This file pins the five fixes:
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -48,6 +49,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+
+import server.runtime as _runtime  # noqa: E402 — BOUND_PORT + Origin allowlist live here (follows-the-move)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -76,13 +79,65 @@ def serve_module():
 
 
 def _function_source(name: str) -> str:
-    """Return the source text of one function/method by name."""
+    """Return the source text of one function/method by name.
+
+    Follows re-export shims: functions split out of serve.py into
+    ``server.*`` modules are no longer in ``SRC`` (the serve.py text), so we
+    prefer ``inspect.getsource`` of the live attribute (which resolves to the
+    defining module) and fall back to scanning ``SRC`` for anything still
+    defined inline in serve.py."""
+    _serve = _serve_for_source()
+    # Module-level function or a Handler method (handlers were split into
+    # server/*_handlers.py mixins; getsource follows them off Handler).
+    obj = getattr(_serve, name, None) or getattr(_serve.Handler, name, None)
+    if obj is not None:
+        try:
+            return inspect.getsource(obj)
+        except (OSError, TypeError):
+            pass
     needle = f"def {name}("
     idx = SRC.find(needle)
     assert idx >= 0, f"function {name!r} not found in serve.py"
     tail = SRC[idx:]
     end = re.search(r"\n\n    def |\n\ndef |\n\nclass ", tail)
     return tail[: end.start()] if end else tail
+
+
+_SERVE_FOR_SOURCE = None
+
+
+def _serve_for_source():
+    """Lazily import serve once for getsource-based source lookups."""
+    global _SERVE_FOR_SOURCE
+    if _SERVE_FOR_SOURCE is None:
+        spec = importlib.util.spec_from_file_location("dashboard_serve_src", SERVE_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["dashboard_serve_src"] = mod
+        spec.loader.exec_module(mod)
+        _SERVE_FOR_SOURCE = mod
+    return _SERVE_FOR_SOURCE
+
+
+def _patch_attr(monkeypatch, serve_module, name, value):
+    """setattr ``name``=``value`` on serve_module AND every loaded ``server.*``
+    submodule that binds its own copy of ``name``.
+
+    The improver helpers were split out of serve.py into ``server.skill_tree`` /
+    ``server.improver_io`` / ``server.improver``; each did ``from server.paths
+    import <CONST>`` (or holds a re-exported function), so a function that moved
+    out resolves the name in its new module's namespace. Patching only
+    ``serve.<name>`` would leave those copies pointing at the real value
+    (follows-the-move)."""
+    if hasattr(serve_module, name):
+        monkeypatch.setattr(serve_module, name, value, raising=False)
+    for modname, mod in list(sys.modules.items()):
+        if (modname == "server" or modname.startswith("server.")) and mod is not None and hasattr(mod, name):
+            monkeypatch.setattr(mod, name, value, raising=False)
+
+
+def _patch_root(monkeypatch, serve_module, tmp_path):
+    """Point ROOT at ``tmp_path`` everywhere (see :func:`_patch_attr`)."""
+    _patch_attr(monkeypatch, serve_module, "ROOT", tmp_path)
 
 
 def _skills_js() -> str:
@@ -207,7 +262,7 @@ def test_load_improver_config_parses_sweep_fields(serve_module, tmp_path, monkey
         "  sweep_batch_max: 2\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     # Clear the env var that conftest sets so we actually exercise the
     # YAML overlay path — the env shortcut returns enabled=False without
     # parsing anything else.
@@ -231,27 +286,27 @@ def test_sweep_visits_oldest_skills_first_and_respects_batch_cap(serve_module, t
         (skills_root / name / "SKILL.md").write_text(
             f"---\nname: {name}\n---\n# body\n", encoding="utf-8")
 
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     # Force the project-skill index to return our three.
     proj = {
         "alpha": skills_root / "alpha" / "SKILL.md",
         "beta": skills_root / "beta" / "SKILL.md",
         "gamma": skills_root / "gamma" / "SKILL.md",
     }
-    monkeypatch.setattr(serve_module, "_project_skill_index", lambda: proj)
+    _patch_attr(monkeypatch, serve_module, "_project_skill_index", lambda: proj)
 
     # Stagger last-run timestamps so we know the expected ordering.
     # alpha = oldest (1000), beta = middle (2000), gamma = newest (3000).
     timestamps = {"alpha": 1000.0, "beta": 2000.0, "gamma": 3000.0}
-    monkeypatch.setattr(
-        serve_module, "_last_improver_run_ts",
+    _patch_attr(
+        monkeypatch, serve_module, "_last_improver_run_ts",
         lambda sid: timestamps.get(sid, 0.0),
     )
     # Throttle disabled so every skill is candidate.
     # Time = 10000 puts all three well past the throttle window.
     monkeypatch.setattr(serve_module.time, "time", lambda: 10000.0)
     # Improver tool is present.
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
 
     audited_calls = []
 
@@ -259,7 +314,7 @@ def test_sweep_visits_oldest_skills_first_and_respects_batch_cap(serve_module, t
         audited_calls.append((skill_id, kwargs.get("manual", False)))
         return {"status": "no_change", "reason": "fake"}
 
-    monkeypatch.setattr(serve_module, "_run_improver_for_skill", fake_run)
+    _patch_attr(monkeypatch, serve_module, "_run_improver_for_skill", fake_run)
 
     cfg = {"enabled": True, "tool": "claude", "model": "x",
            "min_interval_seconds": 100, "sweep_batch_max": 2}
@@ -284,20 +339,20 @@ def test_sweep_respects_throttle(serve_module, tmp_path, monkeypatch):
     skills_root = tmp_path / ".claude" / "skills"
     (skills_root / "alpha").mkdir(parents=True)
     (skills_root / "alpha" / "SKILL.md").write_text("# body\n", encoding="utf-8")
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        serve_module, "_project_skill_index",
+    _patch_root(monkeypatch, serve_module, tmp_path)
+    _patch_attr(
+        monkeypatch, serve_module, "_project_skill_index",
         lambda: {"alpha": skills_root / "alpha" / "SKILL.md"},
     )
     # alpha was audited 30s ago. With min_interval_seconds=300 it must
     # be skipped.
-    monkeypatch.setattr(serve_module, "_last_improver_run_ts", lambda _sid: 9970.0)
+    _patch_attr(monkeypatch, serve_module, "_last_improver_run_ts", lambda _sid: 9970.0)
     monkeypatch.setattr(serve_module.time, "time", lambda: 10000.0)
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
 
     called = []
-    monkeypatch.setattr(
-        serve_module, "_run_improver_for_skill",
+    _patch_attr(
+        monkeypatch, serve_module, "_run_improver_for_skill",
         lambda *a, **k: called.append(a) or {"status": "no_change"},
     )
     cfg = {"enabled": True, "tool": "claude", "model": "x",
@@ -350,13 +405,13 @@ def test_manual_improve_404_when_skill_not_project_scope(serve_module, tmp_path,
     """Calling the handler with a skill that isn't in the project index
     must return 404 — plugin / user-scope skills are read-only and the
     endpoint refuses to touch them."""
-    monkeypatch.setattr(serve_module, "_project_skill_index", lambda: {})
+    _patch_attr(monkeypatch, serve_module, "_project_skill_index", lambda: {})
 
     # Stub out _safe_which so the disabled-tool branch doesn't shadow.
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
     # Force enabled=True regardless of the conftest env var.
-    monkeypatch.setattr(
-        serve_module, "_load_improver_config",
+    _patch_attr(
+        monkeypatch, serve_module, "_load_improver_config",
         lambda: {"enabled": True, "tool": "claude", "model": "x",
                  "timeout_seconds": 60},
     )
@@ -389,8 +444,11 @@ def running_server(serve_module):
     port = httpd.server_address[1]
     original_port = serve_module.PORT
     original_bound = serve_module.BOUND_PORT
+    original_runtime_bound = _runtime.BOUND_PORT
     serve_module.PORT = port
     serve_module.BOUND_PORT = port
+    # _origin_allowed reads BOUND_PORT from server.runtime's namespace now.
+    _runtime.BOUND_PORT = port
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -398,6 +456,7 @@ def running_server(serve_module):
     finally:
         serve_module.PORT = original_port
         serve_module.BOUND_PORT = original_bound
+        _runtime.BOUND_PORT = original_runtime_bound
         httpd.shutdown()
         httpd.server_close()
 
@@ -426,15 +485,15 @@ def test_post_improve_returns_inline_status(
     skills_root.mkdir(parents=True)
     (skills_root / "SKILL.md").write_text(
         "---\nname: fake-skill\n---\n# body\n", encoding="utf-8")
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        serve_module, "_project_skill_index",
+    _patch_root(monkeypatch, serve_module, tmp_path)
+    _patch_attr(
+        monkeypatch, serve_module, "_project_skill_index",
         lambda: {"fake-skill": skills_root / "SKILL.md"},
     )
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
     # Bypass the conftest env-var disable so the handler proceeds.
-    monkeypatch.setattr(
-        serve_module, "_load_improver_config",
+    _patch_attr(
+        monkeypatch, serve_module, "_load_improver_config",
         lambda: {
             "enabled": True, "tool": "claude", "model": "x",
             "timeout_seconds": 60, "small_change_max_lines": 6,
@@ -470,10 +529,10 @@ def test_post_improve_unknown_skill_404(
     serve_module, running_server, tmp_path, monkeypatch,
 ):
     """Manual improve for a skill that isn't in the project index → 404."""
-    monkeypatch.setattr(serve_module, "_project_skill_index", lambda: {})
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
-    monkeypatch.setattr(
-        serve_module, "_load_improver_config",
+    _patch_attr(monkeypatch, serve_module, "_project_skill_index", lambda: {})
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(
+        monkeypatch, serve_module, "_load_improver_config",
         lambda: {"enabled": True, "tool": "claude", "model": "x",
                  "timeout_seconds": 60},
     )
@@ -493,25 +552,25 @@ def test_post_improve_generates_proposal_when_diff_non_empty(
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text("---\nname: fake-skill\n---\n# old\n", encoding="utf-8")
 
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_root(monkeypatch, serve_module, tmp_path)
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
-    monkeypatch.setattr(
-        serve_module, "_project_skill_index",
+    _patch_attr(
+        monkeypatch, serve_module, "_project_skill_index",
         lambda: {"fake-skill": skill_md},
     )
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
     # Manual triggers MUST never auto-apply regardless of small_change_max_lines
     # (the operator clicked Improve so they want to review). Set the threshold
     # high to confirm we don't accidentally rely on it.
-    monkeypatch.setattr(
-        serve_module, "_load_improver_config",
+    _patch_attr(
+        monkeypatch, serve_module, "_load_improver_config",
         lambda: {
             "enabled": True, "tool": "claude", "model": "x",
             "timeout_seconds": 60, "small_change_max_lines": 999,
@@ -562,18 +621,18 @@ def test_manual_never_auto_applies_even_for_small_diff(
     original_body = "---\nname: fake-skill\n---\n# old body\n"
     skill_md.write_text(original_body, encoding="utf-8")
 
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_root(monkeypatch, serve_module, tmp_path)
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
-    monkeypatch.setattr(
-        serve_module, "_aggregate_skill_metrics",
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(
+        monkeypatch, serve_module, "_aggregate_skill_metrics",
         lambda: {"fake-skill": {"recent": []}},
     )
     # Tiny threshold that the diff WOULD satisfy if manual respected it.
@@ -630,22 +689,22 @@ def test_auto_path_still_auto_applies_for_small_diff(
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text("---\nname: fake-skill\n---\n# v1\n", encoding="utf-8")
 
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_root(monkeypatch, serve_module, tmp_path)
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "SKILL_BACKUPS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_BACKUPS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_backups",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
-    monkeypatch.setattr(
-        serve_module, "_aggregate_skill_metrics",
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(
+        monkeypatch, serve_module, "_aggregate_skill_metrics",
         lambda: {"fake-skill": {"recent": []}},
     )
     cfg = {
@@ -771,17 +830,17 @@ def test_mirror_writes_to_agents_tree_after_apply(serve_module, tmp_path, monkey
     ``<repo>/.agents/skills/<x>/SKILL.md`` must end up with the same
     content. Without this, Codex sees a stale skill until the user
     remembers to run .ai/scripts/sync_skills.py by hand."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_root(monkeypatch, serve_module, tmp_path)
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "SKILL_BACKUPS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_BACKUPS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_backups",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
 
@@ -810,17 +869,17 @@ def test_mirror_skips_when_agents_copy_does_not_exist(serve_module, tmp_path, mo
     The improver applying an edit to such a skill must NOT materialise a
     new .agents/skills/<name>/ directory — the operator never asked for
     a Codex mirror, and silently inventing one would surprise them."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_root(monkeypatch, serve_module, tmp_path)
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "SKILL_BACKUPS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_BACKUPS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_backups",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
 
@@ -850,7 +909,7 @@ def test_create_skill_in_both_trees_writes_both_sides(serve_module, tmp_path, mo
     .claude/skills/<slug>/ and .agents/skills/<slug>/ when the agents
     tree is present. This is the one path that's allowed to invent a
     fresh .agents mirror — the operator explicitly accepted a draft."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     # .agents/skills exists (typical project layout post-bootstrap).
     (tmp_path / ".agents" / "skills").mkdir(parents=True)
     body = "---\nname: new-skill\n---\n# new\n"
@@ -872,7 +931,7 @@ def test_create_skill_in_both_trees_skips_agents_when_dir_absent(
     """Claude-only project (no .agents/skills/ tree on disk): create in
     .claude/ only, report the skip reason so the operator knows the
     agents side wasn't done."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     info = serve_module._create_skill_in_both_trees(
         "fresh", "---\nname: fresh\n---\n",
     )
@@ -888,7 +947,7 @@ def test_create_skill_in_both_trees_skips_bridge_skills(serve_module, tmp_path, 
     create as well as on update. The agents-side ``codex`` is meant to
     be the 'call claude from codex' bridge, not a copy of the Claude
     'call codex' skill."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     (tmp_path / ".agents" / "skills").mkdir(parents=True)
     info = serve_module._create_skill_in_both_trees(
         "codex", "---\nname: codex\n---\n# call codex\n",
@@ -905,17 +964,17 @@ def test_mirror_skips_bridge_skills(serve_module, tmp_path, monkeypatch):
     must NEVER overwrite a bridge skill — the agents-side ``codex``
     file is actually the "call claude" bridge and copying the Claude
     version on top would break the cross-call mechanism."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        serve_module, "SKILL_PROPOSALS_DIR",
+    _patch_root(monkeypatch, serve_module, tmp_path)
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_PROPOSALS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_proposals",
     )
-    monkeypatch.setattr(
-        serve_module, "SKILL_BACKUPS_DIR",
+    _patch_attr(
+        monkeypatch, serve_module, "SKILL_BACKUPS_DIR",
         tmp_path / ".ai" / "dashboard" / "skill_backups",
     )
-    monkeypatch.setattr(
-        serve_module, "IMPROVEMENTS_LEDGER",
+    _patch_attr(
+        monkeypatch, serve_module, "IMPROVEMENTS_LEDGER",
         tmp_path / ".ai" / "dashboard" / "improvements.jsonl",
     )
     claude_codex_skill = tmp_path / ".claude" / "skills" / "codex" / "SKILL.md"
@@ -939,7 +998,7 @@ def test_mirror_skips_bridge_skills(serve_module, tmp_path, monkeypatch):
 def test_mirror_helper_returns_skip_when_agents_dir_absent(serve_module, tmp_path, monkeypatch):
     """When .agents/skills/ doesn't exist at all (project that uses only
     Claude), the mirror must return a clean skip — not a write error."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     claude_skill = tmp_path / ".claude" / "skills" / "x" / "SKILL.md"
     claude_skill.parent.mkdir(parents=True)
     claude_skill.write_text("# body\n", encoding="utf-8")
@@ -952,7 +1011,7 @@ def test_mirror_helper_skips_non_claude_paths(serve_module, tmp_path, monkeypatc
     """Calling the mirror on a path that isn't under .claude/skills/ (e.g.
     a user-global skill in ~/.claude/skills/) must NOT touch the
     project's .agents/ tree — only project-scope skills mirror."""
-    monkeypatch.setattr(serve_module, "ROOT", tmp_path)
+    _patch_root(monkeypatch, serve_module, tmp_path)
     # User-global mock — far outside .claude/skills under ROOT.
     foreign = tmp_path / "elsewhere" / "SKILL.md"
     foreign.parent.mkdir(parents=True)
@@ -1030,9 +1089,9 @@ def test_run_improver_for_skill_manual_records_source_manual(
     ``source=auto`` filter would hide manual outcomes."""
     skill = tmp_path / "SKILL.md"
     skill.write_text("# body\n", encoding="utf-8")
-    monkeypatch.setattr(serve_module, "_safe_which", lambda _t: "/fake/bin")
-    monkeypatch.setattr(
-        serve_module, "_aggregate_skill_metrics",
+    _patch_attr(monkeypatch, serve_module, "_safe_which", lambda _t: "/fake/bin")
+    _patch_attr(
+        monkeypatch, serve_module, "_aggregate_skill_metrics",
         lambda: {"fake-skill": {"recent": []}},
     )
     captured = {}
@@ -1041,7 +1100,7 @@ def test_run_improver_for_skill_manual_records_source_manual(
         captured["source"] = source
         captured["status"] = status
 
-    monkeypatch.setattr(serve_module, "_audit_improvement", fake_audit)
+    _patch_attr(monkeypatch, serve_module, "_audit_improvement", fake_audit)
 
     class _FakeProc:
         returncode = 0
@@ -1074,7 +1133,7 @@ def test_tracked_sids_purged_on_atexit(serve_module, monkeypatch):
         serve_module._IMPROVER_TRACKED_SIDS.clear()
         serve_module._IMPROVER_TRACKED_SIDS.add("fake-sid")
 
-    monkeypatch.setattr(serve_module, "_purge_claude_transcript", lambda sid: calls.append(sid) or True)
+    _patch_attr(monkeypatch, serve_module, "_purge_claude_transcript", lambda sid: calls.append(sid) or True)
     serve_module._purge_all_tracked_improver_sids()
 
     assert calls == ["fake-sid"]
@@ -1095,8 +1154,8 @@ def test_tracked_sids_purged_on_sigterm(serve_module, monkeypatch):
     monkeypatch.setattr(serve_module.atexit, "register", lambda _fn: None)
     monkeypatch.setattr(serve_module.signal, "getsignal", lambda _sig: previous_handler)
     monkeypatch.setattr(serve_module.signal, "signal", lambda sig, handler: captured.setdefault(sig, handler))
-    monkeypatch.setattr(serve_module, "_purge_claude_transcript", lambda sid: calls.append(sid) or True)
-    monkeypatch.setattr(serve_module, "_IMPROVER_SHUTDOWN_HANDLERS_INSTALLED", False)
+    _patch_attr(monkeypatch, serve_module, "_purge_claude_transcript", lambda sid: calls.append(sid) or True)
+    _patch_attr(monkeypatch, serve_module, "_IMPROVER_SHUTDOWN_HANDLERS_INSTALLED", False)
 
     with serve_module._IMPROVER_TRACKED_SIDS_LOCK:
         serve_module._IMPROVER_TRACKED_SIDS.clear()
@@ -1116,7 +1175,7 @@ def test_shutdown_signal_chains_default_ignored_and_callable(serve_module, monke
     signum = signal.SIGTERM if hasattr(signal, "SIGTERM") else signal.SIGINT
     events = []
 
-    monkeypatch.setattr(serve_module, "_purge_all_tracked_improver_sids", lambda: events.append(("purge",)))
+    _patch_attr(monkeypatch, serve_module, "_purge_all_tracked_improver_sids", lambda: events.append(("purge",)))
     monkeypatch.setattr(
         serve_module.signal,
         "signal",
@@ -1164,7 +1223,7 @@ def test_purge_retry_on_permission_error(serve_module, tmp_path, monkeypatch, ca
             raise PermissionError("locked")
         real_unlink(path)
 
-    monkeypatch.setattr(serve_module, "_transcripts_dir_for_cwd", lambda _root: tmp_path)
+    _patch_attr(monkeypatch, serve_module, "_transcripts_dir_for_cwd", lambda _root: tmp_path)
     monkeypatch.setattr(serve_module.os, "unlink", flaky_unlink)
 
     started = time.monotonic()

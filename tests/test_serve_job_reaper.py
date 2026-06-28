@@ -17,6 +17,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"))
 import serve  # noqa: E402 — sys.path tweak above is the import setup
+import server.jobs_reaper as _jr  # noqa: E402 — reaper fns read _pid_is_alive/_persist_job from here
 
 
 def _reset_jobs() -> None:
@@ -42,8 +43,10 @@ def test_reaper_tick_flips_dead_pid_job_to_failed(monkeypatch) -> None:
             }
         # Force the alive-probe to report the PID as dead.
         monkeypatch.setattr(serve, "_pid_is_alive", lambda _pid: False)
+        monkeypatch.setattr(_jr, "_pid_is_alive", lambda _pid: False)  # follows-the-move
         # _persist_job touches disk for flipped jobs — stub it out.
         monkeypatch.setattr(serve, "_persist_job", lambda _jid: None)
+        monkeypatch.setattr(_jr, "_persist_job", lambda _jid: None)  # follows-the-move
 
         flipped = serve._job_reaper_tick()
 
@@ -64,7 +67,9 @@ def test_reaper_tick_leaves_live_pid_job_running(monkeypatch) -> None:
                 "pid": 111, "proc": None, "ended_at": None,
             }
         monkeypatch.setattr(serve, "_pid_is_alive", lambda _pid: True)
+        monkeypatch.setattr(_jr, "_pid_is_alive", lambda _pid: True)  # follows-the-move
         monkeypatch.setattr(serve, "_persist_job", lambda _jid: None)
+        monkeypatch.setattr(_jr, "_persist_job", lambda _jid: None)  # follows-the-move
 
         flipped = serve._job_reaper_tick()
 
@@ -79,6 +84,7 @@ def test_reaper_tick_bounds_jobs_dict(monkeypatch) -> None:
     _reset_jobs()
     try:
         monkeypatch.setattr(serve, "_persist_job", lambda _jid: None)
+        monkeypatch.setattr(_jr, "_persist_job", lambda _jid: None)  # follows-the-move
         over = serve.JOBS_MAX + 10
         with serve.JOBS_LOCK:
             for i in range(over):

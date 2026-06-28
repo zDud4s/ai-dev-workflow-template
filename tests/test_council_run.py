@@ -8,7 +8,7 @@ import sys
 
 import yaml
 
-SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard" / "scripts"
+SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / ".ai" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import council_run as cr  # noqa: E402
 

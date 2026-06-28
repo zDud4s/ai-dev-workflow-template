@@ -11,8 +11,9 @@ from pathlib import Path
 
 import pytest
 
-import _improver_transcript_policy as policy
-import purge_stale_improver_transcripts as purge_script
+from server import _improver_transcript_policy as policy
+from server import purge_stale_improver_transcripts as purge_script
+import server.improver as _im  # _periodic_transcript_purge_loop resolves these names here (follows-the-move)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -149,10 +150,10 @@ def test_periodic_sweep_uses_shared_predicate(serve_module, tmp_path, monkeypatc
     _write_transcript(transcript)
 
     monkeypatch.delenv("AI_WORKFLOW_DISABLE_IMPROVER", raising=False)
-    monkeypatch.setattr(serve_module, "_transcripts_dir_for_cwd", lambda _root: tmp_path)
-    monkeypatch.setattr(serve_module, "load_ledger_rows", lambda _ledger: [])
+    monkeypatch.setattr(_im, "_transcripts_dir_for_cwd", lambda _root: tmp_path)
+    monkeypatch.setattr(_im, "load_ledger_rows", lambda _ledger: [])
     monkeypatch.setattr(
-        serve_module,
+        _im,
         "classify_transcript",
         lambda path, rows, now: calls.append((path, rows)) or "keep",
     )

@@ -12,7 +12,7 @@ import time
 import pytest
 
 # Import target module (will fail until implemented — that is intentional).
-from session_lock import SessionLock, LOCK_STALE_S
+from server.session_lock import SessionLock, LOCK_STALE_S
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import io
 import re
 from pathlib import Path
@@ -47,7 +48,8 @@ def test_publish_chunk_no_silent_broad_except():
     """``_publish_chunk`` used to swallow every exception with ``pass``.
     After batch 5 it must either scope to ``_stdqueue.Full`` or log the
     error so a runaway subscriber pattern is visible."""
-    src = SRC.split("def _publish_chunk(", 1)[1].split("\ndef ", 1)[0]
+    # _publish_chunk moved to server/jobs.py; getsource follows the shim.
+    src = inspect.getsource(_load_serve()._publish_chunk)
     # No `except Exception:` followed only by `pass`.
     assert not re.search(
         r"except\s+Exception[^:]*:\s*(?:#[^\n]*\n)?\s*pass\b", src
@@ -61,17 +63,19 @@ def test_reaper_poll_failure_logs():
     """The dead-PID reaper used to swallow ``proc.poll()`` failures
     silently. It must now log the OSError so operators can diagnose
     a stuck job that never gets reaped."""
-    # Find the chunk between `proc.poll()` and `_persist_job(jid)`.
-    assert "[serve] reaper poll() failed" in SRC
+    # The reaper (_reconcile_running_pids) moved to server/jobs_reaper.py;
+    # getsource follows the shim to the new module.
+    assert "[serve] reaper poll() failed" in inspect.getsource(
+        _load_serve()._reconcile_running_pids
+    )
 
 
 def test_pty_ws_write_resize_close_log_on_failure():
     """The PTY WebSocket handler used to have three bare ``except Exception``
     blocks. After batch 5 they are scoped + logged."""
-    # The handler is `_handle_pty_ws` — locate its body.
-    idx = SRC.find("def _handle_pty_ws(")
-    assert idx >= 0
-    body = SRC[idx : idx + 8000]
+    # The handler is `_handle_pty_ws` — moved to server/pty_handlers.py, so
+    # getsource off the Handler follows it.
+    body = inspect.getsource(_load_serve().Handler._handle_pty_ws)
     # No `except Exception:` inside the handler.
     # (We allow the surrounding `_pty_spawn` block in `_handle_pty_create`
     # which already exists outside this handler.)
@@ -80,8 +84,8 @@ def test_pty_ws_write_resize_close_log_on_failure():
         f"_handle_pty_ws still has bare `except Exception:`: {bare_exc}"
     )
     # And it logs pty_ws failures.
-    assert "[serve] pty_ws write" in SRC
-    assert "[serve] pty_ws resize" in SRC
+    assert "[serve] pty_ws write" in body
+    assert "[serve] pty_ws resize" in body
 
 
 # -------- 2. taskkill stderr is captured & logged on non-zero exit --------
@@ -91,10 +95,9 @@ def test_taskkill_captures_and_logs_stderr():
     A failure (process gone, ACL) returned silently before — now it must
     log ``rc`` + the stderr tail so operators can tell a stuck cancel
     apart from a clean one."""
-    # The call site lives near `_cancel_job` / the run-tab cancel handler.
-    idx = SRC.find('"taskkill", "/F", "/T", "/PID"')
-    assert idx >= 0
-    block = SRC[max(0, idx - 200) : idx + 1200]
+    # _cancel_job moved to server/jobs.py; getsource follows the shim.
+    block = inspect.getsource(_load_serve()._cancel_job)
+    assert '"taskkill", "/F", "/T", "/PID"' in block
     assert "capture_output=True" in block
     # Logging on rc != 0.
     assert "[serve] taskkill rc=" in block
@@ -108,9 +111,8 @@ def test_taskkill_captures_and_logs_stderr():
 def test_git_log_excerpt_has_timeout():
     """``_git_log_excerpt`` shells out to ``git log`` — a hung git process
     must not pin the suggester thread."""
-    idx = SRC.find("def _git_log_excerpt(")
-    assert idx >= 0
-    body = SRC[idx : idx + 1500]
+    # _git_log_excerpt moved to server/agent_suggest.py; getsource follows the shim.
+    body = inspect.getsource(_load_serve()._git_log_excerpt)
     assert "timeout=" in body
     # And it must catch TimeoutExpired so the hang doesn't bubble up.
     assert "subprocess.TimeoutExpired" in body
@@ -122,10 +124,10 @@ def test_jobs_persist_file_reads_through_cache_with_errors_replace():
     """JOBS_PERSIST_FILE is JSONL — every reader must go through
     ``_load_jsonl_cached`` which uses ``errors='replace'`` and an
     mtime-invalidated cache."""
-    # 1. The cache opens with errors="replace".
-    assert 'errors="replace"' in SRC.split("def _load_jsonl_cached(", 1)[1].split(
-        "\ndef ", 1
-    )[0]
+    # 1. The cache reader opens with errors="replace". The helper now lives in
+    #    server/storage.py (re-exported by serve); inspect.getsource follows it.
+    import inspect
+    assert 'errors="replace"' in inspect.getsource(_load_serve()._load_jsonl_cached)
     # 2. Every JOBS_PERSIST_FILE *read* site uses _load_jsonl_cached, not
     #    a raw read_text(). (Persistence writes go through .open("a").)
     for line in SRC.splitlines():
@@ -142,9 +144,9 @@ def test_jobs_persist_file_reads_through_cache_with_errors_replace():
 def test_run_subprocess_uses_list_args_no_shell_true():
     """``_run_subprocess`` must take a ``list[str]`` so Windows path
     quoting is handled by the OS, not by Python string concatenation."""
-    idx = SRC.find("def _run_subprocess(")
-    assert idx >= 0
-    body = SRC[idx : idx + 800]
+    # _run_subprocess moved to server/workflow_handlers.py; getsource off the
+    # Handler follows it (indentation preserved by the move).
+    body = inspect.getsource(_load_serve().Handler._run_subprocess)
     assert "args: list[str]" in body
     assert "shell=True" not in body
     # And `subprocess.run(args, ...)` — the first positional is the list.
@@ -162,10 +164,9 @@ def test_transcript_stream_has_max_session_cap():
     """``_handle_transcript_stream`` previously only bailed on idle ticks.
     Batch 5 adds a hard ``MAX_SSE_SESSION_S`` wall-clock cap so a chatty
     transcript can't pin the request thread forever."""
-    idx = SRC.find("def _handle_transcript_stream(")
-    assert idx >= 0
-    end = SRC.find("\n    def ", idx + 1)
-    body = SRC[idx:end]
+    # _handle_transcript_stream moved to server/transcripts_handlers.py;
+    # getsource off the Handler follows it.
+    body = inspect.getsource(_load_serve().Handler._handle_transcript_stream)
     assert "MAX_SSE_SESSION_S" in body
     assert "session_start" in body
     assert '"reason":"max_session"' in body
@@ -185,14 +186,18 @@ def test_suggestion_semaphore_present_and_used():
     acquire ``_SUGGESTION_SEMAPHORE`` non-blocking and 429 on contention."""
     mod = _load_serve()
     assert hasattr(mod, "_SUGGESTION_SEMAPHORE")
-    # Source-level: at least two acquire sites, at least two release sites.
-    acquires = SRC.count("_SUGGESTION_SEMAPHORE.acquire(blocking=False)")
-    releases = SRC.count("_SUGGESTION_SEMAPHORE.release()")
+    # The acquire/release sites moved with their handlers into the proposals +
+    # agent-suggest mixin modules; scan those module sources (not serve.py).
+    import server.agent_suggest_handlers as _agh
+    import server.proposals_handlers as _ph
+    src = inspect.getsource(_ph) + inspect.getsource(_agh)
+    acquires = src.count("_SUGGESTION_SEMAPHORE.acquire(blocking=False)")
+    releases = src.count("_SUGGESTION_SEMAPHORE.release()")
     assert acquires >= 2, f"expected ≥2 semaphore acquires, found {acquires}"
     assert releases >= 2, f"expected ≥2 semaphore releases, found {releases}"
     # And each acquire site returns 429 with Retry-After.
-    assert SRC.count('send_response(429)') >= 2
-    assert SRC.count('"Retry-After"') >= 2
+    assert src.count('send_response(429)') >= 2
+    assert src.count('"Retry-After"') >= 2
 
 
 # -------- 8. read_text on user-visible files passes errors='replace' -------

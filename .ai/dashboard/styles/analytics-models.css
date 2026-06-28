@@ -1,0 +1,137 @@
+    /* ---------------- Auto-select rankings (under Models & dispatch) ---------------- */
+    #view-models .as-threshold {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--text-2);
+    }
+    #view-models .as-threshold input {
+      width: 64px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      color: var(--text);
+      font-family: var(--ff-mono);
+      font-size: var(--fs-2);
+      padding: 4px 6px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      transition: border-color 120ms var(--easing), box-shadow 120ms var(--easing);
+    }
+    #view-models .as-threshold input:hover {
+      border-color: var(--border-strong);
+    }
+    #view-models .as-threshold input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: var(--accent-glow-soft);
+    }
+    #view-models .as-meta-fresh {
+      color: var(--text-2);
+      font-family: var(--ff-mono);
+    }
+    #view-models .as-meta-fresh.is-stale { color: var(--warn); }
+    #view-models .as-group { margin-top: var(--s-4); }
+    #view-models .as-group:first-child { margin-top: var(--s-3); }
+    #view-models .as-group-key {
+      margin: 0 0 var(--s-2) 0;
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      letter-spacing: 0.20em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    #view-models .as-group-key .as-phase {
+      color: var(--accent);
+      letter-spacing: 0.20em;
+    }
+    #view-models .as-table { font-size: var(--fs-2); }
+    #view-models .as-table th { padding: 7px 12px; }
+    /* Merged two `#view-models .as-table td` blocks into one to avoid
+       a second definition of the same selector at the next line. */
+    #view-models .as-table td {
+      padding: 7px 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    #view-models .as-table .as-num { text-align: right; }
+    #view-models .as-table th.as-num { text-align: right; }
+    #view-models .as-rank {
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+    }
+    #view-models .as-table tr.as-top { background: var(--accent-bg); }
+    #view-models .as-table tr.as-top:hover { background: var(--accent-bg); filter: brightness(1.10); }
+    #view-models .as-table tr.as-top .as-rank {
+      color: var(--accent);
+      font-weight: 700;
+    }
+    #view-models .as-tool,
+    #view-models .as-model,
+    #view-models .as-effort { font-family: var(--ff-mono); }
+    #view-models .as-model { color: var(--text-2); }
+    #view-models .as-effort { color: var(--text-dim); }
+    #view-models .as-sr-good { color: var(--good); }
+    #view-models .as-sr-warn { color: var(--warn); }
+    #view-models .as-sr-bad { color: var(--bad); }
+    #view-models .as-score {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--s-2);
+      justify-content: flex-end;
+    }
+    #view-models .as-score-bar {
+      position: relative;
+      width: 64px;
+      height: 4px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-soft);
+      flex-shrink: 0;
+    }
+    #view-models .as-score-bar > span {
+      position: absolute;
+      inset: 0 auto 0 0;
+      background: linear-gradient(90deg, var(--accent-soft), var(--accent));
+    }
+    #view-models .as-table tr.as-top .as-score-bar > span {
+      background: linear-gradient(90deg, var(--accent), var(--accent-hi));
+      box-shadow: var(--accent-glow-soft);
+    }
+    /* prefers-reduced-motion block previously here only repeated what the
+       global "*, *::before, *::after { animation: none !important; transition: none !important }"
+       rule at line ~3397 already handles. Removed to cut the duplicate. */
+
+    /* ---------------- Keyboard a11y · WCAG 2.4.7 ----------------
+       Many interactive elements in this dashboard use `all: unset` or no
+       focus style, leaving keyboard users with NO visible focus ring.
+       Add a global :focus-visible outline as a baseline. We use `outline`
+       (not box-shadow) so it remains visible on elements inside parents
+       with `overflow: hidden` (terminal panes, modal bodies, etc.).
+       !important is the accessibility floor — earlier rules with
+       per-selector `:focus { outline: none }` (inputs, selects, search
+       fields) suppress outline for mouse focus correctly but used to
+       win over this baseline by specificity, leaving keyboard users
+       with no indicator. WCAG 2.4.7 is non-negotiable. */
+    :focus-visible {
+      outline: 2px solid var(--accent) !important;
+      outline-offset: 2px !important;
+      border-radius: 2px;
+    }
+    button:focus-visible,
+    [role="button"]:focus-visible,
+    a:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* Baseline placeholder contrast. Inputs scattered across the
+       dashboard inherit browser-default placeholder color, which can
+       fall well below WCAG AA on dark surfaces. --text-dim (oklch 62%)
+       sits in the safe band against the panel-inset backgrounds. */
+    input::placeholder,
+    textarea::placeholder {
+      color: var(--text-dim);
+      opacity: 1;
+    }
+

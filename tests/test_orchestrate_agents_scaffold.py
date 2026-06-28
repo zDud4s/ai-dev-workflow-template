@@ -27,7 +27,7 @@ def _frontmatter(path: Path) -> dict:
 
 def test_skill_frontmatter():
     """After the merge with agent-planner, the skill needs `Write` (saves the
-    drafted YAML to .ai/pipelines/<slug>.yaml) alongside the original tools.
+    drafted YAML to .ai/local/pipelines/<slug>.yaml) alongside the original tools.
     """
     frontmatter = _frontmatter(SKILL_PATH)
 
