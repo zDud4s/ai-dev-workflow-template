@@ -24,7 +24,7 @@ I/O layer) and server/metrics.py (per-skill telemetry):
 
 serve.py re-exports every name here via a shim and installs ``_record_skill_metrics``
 as ``server.jobs.record_skill_metrics_hook``. Everything imported here flows one
-way (improver -> io / metrics / jobs_state / foundations); nothing here
+way (improver -> io / metrics / jobs.state / foundations); nothing here
 is imported back, so there is no cycle.
 """
 from __future__ import annotations
@@ -56,7 +56,7 @@ from server.improver.io import (
     _recent_rejected_proposals,
     _write_proposal,
 )
-from server.jobs_state import JOB_KINDS, JOBS, JOBS_LOCK
+from server.jobs.state import JOB_KINDS, JOBS, JOBS_LOCK
 from server.llm_output import _parse_improver_output
 from server.metrics import _aggregate_skill_metrics
 from server.paths import (

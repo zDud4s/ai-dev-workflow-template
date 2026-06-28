@@ -30,9 +30,9 @@ from server.jobs import (
     _spawn_job,
     _tail_chat_catchup,
 )
-from server.jobs_persistence import _extract_cost_from_log, _persist_job
-from server.jobs_reaper import _evict_old_jobs, _reconcile_running_pids
-from server.jobs_state import JOB_KINDS, JOBS, JOBS_LOCK, _TERMINAL_JOB_STATUSES
+from server.jobs.persistence import _extract_cost_from_log, _persist_job
+from server.jobs.reaper import _evict_old_jobs, _reconcile_running_pids
+from server.jobs.state import JOB_KINDS, JOBS, JOBS_LOCK, _TERMINAL_JOB_STATUSES
 from server.paths import ROOT
 from server.runtime import _browser_cross_origin_blocked
 from server.validation import _safe_which

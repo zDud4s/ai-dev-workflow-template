@@ -259,7 +259,7 @@ from server.ws import (  # noqa: E402
 )
 from server.llm_output import _parse_improver_output  # noqa: E402
 from server.config import _read_yaml_field  # noqa: E402
-from server.jobs_state import (  # noqa: E402
+from server.jobs.state import (  # noqa: E402
     JOB_KINDS,
     JOBS,
     JOBS_LOCK,
@@ -267,7 +267,7 @@ from server.jobs_state import (  # noqa: E402
     _JOB_RUNTIME_FIELDS,
     _TERMINAL_JOB_STATUSES,
 )
-from server.jobs_persistence import (  # noqa: E402
+from server.jobs.persistence import (  # noqa: E402
     _COST_EXTRACT_CACHE,
     _COST_EXTRACT_LOCK,
     _DEFAULT_JOBS_PERSIST_FILE,
@@ -278,7 +278,7 @@ from server.jobs_persistence import (  # noqa: E402
     _prune_old_logs,
     _update_job_cost,
 )
-from server.jobs_reaper import (  # noqa: E402
+from server.jobs.reaper import (  # noqa: E402
     JOB_REAP_INTERVAL_S,
     _PID_ALIVE_CACHE,
     _PID_ALIVE_TTL_SECONDS,

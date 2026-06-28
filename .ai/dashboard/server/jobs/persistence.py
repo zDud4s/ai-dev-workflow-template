@@ -2,7 +2,7 @@
 
 Replays/snapshots the shared ``JOBS`` registry to disk (byte-range locked so
 concurrent writers don't interleave), aggregates ``type=result`` cost events
-from chat logs, and prunes old log files. Builds on ``server.jobs_state`` (the
+from chat logs, and prunes old log files. Builds on ``server.jobs.state`` (the
 shared registry) and ``server.storage`` (the JSONL cache).
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from server.jobs_state import JOBS, JOBS_LOCK, _JOB_RUNTIME_FIELDS
+from server.jobs.state import JOBS, JOBS_LOCK, _JOB_RUNTIME_FIELDS
 from server.paths import JOBS_PERSIST_FILE
 from server.storage import _JSONL_CACHE, _JSONL_CACHE_LOCK, _bound_path_cache
 

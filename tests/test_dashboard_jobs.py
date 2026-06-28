@@ -43,7 +43,7 @@ if str(DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_DIR))
 import server.transcripts.paths as _tp  # noqa: E402
 import server.runtime as _runtime  # noqa: E402 — BOUND_PORT + Origin allowlist live here (follows-the-move)
-import server.jobs_persistence as _jp  # noqa: E402 — _persist_job/_load_persisted_jobs + JOBS_PERSIST_FILE live here
+import server.jobs.persistence as _jp  # noqa: E402 — _persist_job/_load_persisted_jobs + JOBS_PERSIST_FILE live here
 import server.jobs as _jobs  # noqa: E402 — the job runner (reads JOBS_DIR) lives here (follows-the-move)
 import server.analytics as _an  # noqa: E402 — _load_timeline_runs reads EVENTS_FILE here (follows-the-move)
 

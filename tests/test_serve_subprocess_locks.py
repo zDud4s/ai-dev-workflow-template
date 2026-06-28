@@ -170,7 +170,7 @@ def test_suggestion_semaphore_returns_429_on_saturation() -> None:
 
 def _serve_function_source(name: str) -> str:
     # Follow the re-export: serve.<name> may now live in a server/* module
-    # (e.g. _persist_job moved to server.jobs_persistence). inspect.getsource
+    # (e.g. _persist_job moved to server.jobs.persistence). inspect.getsource
     # reads from the function's defining module, so the file-lock structure
     # check works regardless of which module physically owns the function.
     return inspect.getsource(getattr(serve, name))

@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"))
 import serve  # noqa: E402 — sys.path tweak above is the import setup
-import server.jobs_reaper as _jr  # noqa: E402 — reaper fns read _pid_is_alive/_persist_job from here
+import server.jobs.reaper as _jr  # noqa: E402 — reaper fns read _pid_is_alive/_persist_job from here
 
 
 def _reset_jobs() -> None:

@@ -21,7 +21,7 @@ from pathlib import Path
 from server.config import _read_yaml_field
 from server.http_base import MAX_SSE_SESSION_S, MAX_TRANSCRIPT_CATCHUP_BYTES
 from server.jobs import SESSION_REGISTRY, _copy_transcript_with_new_sid
-from server.jobs_state import JOBS, JOBS_LOCK
+from server.jobs.state import JOBS, JOBS_LOCK
 from server.paths import ROOT
 from server.runtime import _browser_cross_origin_blocked
 from server.sessions.events import _jsonl_line_to_session_events

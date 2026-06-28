@@ -63,7 +63,7 @@ def test_reaper_poll_failure_logs():
     """The dead-PID reaper used to swallow ``proc.poll()`` failures
     silently. It must now log the OSError so operators can diagnose
     a stuck job that never gets reaped."""
-    # The reaper (_reconcile_running_pids) moved to server/jobs_reaper.py;
+    # The reaper (_reconcile_running_pids) moved to server/jobs/reaper.py;
     # getsource follows the shim to the new module.
     assert "[serve] reaper poll() failed" in inspect.getsource(
         _load_serve()._reconcile_running_pids

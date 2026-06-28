@@ -44,8 +44,8 @@ from pathlib import Path
 
 from server.sessions import lock as session_lock, registry as session_registry
 from server.config import _read_yaml_field
-from server.jobs_persistence import _persist_job, _update_job_cost
-from server.jobs_state import JOB_KINDS, JOBS, JOBS_LOCK
+from server.jobs.persistence import _persist_job, _update_job_cost
+from server.jobs.state import JOB_KINDS, JOBS, JOBS_LOCK
 from server.paths import JOBS_DIR, ROOT
 from server.transcripts.paths import _transcripts_dir_for_cwd
 from server.validation import _safe_which
