@@ -18,7 +18,7 @@ sys.path.insert(
     0,
     str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"),
 )
-from server import pty_session as _pty_session  # noqa: E402
+from server.pty import session as _pty_session  # noqa: E402
 
 
 _PTY_SOURCE_PATH = pathlib.Path(_pty_session.__file__)

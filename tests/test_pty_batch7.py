@@ -25,7 +25,7 @@ sys.path.insert(
     0,
     str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"),
 )
-from server import pty_session as _pty_session
+from server.pty import session as _pty_session
 
 
 def _fake_posix_pty():

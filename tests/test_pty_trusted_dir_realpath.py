@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PTY_SESSION = REPO_ROOT / ".ai" / "dashboard" / "server" / "pty_session.py"
+PTY_SESSION = REPO_ROOT / ".ai" / "dashboard" / "server" / "pty" / "session.py"
 
 
 def _load_pty_session():

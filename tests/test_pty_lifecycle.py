@@ -35,7 +35,7 @@ sys.path.insert(
     0,
     str(pathlib.Path(__file__).resolve().parent.parent / ".ai" / "dashboard"),
 )
-from server import pty_session as _pty_session  # noqa: E402
+from server.pty import session as _pty_session  # noqa: E402
 import serve  # noqa: E402
 import server.pty as _server_pty  # noqa: E402 — PTY state/funcs moved here; serve re-exports
 

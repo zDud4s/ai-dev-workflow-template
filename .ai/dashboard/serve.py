@@ -77,7 +77,7 @@ if _SCRIPTS_DIR not in sys.path:
 # sessions in addition to the existing chat-claude / chat-codex panes;
 # this module wraps POSIX `pty.fork` and Windows `pywinpty.PtyProcess`
 # behind one interface.
-from server import pty_session as _pty_session  # noqa: E402
+from server.pty import session as _pty_session  # noqa: E402
 from server.sessions import registry as session_registry, lock as session_lock  # noqa: E402
 from server._improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
