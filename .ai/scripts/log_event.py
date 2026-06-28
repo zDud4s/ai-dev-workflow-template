@@ -17,7 +17,9 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+# Script lives at <repo>/.ai/scripts/log_event.py — repo root is parents[2].
+# (Was parents[3] under the old .ai/dashboard/scripts/ home, one level deeper.)
+ROOT = Path(__file__).resolve().parents[2]
 EVENTS_FILE = ROOT / ".ai" / "ledgers" / "events.jsonl"
 # Cache parent-dir existence across hook invocations in the same process.
 # This hook fires on every PostToolUse so the mkdir syscall would otherwise

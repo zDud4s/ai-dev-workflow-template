@@ -22,7 +22,9 @@ import uuid
 from pathlib import Path
 
 PORT = int(os.environ.get("DEMO_PORT", "8770"))
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# Script lives at <repo>/.ai/scripts/demo.py — repo root is parents[2].
+# (Was parents[3] under the old .ai/dashboard/scripts/ home, one level deeper.)
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVE_PATH = REPO_ROOT / ".ai" / "dashboard" / "serve.py"
 
 
