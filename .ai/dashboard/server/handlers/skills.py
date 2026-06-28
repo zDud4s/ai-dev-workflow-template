@@ -16,7 +16,7 @@ from pathlib import Path
 from server.improver import _detect_skill_suggestions
 from server.metrics import _aggregate_skill_metrics
 from server.paths import IMPROVEMENTS_LEDGER, ROOT
-from server.skills_config import (
+from server.skills.config import (
     _AGENTS_ALL_CACHE,
     _CATALOG_TTL_SECONDS,
     _SKILLS_ALL_CACHE,

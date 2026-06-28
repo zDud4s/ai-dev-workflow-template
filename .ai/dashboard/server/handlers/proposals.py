@@ -30,7 +30,7 @@ from server.improver_io import (
 )
 from server.llm_output import _parse_improver_output
 from server.paths import ROOT, SKILL_PROPOSALS_DIR
-from server.skill_tree import _create_skill_in_both_trees
+from server.skills.tree import _create_skill_in_both_trees
 from server.validation import _safe_which, _skill_name_canonical
 
 

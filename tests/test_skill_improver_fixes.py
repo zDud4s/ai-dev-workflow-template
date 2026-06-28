@@ -122,7 +122,7 @@ def _patch_attr(monkeypatch, serve_module, name, value):
     """setattr ``name``=``value`` on serve_module AND every loaded ``server.*``
     submodule that binds its own copy of ``name``.
 
-    The improver helpers were split out of serve.py into ``server.skill_tree`` /
+    The improver helpers were split out of serve.py into ``server.skills.tree`` /
     ``server.improver_io`` / ``server.improver``; each did ``from server.paths
     import <CONST>`` (or holds a re-exported function), so a function that moved
     out resolves the name in its new module's namespace. Patching only

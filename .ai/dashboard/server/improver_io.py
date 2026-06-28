@@ -11,7 +11,7 @@ improver runner (which lives in server/improver.py):
     ``SKILL_PROPOSALS_DIR`` (superseding prior pending ones via
     ``_supersede_prior_pending``); ``_apply_improvement`` writes the new SKILL.md
     (backing up the old under ``SKILL_BACKUPS_DIR``, mirroring to .agents via
-    ``server.skill_tree``) and records the outcome.
+    ``server.skills.tree``) and records the outcome.
   * Gates      -- ``_check_held_out_gate`` (defers to the eval harness),
     ``_check_skill_regression`` (success-rate drop in ``SKILL_METRICS_FILE``),
     and ``_auto_revert_skill`` (roll back a regressed skill from its proposal).
@@ -39,7 +39,7 @@ from server.paths import (
     SKILL_METRICS_FILE,
     SKILL_PROPOSALS_DIR,
 )
-from server.skill_tree import _mirror_claude_skill_to_agents
+from server.skills.tree import _mirror_claude_skill_to_agents
 from server.storage import _load_jsonl_cached
 from server.validation import _iso_to_epoch
 
@@ -393,7 +393,7 @@ def _supersede_prior_pending(skill_id: str, new_pid: str, new_kind: str) -> list
 
 
 # Dual-tree skill mirror (_BRIDGE_SKILLS_NO_MIRROR, _mirror_claude_skill_to_agents,
-# _create_skill_in_both_trees) moved to server/skill_tree.py, re-exported via shim.
+# _create_skill_in_both_trees) moved to server/skills/tree.py, re-exported via shim.
 
 def _apply_improvement(skill_path: Path, new_content: str, source: str,
                        reason: str, proposal_id: str | None,

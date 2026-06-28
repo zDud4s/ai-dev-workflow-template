@@ -325,14 +325,14 @@ from server.metrics import (  # noqa: E402
     _aggregate_skill_metrics,
     _phase_metric_rows,
 )
-from server.skills_config import (  # noqa: E402
+from server.skills.config import (  # noqa: E402
     _AGENTS_ALL_CACHE,
     _CATALOG_TTL_SECONDS,
     _SKILLS_ALL_CACHE,
     _scan_agents_dir,
     _scan_skills_dir,
 )
-from server.skill_tree import (  # noqa: E402
+from server.skills.tree import (  # noqa: E402
     _BRIDGE_SKILLS_NO_MIRROR,
     _create_skill_in_both_trees,
     _mirror_claude_skill_to_agents,
