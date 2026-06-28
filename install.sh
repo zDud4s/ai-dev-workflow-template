@@ -135,6 +135,17 @@ if [ -f "$TARGET_DIR/.ai/dashboard/app.js" ]; then
   echo "Removed stale $TARGET_DIR/.ai/dashboard/app.js (now split into app/*.js)"
 fi
 
+# The .ai/dashboard/scripts/ helper folder was dissolved: server-only modules
+# moved into .ai/dashboard/server/ and the shared workflow scripts moved into
+# .ai/scripts/. Remove the stale copies from older installs so they can't
+# shadow the new locations on sys.path.
+for stale in pty_session session_registry session_lock _improver_transcript_policy \
+             purge_stale_improver_transcripts log_event todos_parser demo \
+             pipeline_schema pipeline_fanout auto_select_scorer; do
+  rm -f "$TARGET_DIR/.ai/dashboard/scripts/$stale.py"
+done
+rmdir "$TARGET_DIR/.ai/dashboard/scripts" 2>/dev/null || true
+
 PYTHON_CMD=""
 if command -v python3 &>/dev/null; then
   PYTHON_CMD="python3"

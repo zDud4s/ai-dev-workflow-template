@@ -141,6 +141,18 @@ rm -f "$TARGET_DIR/.ai/dashboard/log_event.py" \
       "$TARGET_DIR/.ai/dashboard/pty_session.py" \
       "$TARGET_DIR/.ai/dashboard/todos_parser.py" \
       "$TARGET_DIR/.ai/dashboard/demo.py"
+
+# The .ai/dashboard/scripts/ helper folder was dissolved: server-only modules
+# moved into .ai/dashboard/server/ and the shared workflow scripts moved into
+# .ai/scripts/. Remove the stale copies from older installs so they can't
+# shadow the new locations on sys.path.
+for stale in pty_session session_registry session_lock _improver_transcript_policy \
+             purge_stale_improver_transcripts log_event todos_parser demo \
+             pipeline_schema pipeline_fanout auto_select_scorer; do
+  rm -f "$TARGET_DIR/.ai/dashboard/scripts/$stale.py"
+done
+rmdir "$TARGET_DIR/.ai/dashboard/scripts" 2>/dev/null || true
+
 # Glob every app/*.js so new modules (settings.js, auto-select.js, future ones)
 # propagate without an explicit list to maintain. index.html references files
 # by name — if any are missing, the dashboard silently 404s and dependent

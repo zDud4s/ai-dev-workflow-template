@@ -517,25 +517,46 @@ def upsert_gitignore(target_path):
         print(f"Updated {target_path} (added workflow footprint ignore block)")
 
 
-# --- pre-refactor structure migration (update mode only) ---------------------
-# Before the May-2026 refactor the dashboard wrote ledgers directly under
-# .ai/ and .ai/dashboard/, and stored proposals/backups in flat directories
-# under .ai/dashboard/. The refactored serve.py reads ONLY from the new
-# paths, so pre-refactor user data (events, metrics, accepted proposals)
-# would become invisible. Move it into place. Idempotent: if the new path
-# already holds data we merge ledgers (old lines first, append new) and
-# skip per-file collisions inside proposal dirs to avoid clobbering.
+# --- structure migration (update mode only) ----------------------------------
+# Generated runtime data now lives under .ai/local/ (ledgers, agent-runs,
+# pipelines, jobs, proposals). Earlier layouts wrote it directly under .ai/ and
+# .ai/dashboard/ (very old), then under .ai/ledgers, .ai/agent-runs,
+# .ai/pipelines and .ai/dashboard/{jobs,proposals} (intermediate). The current
+# code reads ONLY .ai/local/, so leftover data at any older path would become
+# invisible. Move it into place. Idempotent: ledgers merge (old lines first,
+# append new); dir movers skip per-file collisions to avoid clobbering.
 LEDGER_MIGRATIONS = [
-    (".ai/dashboard/jobs.jsonl",          ".ai/ledgers/jobs.jsonl"),
-    (".ai/events.jsonl",                  ".ai/ledgers/events.jsonl"),
-    (".ai/metrics.jsonl",                 ".ai/ledgers/metrics.jsonl"),
-    (".ai/dashboard/skill_metrics.jsonl", ".ai/ledgers/skill_metrics.jsonl"),
-    (".ai/dashboard/improvements.jsonl",  ".ai/ledgers/improvements.jsonl"),
+    # Very old: ledgers written directly under .ai/ and .ai/dashboard/.
+    (".ai/dashboard/jobs.jsonl",          ".ai/local/ledgers/jobs.jsonl"),
+    (".ai/events.jsonl",                  ".ai/local/ledgers/events.jsonl"),
+    (".ai/metrics.jsonl",                 ".ai/local/ledgers/metrics.jsonl"),
+    (".ai/dashboard/skill_metrics.jsonl", ".ai/local/ledgers/skill_metrics.jsonl"),
+    (".ai/dashboard/improvements.jsonl",  ".ai/local/ledgers/improvements.jsonl"),
+    # Intermediate .ai/ledgers/ layout -> .ai/local/ledgers/.
+    (".ai/ledgers/jobs.jsonl",            ".ai/local/ledgers/jobs.jsonl"),
+    (".ai/ledgers/events.jsonl",          ".ai/local/ledgers/events.jsonl"),
+    (".ai/ledgers/metrics.jsonl",         ".ai/local/ledgers/metrics.jsonl"),
+    (".ai/ledgers/skill_metrics.jsonl",   ".ai/local/ledgers/skill_metrics.jsonl"),
+    (".ai/ledgers/improvements.jsonl",    ".ai/local/ledgers/improvements.jsonl"),
+    (".ai/ledgers/todos.jsonl",           ".ai/local/ledgers/todos.jsonl"),
+    (".ai/ledgers/todos-archive.jsonl",   ".ai/local/ledgers/todos-archive.jsonl"),
 ]
 PROPOSAL_DIR_MIGRATIONS = [
-    (".ai/dashboard/skill_proposals", ".ai/dashboard/proposals/skills"),
-    (".ai/dashboard/agent_proposals", ".ai/dashboard/proposals/agents"),
-    (".ai/dashboard/skill_backups",   ".ai/dashboard/proposals/skill_backups"),
+    # Very old: flat proposal/backup dirs under .ai/dashboard/.
+    (".ai/dashboard/skill_proposals", ".ai/local/proposals/skills"),
+    (".ai/dashboard/agent_proposals", ".ai/local/proposals/agents"),
+    (".ai/dashboard/skill_backups",   ".ai/local/proposals/skill_backups"),
+    # Intermediate .ai/dashboard/proposals/ layout -> .ai/local/proposals/.
+    (".ai/dashboard/proposals/skills",        ".ai/local/proposals/skills"),
+    (".ai/dashboard/proposals/agents",        ".ai/local/proposals/agents"),
+    (".ai/dashboard/proposals/skill_backups", ".ai/local/proposals/skill_backups"),
+]
+# Whole runtime dirs that simply relocated under .ai/local/. Move their
+# children into place and remove the empty legacy dir (reuses the proposal mover).
+DIR_MIGRATIONS = [
+    (".ai/agent-runs",     ".ai/local/agent-runs"),
+    (".ai/pipelines",      ".ai/local/pipelines"),
+    (".ai/dashboard/jobs", ".ai/local/jobs"),
 ]
 
 
@@ -591,6 +612,8 @@ def run_pre_refactor_migrations(target_dir):
     for old_rel, new_rel in LEDGER_MIGRATIONS:
         migrate_ledger_file(target_dir, old_rel, new_rel)
     for old_rel, new_rel in PROPOSAL_DIR_MIGRATIONS:
+        migrate_proposal_dir(target_dir, old_rel, new_rel)
+    for old_rel, new_rel in DIR_MIGRATIONS:
         migrate_proposal_dir(target_dir, old_rel, new_rel)
 
 
