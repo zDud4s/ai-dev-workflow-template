@@ -1,0 +1,37 @@
+# Curated overlay for the test catalog — the ONLY hand-edited layer.
+#
+# `catalog.generated.yaml` is derived from disk by `select_tests.py --sync`
+# (membership from filenames, `covers` from a static path-literal scan). This
+# file holds the three things that derivation can't infer on its own:
+#
+#   aliases       fold a `test_<area>_*` token into a canonical group id, so
+#                 sibling suites collapse into one group (pty -> terminals).
+#   always        groups that ALWAYS run at the gate because they guard
+#                 scaffold-wide invariants the diff can't be trusted to imply.
+#   extra_covers  source<->test couplings the scanner can't see (rare).
+#
+# Touch this only when a genuinely NEW area appears — not per new test file.
+# The lockfile meta-test (tests/test_catalog.py) fails if generated drifts.
+
+aliases:
+  pty: terminals       # test_pty_* exercise the same terminals subsystem
+  css: styles
+  html: styles
+  auto: auto-select    # test_auto_select_*
+  skill: skills        # test_skill_* (singular) -> skills
+  agent: agents        # test_agent_* (singular) -> agents
+
+always:
+  - structure          # scaffold layout invariants
+  - schema             # packet / project schema invariants
+  - dispatch           # dispatch contract (.ai/workflow/dispatch.md)
+  - references         # cross-doc reference integrity
+  - mirror             # .claude/skills <-> .agents/skills mirror
+  - skills             # skill frontmatter / install invariants
+  - catalog            # this catalog's own lockfile + sanity meta-test
+
+extra_covers:
+  # This README documents the catalog itself; tie it to the catalog group so an
+  # edit re-runs the meta-tests instead of falling back to the full suite.
+  catalog:
+    - .ai/tests/README.md

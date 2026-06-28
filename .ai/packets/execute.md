@@ -20,7 +20,12 @@ Do-not-touch files/dirs: <!-- these must not be changed under any circumstance -
 To add: <!-- same as planning packet `Tests to add` after normalization (trim/lowercase; none/-/empty equivalent) — not byte-identical -->
 
 ## Validation
-Commands: <!-- exact commands to run after implementation -->
+Commands: <!-- exact commands to run after implementation.
+  For the test gate, prefer the catalog selector over the full suite:
+    trivial/small  -> python .ai/scripts/select_tests.py --gate --run
+    medium/large or elevated risk -> full suite (pytest), incl. slow
+  The --gate subset is the conservative superset (touched groups + always
+  groups); it fails if the catalog is stale. See .ai/tests/README.md. -->
 Expected result: <!-- what success looks like -->
 
 ## Handoff

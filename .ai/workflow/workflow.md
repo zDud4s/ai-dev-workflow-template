@@ -50,7 +50,7 @@ mixes with the versioned workflow contract.
 
 1. If `project_name` in `.ai/project.yaml` is `unknown`, run bootstrap first.
 2. Bootstrap may NOT rewrite the workflow core nor implement product changes; preserve existing repository instructions.
-3. Executor must fill the Handoff section before declaring done. `Validation evidence` is mandatory — one block per validation command (exit code + output tail). Self-reported success without evidence is not acceptable.
+3. Executor must fill the Handoff section before declaring done. `Validation evidence` is mandatory — one block per validation command (exit code + output tail). Self-reported success without evidence is not acceptable. For the test gate, use the catalog selector (`.ai/scripts/select_tests.py --gate --run`) as the evidence for trivial/small tasks; medium/large or elevated-risk tasks run the full suite. The selector emits a conservative superset (touched groups + always-on invariant groups) and fails if the catalog is stale. See `.ai/tests/README.md`.
 4. Prefer the smallest correct change; do not broaden scope silently.
 5. A phase SHOULD be launched through the tool/model configured in `.ai/models.yaml` (or the planner's `## Selected models` block when auto-select is enabled). Manual runs that bypass dispatch don't generate a `.ai/local/ledgers/metrics.jsonl` row, so they can't be scored by the adaptive selector and won't appear in `## Phase execution log` — the orchestrator surfaces them as `source=manual` if a user later replays them through the pipeline.
 6. Review runs when Risk level is `elevated` OR Size is `medium`/`large`. Size alone never bypasses risk; for code changes the deterministic gate is the ship/no-ship decision; LLM review is advisory.
