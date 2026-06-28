@@ -1,4 +1,4 @@
-# .ai/dashboard/server/session_registry.py
+# .ai/dashboard/server/sessions/registry.py
 """Per-session state machine for the dashboard unified-chat feature.
 
 SessionRegistry tracks active sessions by sid (the Claude .jsonl stem). Each

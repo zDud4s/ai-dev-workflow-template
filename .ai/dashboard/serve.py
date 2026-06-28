@@ -78,7 +78,7 @@ if _SCRIPTS_DIR not in sys.path:
 # this module wraps POSIX `pty.fork` and Windows `pywinpty.PtyProcess`
 # behind one interface.
 from server import pty_session as _pty_session  # noqa: E402
-from server import session_registry, session_lock  # noqa: E402
+from server.sessions import registry as session_registry, lock as session_lock  # noqa: E402
 from server._improver_transcript_policy import classify_transcript, load_ledger_rows  # noqa: E402
 
 # Shared scripts, imported by name from .ai/scripts/ (on sys.path above).
@@ -407,7 +407,7 @@ from server.models_catalog import (  # noqa: E402
     _read_models_catalog,
 )
 from server.pipelines import _list_pipelines  # noqa: E402
-from server.session_events import _jsonl_line_to_session_events  # noqa: E402
+from server.sessions.events import _jsonl_line_to_session_events  # noqa: E402
 from server.git_utils import (  # noqa: E402
     _GIT_LSFILES_CACHE,
     _GIT_LSFILES_LOCK,

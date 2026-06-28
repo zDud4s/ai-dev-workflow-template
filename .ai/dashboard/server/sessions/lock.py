@@ -1,4 +1,4 @@
-# .ai/dashboard/server/session_lock.py
+# .ai/dashboard/server/sessions/lock.py
 """Cross-process file lock with heartbeat and stale-reclaim for dashboard sessions.
 
 Two dashboard processes (e.g. after a restart) must not both run an engine on

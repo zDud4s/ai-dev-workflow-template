@@ -24,7 +24,7 @@ from server.jobs import SESSION_REGISTRY, _copy_transcript_with_new_sid
 from server.jobs_state import JOBS, JOBS_LOCK
 from server.paths import ROOT
 from server.runtime import _browser_cross_origin_blocked
-from server.session_events import _jsonl_line_to_session_events
+from server.sessions.events import _jsonl_line_to_session_events
 from server.storage import _bound_path_cache
 from server.transcripts.paths import _transcripts_dir_for_cwd
 from server.transcripts import (
