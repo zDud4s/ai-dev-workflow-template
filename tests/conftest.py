@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import socket
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -61,6 +62,42 @@ def pytest_configure(config: pytest.Config) -> None:
         'subprocesses (tens of seconds each); excluded from the fast loop via '
         '-m "not slow"',
     )
+    config.addinivalue_line(
+        "markers",
+        "browser: playwright/dashboard UI tests that need a live dashboard on "
+        ":8766; skipped at collection when it is unreachable (avoids a Windows "
+        "playwright teardown hang) — see pytest_collection_modifyitems",
+    )
+
+
+def _dashboard_reachable(host: str = "localhost", port: int = 8766, timeout: float = 0.3) -> bool:
+    """True if something is accepting connections on the dashboard port."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip `browser` tests when no dashboard is live on :8766.
+
+    Those tests launch real Chromium and `page.goto(:8766)`. When the dashboard
+    is down (the usual case in the fast/pre-push loop and CI) the tests used to
+    `pytest.skip()` *inside* `page.goto`, leaving a pending playwright async task
+    whose teardown hangs / raises KeyboardInterrupt on Windows — poisoning the
+    whole run's exit code to 2 even though every test passed. Skipping at
+    collection means playwright never launches, so there is nothing to tear down.
+    A live dashboard (developer running them deliberately) lets them run normally.
+    """
+    if _dashboard_reachable():
+        return
+    skip = pytest.mark.skip(
+        reason="dashboard not reachable on :8766; browser tests skipped before launching playwright"
+    )
+    for item in items:
+        if item.get_closest_marker("browser"):
+            item.add_marker(skip)
 
 
 def repo_path(*parts: str) -> Path:

@@ -7,6 +7,8 @@ import pytest
 
 URL = "http://localhost:8766/.ai/dashboard/"
 
+pytestmark = pytest.mark.browser
+
 
 def _sync_playwright():
     if os.name == "nt":
