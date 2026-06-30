@@ -95,3 +95,26 @@ def test_council_styles_exist_and_use_tokens():
     for m in re.finditer(r"\.council-[\w-]*", src):
         block = src[m.start():m.start() + 400]
         assert not re.search(r"#[0-9a-fA-F]{6}\b", block), src[m.start():m.start() + 80]
+
+
+def test_council_partial_is_linked_in_index():
+    # styles.css is the unlinked source of record; the browser only loads the
+    # styles/*.css partials. The council section must be extracted into its own
+    # partial AND linked, or the Council view renders with zero styling.
+    partial = ROOT / ".ai" / "dashboard" / "styles" / "council.css"
+    assert partial.exists(), "styles/council.css partial is missing"
+    assert ".council" in partial.read_text(encoding="utf-8")
+    src = INDEX_HTML.read_text(encoding="utf-8")
+    assert re.search(r'<link[^>]+href="styles/council\.css"', src), \
+        "styles/council.css is not linked in index.html"
+
+
+def test_every_style_partial_is_linked_in_index():
+    # Regression guard for the orphaned-partial class of bug: any file dropped
+    # into styles/ must be wired into index.html's cascade, else its rules
+    # silently never load.
+    styles_dir = ROOT / ".ai" / "dashboard" / "styles"
+    src = INDEX_HTML.read_text(encoding="utf-8")
+    linked = set(re.findall(r'href="styles/([\w-]+\.css)"', src))
+    for partial in sorted(styles_dir.glob("*.css")):
+        assert partial.name in linked, f"{partial.name} exists but is not linked in index.html"
