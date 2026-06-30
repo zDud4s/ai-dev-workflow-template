@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -353,15 +355,59 @@ def _read_credentials_json(path) -> dict | None:
     return None
 
 
+# On macOS, Claude Code does NOT write ~/.claude/.credentials.json; it stores
+# the same OAuth payload in the login Keychain as a generic-password item under
+# this service name. Linux/Windows use the JSON file. Tests monkeypatch
+# ``_read_keychain_credentials_json`` to avoid shelling out to ``security``.
+_KEYCHAIN_SERVICE = "Claude Code-credentials"
+
+
+def _read_keychain_credentials_json() -> dict | None:
+    """Read Claude Code's OAuth credentials from the macOS login Keychain.
+
+    Returns the parsed ``{"claudeAiOauth": {...}}`` dict, or ``None`` when not
+    on macOS, the ``security`` tool is unavailable, the item is missing
+    (``security`` exits non-zero), or the stored value does not parse. Never
+    raises — a Keychain miss degrades to the same "signed out" state as a
+    missing credentials file rather than 500-ing the usage card. The argv is a
+    fixed, trusted command (no shell, no user input)."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        proc = subprocess.run(
+            ["security", "find-generic-password", "-s", _KEYCHAIN_SERVICE, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return None
+    try:
+        creds = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return creds if isinstance(creds, dict) else None
+
+
 def _read_claude_oauth_token() -> tuple[str | None, str | None]:
     """Read the local Claude Code OAuth access token plus subscription tier.
 
     Returns ``(token, tier)`` or ``(None, None)`` when the credentials file
-    is missing, malformed, or the token has expired. ``tier`` is the
+    is missing, malformed, or the token has expired. On macOS the file does not
+    exist (credentials live in the Keychain), so a missing/unreadable file falls
+    back to ``_read_keychain_credentials_json``. ``tier`` is the
     ``rateLimitTier`` (e.g. ``default_claude_max_5x``); useful for UI hints
     but not required for the API call itself."""
     path = _CLAUDE_CREDENTIALS_PATH_OVERRIDE or (Path.home() / ".claude" / ".credentials.json")
     creds = _read_credentials_json(path)
+    if not isinstance(creds, dict):
+        # macOS keeps the credentials in the Keychain, not the JSON file.
+        creds = _read_keychain_credentials_json()
     if not isinstance(creds, dict):
         return None, None
     oauth = creds.get("claudeAiOauth")
