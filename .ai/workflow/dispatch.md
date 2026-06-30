@@ -18,6 +18,21 @@ A controller never substitutes its own model for a configured workflow phase. Fo
 
 A phase runs in the current context window only if routing resolves to `inline` (see below).
 
+## Session identity
+
+Routing and inline attribution key off the **session identity**: the `(tool, model)` actually running the controller — the live conversation/process you are executing in — NOT whatever the static `session:` block in `.ai/models.yaml` happens to say. Resolve it once, every run, before routing:
+
+1. **`tool` / `model` = the controller's real runtime identity.** A live controller always knows what it is: Claude Code knows it is `claude` and which model powers the conversation (e.g. `claude-opus-4-8`); codex knows its invocation model. That runtime value is **authoritative**.
+2. **Normalize the model id before any comparison.** Strip a trailing bracketed variant tag so the live id matches the catalog id — e.g. `claude-opus-4-8[1m]` → `claude-opus-4-8`. (The family/version collapse for `agent` mode, below, applies *after* this normalization.)
+3. **`session:` in `.ai/models.yaml` is the declared default, not the source of truth.** It tells the dashboard/job-spawner what to launch and gives a fallback to a controller that genuinely cannot introspect itself. For a live controller, runtime wins.
+4. **On drift, warn and proceed with runtime.** If the normalized runtime model differs from `session.model` in config, emit once and continue with the runtime value:
+
+   > "Note: `.ai/models.yaml` `session.model` is `<config>` but this session is actually running `<runtime>`. Using the running model for routing and inline attribution; update `session.model` to silence this."
+
+   Never let a stale config make the running model masquerade as a different tier (e.g. routing/recording an Opus conversation as Sonnet because config still says Sonnet).
+
+Everywhere below, `session.tool` / `session.model` mean this resolved runtime identity.
+
 ## Dispatch routing
 
 Each phase resolves to one of three execution modes: `inline`, `agent`, or `dispatcher`.
@@ -39,7 +54,7 @@ Override / fallback table:
 | `manual` | set | use explicit `mode` |
 | `manual` | not set | default to `dispatcher` |
 
-Model comparison is exact-string. Unrecognized `session.model` values pass through; the tool validates them.
+Model comparison is exact-string against the normalized session identity (see "Session identity"). Unrecognized `session.model` values pass through; the tool validates them.
 
 Example explicit override:
 
@@ -88,9 +103,11 @@ Wrap each dispatcher command with a timeout. On POSIX shells: `timeout <N>s <cmd
 
 **Synchronous-call invariant.** Dispatcher subprocesses MUST be launched synchronously (the controller blocks on stdout/stderr until the process exits or the timeout fires). NEVER use background-launch flags — e.g. Claude Code's `Bash` tool with `run_in_background: true`, shell `&`, `nohup`, `Start-Job`, `Start-Process` without `-Wait`. Background launches return immediately with metadata (PID / output-file path) instead of the phase's actual output, breaking the Handoff check, the dashboard's dispatch tracker, and the metrics-logging step (no exit code, no duration, no stdout to parse). If a phase is genuinely too long for the default timeout, raise `<phase>.timeout_seconds` in `.ai/models.yaml`; do not work around it with background mode.
 
-**Mode: inline.** Run the phase logic in the current session. Assemble the same full prompt you would send to a subprocess, then follow it directly. If `mode: inline` is set explicitly and session model differs from `phase.model`, warn first:
+**Mode: inline.** Run the phase logic in the current session. Assemble the same full prompt you would send to a subprocess, then follow it directly. If `mode: inline` is set explicitly and the resolved session model (the running model) differs from `phase.model`, warn first:
 
-> "Warning: Phase `<phase>` is set to inline but session model (`<session.model>`) differs from phase model (`<phase.model>`). Running in session model."
+> "Warning: Phase `<phase>` is set to inline but the running model (`<session.model>`) differs from phase model (`<phase.model>`). Running in the running model — recorded as `<session.model>`, not `<phase.model>`."
+
+An inline phase is always recorded as the session identity's running model, never as `phase.model` — the running model is what actually executed it.
 
 ### Mode: agent (in-process)
 
@@ -154,7 +171,7 @@ Errors raised by the dispatch mechanism itself, before any phase logic runs. Pip
 | `project_name` in `project.yaml` is `unknown` | STOP — tell user to run bootstrap skill |
 | Executor skill for the configured `<execute.tool>` missing in the controller's discovery path | STOP — tell user to run `install.sh` (or `update-workflow.sh`) so the orchestrator and executor skills are installed |
 | Tool from `models.yaml` unavailable | STOP — tell user to update `.ai/models.yaml`. Never execute in-context as fallback. |
-| `dispatch_mode: auto` but `session` block missing or partial | STOP — "Auto dispatch requires a complete `session` block in `.ai/models.yaml` with both `session.tool` and `session.model`." |
+| `dispatch_mode: auto` but `session` block missing or partial | Resolve the session identity from the controller's runtime (see "Session identity") and warn: "`.ai/models.yaml` has no complete `session` block; using the running tool/model for routing. Add `session.tool`/`session.model` to silence this." Only STOP if the runtime identity is also unavailable. |
 | `dispatch_mode` has an unrecognized value | STOP — "`dispatch_mode` must be `auto` or `manual`. Got: `<value>`." |
 | `session.tool` has an unrecognized value | STOP — "`session.tool` must be one of: `claude`, `codex`. Got: `<value>`." |
 | `mode: inline` override where session model differs from phase model | Warn (see above), proceed |

@@ -133,6 +133,31 @@ def test_dispatch_timeout_convention_present(dispatch_text):
     )
 
 
+def test_dispatch_session_identity_is_runtime_authoritative(dispatch_text):
+    """Routing + inline attribution must key off the controller's ACTUAL running
+    model, not the static `session.model` in models.yaml. Guards against config
+    drift (conversation is opus but session.model still says sonnet), which
+    otherwise makes the running model masquerade as the configured tier."""
+    lowered = dispatch_text.lower()
+    assert "session identity" in lowered, (
+        "dispatch.md must define a `Session identity` resolution rule"
+    )
+    assert "runtime" in lowered and "authoritative" in lowered, (
+        "dispatch.md must state the runtime (actual running) model is "
+        "authoritative for routing, not the static session.model"
+    )
+
+
+def test_dispatch_documents_variant_suffix_normalization(dispatch_text):
+    """The live model id can carry a variant suffix (e.g. claude-opus-4-8[1m])
+    that must be normalized before the exact-string routing comparison, or even
+    a correct session.model would never match the catalog id."""
+    assert "[1m]" in dispatch_text, (
+        "dispatch.md must document stripping variant suffixes (e.g. `[1m]`) "
+        "before the session-identity comparison"
+    )
+
+
 # --- orchestrate skill -------------------------------------------------------
 
 

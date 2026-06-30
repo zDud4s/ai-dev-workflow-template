@@ -45,7 +45,7 @@ STOP on any failure:
 
 6. **Slug collision**: if the user picks a save option and `<slug>.yaml` already exists in `.ai/local/pipelines/`, suggest `<slug>-2`, `<slug>-3`, ... until unique. Never overwrite.
 
-7. **Metrics**: append a single `pipeline_draft` row to `.ai/local/ledgers/metrics.jsonl` (`tool=<session.tool>`, `model=<session.model>`, `exit_code=0` if saved (either save option), `exit_code=2` if discarded). Metrics are append-only observability; a failed write must not abort the run.
+7. **Metrics**: append a single `pipeline_draft` row to `.ai/local/ledgers/metrics.jsonl` (`tool`/`model` = the resolved session identity — the tool and model actually running this session per dispatch.md's "Session identity" rule, normalized of any `[...]` variant suffix, not the raw static `session.*` config; `exit_code=0` if saved (either save option), `exit_code=2` if discarded). Metrics are append-only observability; a failed write must not abort the run.
 
 ## Pipeline YAML schema
 

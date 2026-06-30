@@ -32,6 +32,8 @@ Returns a Markdown report containing:
 
 Stop immediately if any fail: `.ai/models.yaml` exists; `.ai/project.yaml` `project_name` is not `unknown` (otherwise run bootstrap first); `.ai/workflow/dispatch.md` exists; the executor skill for `execute.tool` exists in your discovery path. If missing, use the dispatch error table wording.
 
+Then resolve the **session identity** per dispatch.md's "Session identity" rule: use the model actually running this conversation (normalized — strip any `[...]` variant suffix), not the static `session.model`. If they differ, emit the drift warning and proceed with the running model for all routing and inline attribution.
+
 ## Phase 1 - Triage + Plan
 
 Read `plan.tool` and `plan.model` from `.ai/models.yaml`. Build a planner prompt combining the `planner` skill (discovery path), the user task, relevant facts from `project.yaml` / `memory.md` / `decisions.md`, and `.ai/packets/execute.md`. Dispatch through the configured tool/model.
