@@ -2282,6 +2282,53 @@
       termSetActivity(t, "responding…", "busy");
     }
 
+    // Live chain-of-thought. `thinking_delta` events stream token-by-token
+    // (like text_delta) BEFORE the final assistant frame that carries the
+    // complete thinking block. We paint them into an EXPANDED <details> so the
+    // operator can watch the model reason in real time (parity with tool pills,
+    // which already appear live), then collapse it on completion to keep the
+    // answer readable. We mark the assistant block (`dataset.thinkingLive`) so
+    // the final assistant frame dedupes instead of rendering a second copy.
+    function termAppendThinkingDelta(t, text) {
+      const block = termAssistantBlock(t);
+      block.dataset.thinkingLive = "1";
+      const textEl = block.querySelector(".text");
+      let live = t.thinkingLive;
+      if (!live || !live.det.isConnected || live.det.parentNode !== textEl) {
+        const det = document.createElement("details");
+        det.className = "thinking-block live";
+        det.open = true;  // expanded while streaming so the reasoning is visible
+        const sum = document.createElement("summary");
+        sum.textContent = "thinking…";
+        const pre = document.createElement("pre");
+        det.appendChild(sum);
+        det.appendChild(pre);
+        textEl.appendChild(det);
+        // Close the open text segment so any answer text that follows opens a
+        // fresh segment BELOW the thinking block (preserves chain order).
+        termCloseTextSegment(textEl);
+        live = t.thinkingLive = { det, sum, pre, len: 0 };
+      }
+      if (text) {
+        live.pre.textContent += text;
+        live.len += text.length;
+        live.sum.textContent = `thinking · ${live.len} chars`;
+      }
+      // Real reasoning content supersedes the animated placeholder bubble.
+      termClearThinkingPlaceholder(t);
+      termSetActivity(t, "thinking…", "busy");
+      termAutoScroll(t);
+    }
+
+    // Collapse the in-progress live thinking block when its content_block_stop
+    // arrives (or the turn ends). The <details> stays in the DOM — the
+    // `dataset.thinkingLive` marker on the assistant block is what dedupes the
+    // final frame, so collapsing here is purely cosmetic.
+    function termFinishThinking(t) {
+      if (t.thinkingLive && t.thinkingLive.det) t.thinkingLive.det.open = false;
+      t.thinkingLive = null;
+    }
+
     function termAddToolPill(t, toolUseId, name, input) {
       termSetActivity(t, "tool: " + (name || "?"), "busy");
       // Some tools deserve inline rich rendering instead of a collapsed pill.
@@ -2469,8 +2516,10 @@
     function termRenderResult(t, obj) {
       // Result frames close out a turn — drop any lingering thinking
       // placeholder (e.g. when the turn finishes without any assistant
-      // text, the placeholder would otherwise persist forever).
+      // text, the placeholder would otherwise persist forever) and collapse
+      // any still-open live thinking block.
       termClearThinkingPlaceholder(t);
+      termFinishThinking(t);
       const div = document.createElement("div");
       const subtype = String(obj.subtype || obj.result || "").toLowerCase();
       const isError = obj.is_error === true
@@ -2592,6 +2641,11 @@
                 termAddToolPill(t, blk.id, blk.name, blk.input);
               }
             } else if (blk.type === "thinking" && typeof blk.thinking === "string") {
+              // Dedupe: if thinking_delta events already streamed this block
+              // live into the current assistant message, don't paint it again.
+              // (Transcript replay has no deltas → the marker is unset → render.)
+              const cur = t.currentAssistant;
+              if (cur && cur.dataset.thinkingLive === "1") continue;
               const block = termAssistantBlock(t);
               const t2 = block.querySelector(".text");
               // Render thinking as a collapsed <details> so long internal
@@ -2643,15 +2697,26 @@
       }
 
       if (type === "stream_event") {
-        // Partial deltas - extract text and append to the current assistant block.
+        // Partial deltas - extract text/thinking and append to the current block.
         const ev = obj.event || {};
         if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta") {
           termAppendAssistantText(t, ev.delta.text || "");
+        } else if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "thinking_delta") {
+          // Stream the model's reasoning live (text at delta.thinking). The
+          // trailing signature_delta carries no display text, so it's ignored.
+          termAppendThinkingDelta(t, ev.delta.thinking || "");
         } else if (ev.type === "content_block_start" && ev.content_block) {
           const cb = ev.content_block;
           if (cb.type === "tool_use") {
             termAddToolPill(t, cb.id, cb.name, cb.input || {});
+          } else if (cb.type === "thinking") {
+            // Open the live thinking block immediately (deltas follow).
+            termAppendThinkingDelta(t, "");
           }
+        } else if (ev.type === "content_block_stop") {
+          // Collapse the live thinking block once its block completes (no-op if
+          // the stop belongs to a text/tool block — no live thinking is open).
+          termFinishThinking(t);
         }
         return;
       }

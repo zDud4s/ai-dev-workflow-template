@@ -622,6 +622,7 @@ function paneCoreRenderSystem(t, obj) {
 }
 function paneCoreRenderResult(t, obj) {
   paneCoreClearThinking(t);
+  paneCoreFinishThinking(t);
   const div = document.createElement("div");
   const subtype = String(obj.subtype || obj.result || "").toLowerCase();
   const isError = obj.is_error === true
@@ -692,6 +693,42 @@ var PANE_CORE_TRANSCRIPT_META_NOISE = new Set([
   "attachment", "queue-operation", "file-history-snapshot",
   "summary", "compaction", "last-prompt",
 ]);
+// Live chain-of-thought streaming (see terminals.js termAppendThinkingDelta for
+// the full rationale). thinking_delta events paint into an EXPANDED <details> in
+// real time so the operator can watch the model reason (parity with tool pills);
+// dataset.thinkingLive on the assistant block dedupes the final assistant frame.
+function paneCoreAppendThinkingDelta(t, text) {
+  const block = paneCoreAssistantBlock(t);
+  block.dataset.thinkingLive = "1";
+  const textEl = block.querySelector(".text");
+  let live = t.thinkingLive;
+  if (!live || !live.det.isConnected || live.det.parentNode !== textEl) {
+    const det = document.createElement("details");
+    det.className = "thinking-block live";
+    det.open = true;  // expanded while streaming so the reasoning is visible
+    const sum = document.createElement("summary");
+    sum.textContent = "thinking…";
+    const pre = document.createElement("pre");
+    det.appendChild(sum);
+    det.appendChild(pre);
+    textEl.appendChild(det);
+    paneCoreCloseTextSegment(textEl);  // answer text opens a fresh segment below
+    live = t.thinkingLive = { det, sum, pre, len: 0 };
+  }
+  if (text) {
+    live.pre.textContent += text;
+    live.len += text.length;
+    live.sum.textContent = `thinking · ${live.len} chars`;
+  }
+  paneCoreClearThinking(t);
+  paneCoreSetActivity(t, "thinking…", "busy");
+  paneCoreAutoScroll(t);
+}
+// Collapse the in-progress live thinking block on content_block_stop / turn end.
+function paneCoreFinishThinking(t) {
+  if (t.thinkingLive && t.thinkingLive.det) t.thinkingLive.det.open = false;
+  t.thinkingLive = null;
+}
 function paneCoreRenderJsonObject(t, obj) {
   if (!obj || typeof obj !== "object") return;
   const type = obj.type;
@@ -716,6 +753,11 @@ function paneCoreRenderJsonObject(t, obj) {
         } else if (blk.type === "tool_use") {
           if (!t.toolUseEls.has(blk.id)) paneCoreAddToolPill(t, blk.id, blk.name, blk.input);
         } else if (blk.type === "thinking" && typeof blk.thinking === "string") {
+          // Dedupe: thinking_delta events may already have streamed this block
+          // live into the current assistant message (transcript replay has no
+          // deltas → marker unset → render as before).
+          const cur = t.currentAssistant;
+          if (cur && cur.dataset.thinkingLive === "1") continue;
           const block = paneCoreAssistantBlock(t);
           const t2 = block.querySelector(".text");
           const det = document.createElement("details");
@@ -758,9 +800,14 @@ function paneCoreRenderJsonObject(t, obj) {
     const ev = obj.event || {};
     if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta") {
       paneCoreAppendAssistantText(t, ev.delta.text || "");
+    } else if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "thinking_delta") {
+      paneCoreAppendThinkingDelta(t, ev.delta.thinking || "");
     } else if (ev.type === "content_block_start" && ev.content_block) {
       const cb = ev.content_block;
       if (cb.type === "tool_use") paneCoreAddToolPill(t, cb.id, cb.name, cb.input || {});
+      else if (cb.type === "thinking") paneCoreAppendThinkingDelta(t, "");
+    } else if (ev.type === "content_block_stop") {
+      paneCoreFinishThinking(t);
     }
     return;
   }
