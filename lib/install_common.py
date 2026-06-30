@@ -23,6 +23,7 @@ from pathlib import Path
 from datetime import date
 import json
 import re
+import subprocess
 import sys
 import unicodedata
 
@@ -617,6 +618,35 @@ def run_pre_refactor_migrations(target_dir):
         migrate_proposal_dir(target_dir, old_rel, new_rel)
 
 
+# --- workflow version stamp --------------------------------------------------
+
+def stamp_workflow_version(target_dir: Path, script_dir: Path) -> None:
+    # Record the template's HEAD sha into .ai/workflow/.version so a fresh
+    # install/update starts "versioned". Without this the file is only ever
+    # written by a *successful* dashboard apply — but the apply button is gated
+    # on a recorded version, so an unstamped install can never reach it
+    # (chicken-and-egg). The dashboard's /api/workflow/check reads this file to
+    # compute ahead/behind. Best-effort: when script_dir is not a git checkout
+    # (e.g. installed from a tarball) or git is unavailable, skip silently so
+    # install/update never aborts under `set -euo pipefail`.
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(script_dir), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if proc.returncode != 0:
+        return
+    sha = proc.stdout.strip()
+    if not sha:
+        return
+    version_file = target_dir / ".ai" / "workflow" / ".version"
+    version_file.parent.mkdir(parents=True, exist_ok=True)
+    version_file.write_text(sha + "\n", encoding="utf-8", newline="\n")
+    print(f"Stamped {version_file} ({sha[:7]})")
+
+
 # --- mode dispatch -----------------------------------------------------------
 
 def run_install(target_dir: Path, script_dir: Path) -> None:
@@ -631,6 +661,7 @@ def run_install(target_dir: Path, script_dir: Path) -> None:
         target_dir / ".claude/settings.json",
     )
     upsert_gitignore(target_dir / ".gitignore")
+    stamp_workflow_version(target_dir, script_dir)
 
 
 def run_update(target_dir: Path, script_dir: Path) -> None:
@@ -663,6 +694,7 @@ def run_update(target_dir: Path, script_dir: Path) -> None:
         target_dir / ".claude/settings.json",
     )
     run_pre_refactor_migrations(target_dir)
+    stamp_workflow_version(target_dir, script_dir)
 
 
 def main(argv) -> int:

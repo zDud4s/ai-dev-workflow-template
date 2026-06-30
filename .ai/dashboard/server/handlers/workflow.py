@@ -118,6 +118,19 @@ class WorkflowSettingsRoutes(_RouteMixin):
         )
 
     @staticmethod
+    def _compute_has_updates(
+        upstream_sha: str, current_sha: str | None, is_template: bool
+    ) -> bool:
+        # A fresh install has no recorded .version yet (current_sha is None).
+        # Treat that as "update available" so the one-click apply can bootstrap
+        # and record the sha — without this the apply button stays disabled
+        # forever (chicken-and-egg: .version is only written *by* a successful
+        # apply). ``None != upstream_sha`` is True, so unversioned installs and
+        # genuinely-behind installs both qualify; matching shas don't. The
+        # template checkout is never updatable (HEAD *is* upstream).
+        return bool(upstream_sha) and current_sha != upstream_sha and not is_template
+
+    @staticmethod
     def _read_workflow_version() -> str | None:
         try:
             # ``errors="replace"`` so a corrupted/version-file edge case
@@ -169,12 +182,7 @@ class WorkflowSettingsRoutes(_RouteMixin):
             # Treat the template checkout as always up-to-date: serving the
             # dashboard from the template repo itself means HEAD *is* upstream,
             # so a "newer version available" notice would be a false positive.
-            has_updates = (
-                bool(upstream_sha)
-                and current_sha is not None
-                and current_sha != upstream_sha
-                and not is_template
-            )
+            has_updates = self._compute_has_updates(upstream_sha, current_sha, is_template)
 
             if is_template:
                 message = "Serving from the template repo itself — already on HEAD."

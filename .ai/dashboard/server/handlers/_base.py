@@ -30,6 +30,13 @@ if TYPE_CHECKING:
     from typing import Any, ClassVar
 
     class _RouteMixin(SimpleHTTPRequestHandler):
+        # serve.Handler runs on socketserver.ThreadingTCPServer, so self.server
+        # is always a server whose .server_address is the (host, port) tuple.
+        # typeshed types BaseServer.server_address as a non-tuple-guaranteed
+        # union, so subscripting it (self.server.server_address[1]) trips
+        # reportIndexIssue. Loosen to Any here — self.server is only read for
+        # that address — instead of scattering `# type: ignore[index]`.
+        server: Any
         # -- helpers defined on serve.Handler / sibling route mixins --
         def _json(self, *args: Any, **kwargs: Any) -> Any: ...
         def _csrf_guard(self, *args: Any, **kwargs: Any) -> Any: ...

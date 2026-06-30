@@ -31,6 +31,13 @@ tests/*
 # committed defaults are useful as-is.
 .ai/project.yaml
 
+# .ai/workflow/.version records which upstream sha THIS machine's install last
+# synced to — a per-machine runtime artifact written at install/update time and
+# by the dashboard's apply. It must never be committed (one machine's sha would
+# leak to everyone). Consumer projects already ignore all of .ai/; this template
+# tracks its own .ai/, so the file needs an explicit ignore here.
+.ai/workflow/.version
+
 # ─────────────────────────────────────────────────────────────
 # AI workflow — generated content
 # Track these directories as empty folders (via .gitkeep);
