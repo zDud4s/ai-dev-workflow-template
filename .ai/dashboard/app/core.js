@@ -961,6 +961,97 @@ function renderMarkdown(el, text) {
       return m ? m.length : 0;
     }
 
+    // ----- Memory budget ring -----
+    // A floating double-ring over the memory doc, mirroring Claude Code's
+    // context-window / compact indicator. Outer ring = estimated tokens
+    // (chars/4, the maintenance skill's own heuristic) vs a ~2000-token
+    // budget; inner ring = line count vs the consolidation threshold
+    // (`memory_tuning.consolidation_threshold_lines` in project.yaml, default
+    // 150). Both derive from data the page already loads, so there's no
+    // backend round-trip.
+    var MEM_TOKEN_BUDGET = 2000; // maintenance skill: .ai/memory.md ~2000 tokens
+    var MEM_DEFAULT_LINE_BUDGET = 150; // default consolidation_threshold_lines
+    // Last project.yaml seen, so submitMemory() can re-render the ring after an
+    // append without re-fetching/parsing project.yaml just for the threshold.
+    var _memBudgetProject = null;
+
+    function memoryBudgetLineCount(text) {
+      // Match Python's str.splitlines() (what test_token_budget.py counts): a
+      // trailing newline does NOT add a phantom line, and empty text is 0.
+      if (!text) return 0;
+      const t = text.replace(/\r\n/g, "\n").replace(/\n$/, "");
+      return t === "" ? 0 : t.split("\n").length;
+    }
+
+    function memoryBudgetStats(text, project) {
+      text = text || "";
+      const tokens = Math.ceil(text.length / 4); // chars/4 token estimate
+      const lines = memoryBudgetLineCount(text);
+      const lineBudget =
+        Number(project && project.memory_tuning &&
+               project.memory_tuning.consolidation_threshold_lines) ||
+        MEM_DEFAULT_LINE_BUDGET;
+      return {
+        tokens,
+        lines,
+        tokenBudget: MEM_TOKEN_BUDGET,
+        lineBudget,
+        tokenPct: MEM_TOKEN_BUDGET ? tokens / MEM_TOKEN_BUDGET : 0,
+        linePct: lineBudget ? lines / lineBudget : 0,
+      };
+    }
+
+    function renderMemoryBudget(text, project) {
+      // Cache the project so a later submitMemory() (which has no project in
+      // scope) can re-render with the same threshold.
+      if (project) _memBudgetProject = project;
+      else project = _memBudgetProject;
+
+      const el = $("#memory-budget");
+      if (!el) return; // stripped-DOM / partial-markup variant — bail quietly
+
+      const s = memoryBudgetStats(text, project);
+      const pctLabel = Math.round(s.tokenPct * 100);
+      // Token budget is the primary signal and drives the colour state.
+      const state = s.tokenPct >= 1 ? "over" : s.tokenPct >= 0.7 ? "warn" : "ok";
+
+      const clamp01 = (x) => Math.max(0, Math.min(1, x));
+      const rOuter = 27, rInner = 19;
+      const cOuter = 2 * Math.PI * rOuter;
+      const cInner = 2 * Math.PI * rInner;
+      const offOuter = cOuter * (1 - clamp01(s.tokenPct));
+      const offInner = cInner * (1 - clamp01(s.linePct));
+
+      el.dataset.state = state;
+      const label =
+        `Memory budget — ${s.tokens}/${s.tokenBudget} tokens (${pctLabel}%), ` +
+        `${s.lines}/${s.lineBudget} lines`;
+      el.title = label;
+      el.setAttribute("aria-label", label);
+      // arcs start at 12 o'clock (rotate -90°); round caps + dashoffset fill.
+      el.innerHTML =
+        `<div class="mem-budget-ring">
+           <svg class="mem-budget-svg" viewBox="0 0 64 64" width="44" height="44" aria-hidden="true">
+             <circle class="mem-ring-track" cx="32" cy="32" r="${rOuter}"></circle>
+             <circle class="mem-ring mem-ring-outer" cx="32" cy="32" r="${rOuter}"
+                     stroke-dasharray="${cOuter.toFixed(2)}"
+                     stroke-dashoffset="${offOuter.toFixed(2)}"
+                     transform="rotate(-90 32 32)"></circle>
+             <circle class="mem-ring-track mem-ring-track-inner" cx="32" cy="32" r="${rInner}"></circle>
+             <circle class="mem-ring mem-ring-inner" cx="32" cy="32" r="${rInner}"
+                     stroke-dasharray="${cInner.toFixed(2)}"
+                     stroke-dashoffset="${offInner.toFixed(2)}"
+                     transform="rotate(-90 32 32)"></circle>
+           </svg>
+           <span class="mem-budget-pct">${pctLabel}%</span>
+         </div>
+         <div class="mem-budget-legend" aria-hidden="true">
+           <span class="mem-leg mem-leg-tok"><i></i>${s.tokens} tok</span>
+           <span class="mem-leg mem-leg-ln"><i></i>${s.lines} ln</span>
+         </div>`;
+      el.hidden = false;
+    }
+
     function buildList(containerSel, items, onSelect) {
       const el = $(containerSel);
       // Caller may run before the target container is in the DOM (or against
@@ -1206,6 +1297,7 @@ function renderMarkdown(el, text) {
         setMsg("#mem-msg", "ok", "added: " + res.line, 4000);
         const memText = await getText(".ai/memory.md").catch(() => "");
         renderMarkdown($("#memory-doc"), memText);
+        renderMemoryBudget(memText); // reuses the cached project threshold
         const countMemoryEl = $("#count-memory");
         if (countMemoryEl) countMemoryEl.textContent = countMemoryEntries(memText);
       } catch (e) {

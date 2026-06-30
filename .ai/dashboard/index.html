@@ -335,16 +335,24 @@
           <span class="form-msg" id="mem-msg"></span>
         </div>
       </div>
-      <div class="doc" id="memory-doc" data-skeletoned="1">
-        <div class="skeleton-doc-block">
-          <span class="skeleton skeleton-doc-h"></span>
-          <span class="skeleton skeleton-doc-p1"></span>
-          <span class="skeleton skeleton-doc-p2"></span>
-          <span class="skeleton skeleton-doc-p3"></span>
-          <span class="skeleton skeleton-doc-h2"></span>
-          <span class="skeleton skeleton-doc-p1"></span>
-          <span class="skeleton skeleton-doc-p2"></span>
-          <span class="skeleton skeleton-doc-p4"></span>
+      <div class="mem-doc-wrap">
+        <!-- Floating token-budget ring (rendered by renderMemoryBudget in
+             app/core.js): outer arc = estimated tokens vs the ~2000-token
+             budget, inner arc = line count vs the consolidation threshold.
+             Sibling of #memory-doc so renderMarkdown's innerHTML replacement
+             never wipes it. -->
+        <div class="mem-budget" id="memory-budget" role="img" aria-label="Memory budget" hidden></div>
+        <div class="doc" id="memory-doc" data-skeletoned="1">
+          <div class="skeleton-doc-block">
+            <span class="skeleton skeleton-doc-h"></span>
+            <span class="skeleton skeleton-doc-p1"></span>
+            <span class="skeleton skeleton-doc-p2"></span>
+            <span class="skeleton skeleton-doc-p3"></span>
+            <span class="skeleton skeleton-doc-h2"></span>
+            <span class="skeleton skeleton-doc-p1"></span>
+            <span class="skeleton skeleton-doc-p2"></span>
+            <span class="skeleton skeleton-doc-p4"></span>
+          </div>
         </div>
       </div>
     </section>

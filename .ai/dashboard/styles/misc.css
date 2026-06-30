@@ -192,3 +192,77 @@
       pre.log { max-height: min(55vh, 260px); }
     }
 
+    /* ---------------- Memory budget ring ----------------
+       Floating double-ring over the memory doc, echoing the Claude Code
+       context-window / compact indicator. Outer arc = token budget (primary;
+       drives the colour state), inner arc = line count vs the consolidation
+       threshold. A small legend names each ring (dot colour == ring colour) so
+       it's self-documenting. Markup is built by renderMemoryBudget() in
+       app/core.js. */
+    .mem-doc-wrap { position: relative; }
+    .mem-budget {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 8px;
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      background: var(--surf-1);
+      filter: drop-shadow(0 2px 6px oklch(0% 0 0 / 0.35));
+    }
+    .mem-budget[hidden] { display: none; }
+
+    .mem-budget-ring { position: relative; width: 44px; height: 44px; flex: none; }
+    .mem-budget-svg { display: block; width: 44px; height: 44px; }
+    .mem-ring-track { fill: none; stroke: var(--border-soft); stroke-width: 5; }
+    .mem-ring-track-inner { stroke-width: 3; opacity: 0.6; }
+    .mem-ring {
+      fill: none;
+      stroke-width: 5;
+      stroke-linecap: round;
+      transition: stroke-dashoffset 0.5s ease, stroke 0.3s ease;
+    }
+    .mem-ring-inner { stroke-width: 3; stroke: var(--accent-2); opacity: 0.9; }
+    /* Outer ring + token swatch colour track the token-budget state. */
+    .mem-budget[data-state="ok"]   .mem-ring-outer { stroke: var(--ok); }
+    .mem-budget[data-state="warn"] .mem-ring-outer { stroke: var(--warn); }
+    .mem-budget[data-state="over"] .mem-ring-outer { stroke: var(--bad); }
+    .mem-budget-pct {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: 0.01em;
+    }
+
+    /* Legend — names each ring so they don't need a hover to decode. */
+    .mem-budget-legend {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: var(--ff-mono);
+      font-size: var(--fs-1);
+      line-height: 1.2;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+    .mem-leg { display: flex; align-items: center; gap: 5px; }
+    .mem-leg i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+    .mem-leg-ln i { background: var(--accent-2); }
+    .mem-budget[data-state="ok"]   .mem-leg-tok i { background: var(--ok); }
+    .mem-budget[data-state="warn"] .mem-leg-tok i { background: var(--warn); }
+    .mem-budget[data-state="over"] .mem-leg-tok i { background: var(--bad); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .mem-ring { transition: none; }
+    }
+

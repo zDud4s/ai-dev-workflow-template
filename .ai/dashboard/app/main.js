@@ -95,6 +95,7 @@
         renderModels(models);
         renderProject(project, projectRaw);
         renderMarkdown($("#memory-doc"), memoryText || "_(empty)_");
+        renderMemoryBudget(memoryText, project);
         renderMarkdown($("#decisions-doc"), decisionsText || "_(empty)_");
 
         buildList("#plans-list", plans, async (name) => {
